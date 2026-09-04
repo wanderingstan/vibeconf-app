@@ -23,6 +23,8 @@ const {
   selectEventToJoin,
   selectUpcomingMatches,
   resolveMeetUrl,
+  meetCodeFromUrl,
+  shouldSkipCalendarJoin,
   DEFAULT_LOOKAHEAD_MS,
   DEFAULT_DEDUPE_MAX_AGE_MS,
 } = require('../electron-app/calendar-auto-join.js');
@@ -495,4 +497,62 @@ test('selectEventToJoin: today\'s occurrence, once joined, is not re-joined', ()
     now,
   });
   assert.equal(event, null);
+});
+
+// --- #588: never rejoin the room the bot is already in -----------------------
+//
+// Live failure, 2026-08-28: the bot joined room xnj-qzwg-nkw manually at
+// 09:28:34; the calendar event for that SAME room started at 09:30:00 and
+// auto-join fired anyway. The rejoin tore down and rebuilt the Meet view, so
+// from the room the bot silently vanished and came back — having dropped the
+// screen share it was presenting, and with the whiteboard wiped. join_call
+// already refused this (#26, rejoin-guard.js); the calendar path had no opinion
+// at all. These pin the shared rule down on the calendar side.
+
+const INCIDENT_URL = 'https://meet.google.com/xnj-qzwg-nkw';
+const INCIDENT_ROOM = 'xnj-qzwg-nkw';
+
+test('meetCodeFromUrl: pulls the room code joinMeetUrl would set', () => {
+  assert.equal(meetCodeFromUrl(INCIDENT_URL), INCIDENT_ROOM);
+  assert.equal(meetCodeFromUrl('https://meet.google.com/abc-defg-hij?authuser=0'), 'abc-defg-hij');
+  assert.equal(meetCodeFromUrl(''), null);
+  assert.equal(meetCodeFromUrl(null), null);
+  assert.equal(meetCodeFromUrl('https://example.com/not-a-meet'), null);
+});
+
+test('shouldSkipCalendarJoin: in-call in the event\'s own room — the #588 bug', () => {
+  assert.equal(shouldSkipCalendarJoin(INCIDENT_URL, {
+    currentRoom: INCIDENT_ROOM, callStatus: 'in-call',
+  }), true, 'this exact case dropped the share and wiped the whiteboard');
+});
+
+test('shouldSkipCalendarJoin: still joining/navigating into that room also stands down', () => {
+  for (const callStatus of ['joining', 'navigating']) {
+    assert.equal(shouldSkipCalendarJoin(INCIDENT_URL, {
+      currentRoom: INCIDENT_ROOM, callStatus,
+    }), true, `${callStatus}: the manual join was 86s ahead of the event start`);
+  }
+});
+
+test('shouldSkipCalendarJoin: a DIFFERENT room is a real join, never skipped', () => {
+  assert.equal(shouldSkipCalendarJoin(INCIDENT_URL, {
+    currentRoom: 'zzz-zzzz-zzz', callStatus: 'in-call',
+  }), false, 'moving between meetings is what auto-join is for');
+});
+
+test('shouldSkipCalendarJoin: with nothing live to protect, the join proceeds', () => {
+  for (const callStatus of ['idle', 'call-complete', 'after-call-work']) {
+    assert.equal(shouldSkipCalendarJoin(INCIDENT_URL, {
+      currentRoom: INCIDENT_ROOM, callStatus,
+    }), false, `${callStatus}: no live session, and a bot that dropped out must be able to come back`);
+  }
+});
+
+test('shouldSkipCalendarJoin: an unrecognizable URL or missing state never swallows a join', () => {
+  assert.equal(shouldSkipCalendarJoin('https://example.com/nope', {
+    currentRoom: INCIDENT_ROOM, callStatus: 'in-call',
+  }), false);
+  assert.equal(shouldSkipCalendarJoin(INCIDENT_URL, { callStatus: 'in-call' }), false);
+  assert.equal(shouldSkipCalendarJoin(INCIDENT_URL), false);
+  assert.equal(shouldSkipCalendarJoin(null), false);
 });

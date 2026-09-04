@@ -556,18 +556,39 @@ if [[ "$REC" == "1" ]]; then
     # intended destination") while `-v` accepts one. Copying the .mov naming here
     # made the still probe fail unconditionally, which would have pinned the blame
     # on permission every time — the exact misdiagnosis this block exists to end.
-    _still="$REC_DIR/preflight-still-$STAMP.png"
-    screencapture -x "$_still" >/dev/null 2>&1
-    _stillbytes=$(stat -f%z "$_still" 2>/dev/null || echo 0)
-    rm -f "$_still"
-    _load=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')
-    if (( _stillbytes > 0 )); then
-      _why="permission is OK (a still capture worked, ${_stillbytes} bytes) — the video recorder did not start inside its 2s window; load average ${_load}"
+    # THIRD cause, tested FIRST, and the one that bit on 2026-09-02: the
+    # destination itself is not writable. Both capture probes write into
+    # $REC_DIR, so an unwritable REC_DIR fails them BOTH — which lands in the
+    # "still also empty => really permission" branch and blames a TCC grant that
+    # is present and fine.
+    #
+    # Not hypothetical padding. recordings/ had been symlinked onto an external
+    # volume the day before, and macOS does not grant a launchd job access to
+    # removable volumes without Full Disk Access. Screen Recording was granted
+    # the whole time; the WRITES were what got refused. A touch separates "cannot
+    # capture" from "cannot write" in one syscall, so it goes before the more
+    # exotic explanations rather than after them.
+    _wtest="$REC_DIR/.writetest-$STAMP"
+    if ! touch "$_wtest" 2>/dev/null; then
+      _tgt="$REC_DIR"
+      [[ -L "$REC_DIR" ]] && _tgt="$REC_DIR -> $(readlink "$REC_DIR")"
+      echo "=== 🔴 recording preflight: screencapture produced ${_recbytes} bytes because THE DESTINATION IS NOT WRITABLE by this (launchd) shell: ${_tgt}. Screen Recording permission is NOT the issue. If that path is on an external volume, the launchd shell needs Full Disk Access — or move it back to the internal disk. ===" | tee -a "$LOG"
+      printf '{"ts":"%s","ok":false,"bytes":%s,"cause":"dest-not-writable","dest":"%s"}\n' "$STAMP" "$_recbytes" "$REC_DIR" >> "$RESULTS/recording-health-results.jsonl"
     else
-      _why="a still capture produced nothing either — Screen Recording permission for the launchd shell is the likely cause; load average ${_load}"
+      rm -f "$_wtest"
+      _still="$REC_DIR/preflight-still-$STAMP.png"
+      screencapture -x "$_still" >/dev/null 2>&1
+      _stillbytes=$(stat -f%z "$_still" 2>/dev/null || echo 0)
+      rm -f "$_still"
+      _load=$(sysctl -n vm.loadavg 2>/dev/null | tr -d '{}' | awk '{print $1}')
+      if (( _stillbytes > 0 )); then
+        _why="permission is OK (a still capture worked, ${_stillbytes} bytes) — the video recorder did not start inside its 2s window; load average ${_load}"
+      else
+        _why="a still capture produced nothing either, and the destination IS writable — Screen Recording permission for the launchd shell is the likely cause; load average ${_load}"
+      fi
+      echo "=== 🔴 recording preflight: screencapture -v produced ${_recbytes} bytes; ${_why}. Kept .mov recordings will be empty. ===" | tee -a "$LOG"
+      printf '{"ts":"%s","ok":false,"bytes":%s,"stillBytes":%s,"load":"%s"}\n' "$STAMP" "$_recbytes" "$_stillbytes" "$_load" >> "$RESULTS/recording-health-results.jsonl"
     fi
-    echo "=== 🔴 recording preflight: screencapture -v produced ${_recbytes} bytes; ${_why}. Kept .mov recordings will be empty. ===" | tee -a "$LOG"
-    printf '{"ts":"%s","ok":false,"bytes":%s,"stillBytes":%s,"load":"%s"}\n' "$STAMP" "$_recbytes" "$_stillbytes" "$_load" >> "$RESULTS/recording-health-results.jsonl"
   fi
   echo "" | tee -a "$LOG"
 fi
@@ -935,8 +956,14 @@ lane_done linux
 if [[ -n "${VIBECONF_MEET_ROOM:-}" ]]; then
   echo "" | tee -a "$LOG"
   echo "=== conversational etiquette (#468) $STAMP ===" | tee -a "$LOG"
-  "$VIBECONF_REPO/scripts/etiquette-nightly.sh" --room "$VIBECONF_MEET_ROOM" --budget-sec 1500 2>&1 | tee -a "$LOG"
-  ETIQ_CODE=${pipestatus[1]}
+  # THROUGH rec_run, like every other live-call lane. It was invoked directly
+  # until 2026-09-02, so it produced no .mov and no Drive upload — while the log
+  # line below said "recorded". A lane whose whole subject is audio TIMING is the
+  # one where footage is worth most: the 09-02 failure turned on why an 8s clip
+  # registered as 416ms of speech at the peer, which is a question you answer by
+  # listening to the call, not by reading a verdict.
+  rec_run etiquette -- "$VIBECONF_REPO/scripts/etiquette-nightly.sh" --room "$VIBECONF_MEET_ROOM" --budget-sec 1500
+  ETIQ_CODE=$?
   echo "=== etiquette exit: $ETIQ_CODE (recorded, not gating) ===" | tee -a "$LOG"
 else
   echo "=== ⚠️  etiquette SKIPPED — no VIBECONF_MEET_ROOM (join-route never minted one) ===" | tee -a "$LOG"

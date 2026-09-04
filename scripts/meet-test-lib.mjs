@@ -27,10 +27,13 @@ export const TEST_SPEECH_PATH = path.join(fileURLToPath(new URL('.', import.meta
 
 // Shared event log across all bots — the timeline the report is built from.
 export const events = [];
-function log(bot, action, { ms, ok = true, note = '', meta = null } = {}) {
-  const e = { t: Date.now(), bot, action, ms, ok, note, meta };
+function log(bot, action, { ms, ok = true, note = '', meta = null, skipped = false } = {}) {
+  const e = { t: Date.now(), bot, action, ms, ok, note, meta, skipped };
   events.push(e);
-  const tag = ok ? '✅' : '❌';
+  // A skipped step is its own outcome (#627): NOT a pass, NOT a failure. Giving
+  // it a distinct glyph is the whole point — the ⏭️ is what stops a check that
+  // never ran from reading as green in a scrollback or a screenshot.
+  const tag = skipped ? '⏭️' : ok ? '✅' : '❌';
   console.log(`${tag} [${bot}] ${action}${ms != null ? ` ${ms}ms` : ''}${note ? ` — ${note}` : ''}`);
   return e;
 }
@@ -539,6 +542,15 @@ export function record(bot, action, ok, note = '') {
   return log(bot, action, { ok, note });
 }
 
+// Record a check that COULD NOT BE RUN — a missing credential, an absent
+// dependency, a budget that ran out. A skip is not a pass (#627): it never
+// counts toward the fail count or the exit code, but report() surfaces it on
+// its own line and stamps the verdict, so "a lane whose result nobody has"
+// cannot be mistaken for one that passed.
+export function skip(bot, action, note = '') {
+  return log(bot, action, { ok: true, skipped: true, note });
+}
+
 // --- report: latency percentiles per action, stalls, cross-bot overlap ---
 export function report() {
   const byAction = new Map();
@@ -556,6 +568,7 @@ export function report() {
   }
 
   const fails = events.filter((e) => !e.ok);
+  const skips = events.filter((e) => e.skipped);
   const speaks = events.filter((e) => e.action === 'speak').sort((a, b) => a.t - b.t);
   const timeouts = events.filter((e) => e.action === 'waitForSpeech' && e.meta?.timedOut);
 
@@ -600,12 +613,19 @@ export function report() {
   console.log(`  wait_for_speech timeouts: ${timeouts.length} (${realStalls.length} real stall${realStalls.length === 1 ? '' : 's'}, rest were quiet-room)`);
   if (realStalls.length) console.log(red(`    🔴 REAL STALLS: ${realStalls.map((e) => `${e.bot}${e.meta?.captionsOn === false ? '(deaf)' : '(heard-nothing)'}`).join(', ')}`));
   console.log(`  ${fails.length ? red('🔴') : '✅'} failed steps:          ${fails.length ? red(fails.length + ' — ' + fails.map((f) => `${f.bot}/${f.action}`).join(', ')) : 0}`);
+  // Skipped steps get their own line even when there are none, so its absence is
+  // informative rather than ambiguous.
+  console.log(`  ${skips.length ? '⏭️ ' : '✅'} skipped steps:         ${skips.length ? `${skips.length} — ${skips.map((s) => `${s.bot}/${s.action}`).join(', ')} (result UNKNOWN, not verified)` : 0}`);
   console.log(`  cross-bot speak overlaps (<1.2s): ${overlaps} (informational — not a failure; use a dedicated lockstep scenario to test for real)`);
   console.log('─'.repeat(72));
   // Bottom-line verdict: gates on real stalls + failed steps (matches the exit code).
   const passed = fails.length === 0 && realStalls.length === 0;
-  console.log(passed ? '✅ PASS — all steps green' : red(`🔴 FAIL — ${fails.length} failed step(s), ${realStalls.length} real stall(s)`));
+  console.log(passed
+    ? (skips.length
+      ? `⏭️  PASS WITH GAPS — ${skips.length} step(s) could not run; nothing verified them`
+      : '✅ PASS — all steps green')
+    : red(`🔴 FAIL — ${fails.length} failed step(s), ${realStalls.length} real stall(s)`));
   console.log('─'.repeat(72));
   // Gate on real stalls + failures only. Overlaps and quiet-room timeouts don't fail.
-  return { stalls: realStalls.length, timeouts: timeouts.length, fails: fails.length, overlaps };
+  return { stalls: realStalls.length, timeouts: timeouts.length, fails: fails.length, skips: skips.length, overlaps };
 }

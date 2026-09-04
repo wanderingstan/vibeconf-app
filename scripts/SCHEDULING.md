@@ -366,6 +366,138 @@ never overwritten. Hand-run / inspect:
     node scripts/sync-calls-to-drive.mjs               # one real pass
     tail /tmp/vibeconf-sync-calls.out                  # the timer's log
 
+## Nightly macOS build (01:00) — build + notarize `main`, publish nothing
+
+Builds whatever is on `origin/main` into a signed, **notarized** `.dmg` + `.zip` +
+`latest-mac.yml`, verifies it, and files it under `~/vibeconf-builds/<date>-<sha>/`.
+It never tags, uploads, or touches GitHub — promoting a night's build to a
+pre-release is a human decision made in daylight (see *Promoting a build* below).
+
+**Why 01:00:** the meet-test lane owns 03:00 and budgets 5400s, so the box is busy
+until ~04:30. A notarized Electron build is the heaviest job this machine runs, and
+overlapping the two produces timeout-shaped failures **in the test lane** that look
+like product regressions and aren't.
+
+**Why a detached worktree:** the lane builds `~/Developer/vibeconf-nightly`, a
+worktree re-pinned to `origin/main` every night, not the primary checkout. A stray
+feature branch left checked out in `~/Developer/vibeconf-app` has silently made the
+nightly run week-old code before; a detached worktree cannot drift.
+
+### Pieces
+- `scripts/nightly-mac-build.sh` — the lane. Writes `~/vibeconf-test-results/mac-build-<ts>.log`
+  and appends to `mac-build-results.jsonl`.
+- `scripts/com.vibeconferencing.mac-build.plist` — the LaunchAgent (nightly 01:00).
+- `notify-nightly.mjs` renders it as a `mac build:` line in the 03:00 digest — so the
+  result reaches you in the same Telegram message as everything else, two hours later.
+
+### The keychain: the one thing that actually needs a decision
+Signing needs the Developer ID **private key**. A shell without GUI access can't reach
+the login keychain and `codesign` fails on every file with `errSecInternalComponent`
+— which looks like a broken certificate and isn't (`security find-identity` still
+lists it, because the *certificate* is readable). A LaunchAgent runs in the Aqua
+session and normally can reach it, but only while it is **unlocked**, and this
+machine's login keychain does auto-lock.
+
+Cheap option — stop the login keychain auto-locking:
+
+    security set-keychain-settings ~/Library/Keychains/login.keychain-db   # no -t, no -l
+
+Robust option — a dedicated signing keychain the lane unlocks itself, which makes the
+GUI session irrelevant (works from launchd, SSH, or an agent session):
+
+    # 1. Keychain Access → login → My Certificates → "Developer ID Application: Stanley James"
+    #    → right-click → Export… → .p12 with a password. (GUI, once.)
+    # 2. Build the keychain. macOS materialises `vibeconf-signing.keychain` as `…-db`.
+    PW=$(openssl rand -base64 24)
+    mkdir -p ~/.config/vibeconf && ( umask 077; printf '%s' "$PW" > ~/.config/vibeconf/signing-keychain.pw )
+    security create-keychain -p "$PW" vibeconf-signing.keychain
+    security set-keychain-settings vibeconf-signing.keychain      # no -t/-l: never auto-lock
+    security unlock-keychain -p "$PW" vibeconf-signing.keychain
+    security import ~/Downloads/devid.p12 -k vibeconf-signing.keychain -P '<p12 password>' -T /usr/bin/codesign
+    security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$PW" vibeconf-signing.keychain
+    rm ~/Downloads/devid.p12     # the key now lives in the keychain; don't leave a copy around
+
+Then uncomment `VIBECONF_SIGNING_KEYCHAIN` in the plist. The lane prepends it to the
+search list for the run and **restores the previous list on exit**, so nothing else on
+the machine starts picking up the wrong identity.
+
+Trade-off, stated plainly: this puts the signing key behind a password sitting in a
+`0600` file on the mini. That is the standard CI compromise and strictly weaker than a
+GUI-locked login keychain. The machine already hosts a self-hosted Actions runner, so
+it isn't a new category of exposure — but it is a real one.
+
+### Credentials
+The three notarization vars come from a `0600` env file, because `~/.zshrc` is sourced
+**only for interactive shells** and launchd's `zsh -lc` is not one (see CLAUDE.md):
+
+    mkdir -p ~/.config/vibeconf
+    ( umask 077; cat > ~/.config/vibeconf/build.env <<'EOF'
+    export APPLE_ID=<the apple developer account email>
+    export APPLE_APP_SPECIFIC_PASSWORD=<app-specific password>
+    export APPLE_TEAM_ID=PNPVJ6J7X2
+    EOF
+    )
+
+Until that file exists the lane extracts those three `export` lines out of `~/.zshrc`
+instead (it *parses* them — sourcing a zsh rc from a bash script makes oh-my-zsh abort
+the whole run), so an un-migrated machine keeps working.
+
+### Install (one time, on the Mac mini)
+```sh
+chmod +x scripts/nightly-mac-build.sh
+cp scripts/com.vibeconferencing.mac-build.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.vibeconferencing.mac-build.plist
+
+# Run it once now rather than waiting for 01:00 (takes ~15-25 min, mostly notarization)
+launchctl start com.vibeconferencing.mac-build
+tail -f ~/vibeconf-test-results/mac-build-*.log
+```
+
+### Exit codes
+`70+` means it never got as far as building — infrastructure, not the app — and the
+digest labels them that way.
+
+| code | meaning |
+| --- | --- |
+| 0 | built, notarized, stapled, verified |
+| 10 | `electron-builder` failed |
+| 11 | **built but NOT notarized** — `spctl`/`stapler` verification failed |
+| 12 | build "succeeded" but artifacts are missing or incomplete |
+| 70 | notarization creds missing (would have silently shipped an un-notarized app) |
+| 71 | `codesign` can't use the signing key — keychain locked/unreachable |
+| 72 | git fetch / worktree / version read failed |
+| 73 | `pnpm install` failed |
+
+Code **11** is the reason this lane verifies at all: with the Apple vars unset,
+electron-builder skips notarization with a *warning* and exits 0. That is
+indistinguishable from success until Gatekeeper refuses the app on a user's machine.
+Verification runs against the **`.app`**, never the `.dmg` — electron-builder notarizes
+and staples the app and *then* wraps it, so the `.dmg` legitimately reports
+unsigned/unstapled. Don't "fix" that.
+
+### Review / promote a build
+```sh
+ls -t ~/vibeconf-builds/                  # one dir per night: <date>-<sha>
+open ~/vibeconf-builds/latest             # install the newest and test it during the day
+grep '"exit":[^0]' ~/vibeconf-test-results/mac-build-results.jsonl   # bad nights
+```
+
+When a night is worth shipping as a preview, upload it by hand — still as a **draft**,
+so you write the notes and press publish:
+
+```sh
+V=0.8.50; D=~/vibeconf-builds/latest
+gh release create "v$V-pre" --draft --prerelease --title "v$V preview" --notes "" \
+  "$D"/*.dmg "$D"/*-mac.zip "$D"/latest-mac.yml
+```
+
+**Version caveat:** every nightly off `main` carries the same `package.json` version
+until you bump it, so successive builds collide by filename and the updater feed can't
+order them. The dated directories keep that harmless locally, but if you promote one,
+stamp it first so it's a real, orderable semver:
+
+    pnpm exec electron-builder -p never -c.extraMetadata.version=0.8.50-nightly.20260904
+
 ## Notes / caveats
 - **Same machine as a real bot?** The fleet uses ports 7901+ and dedicated
   `test-meet-*` / `test-slack-*` profiles, distinct from the real Jimmy (7865) / Samantha (7866), so a

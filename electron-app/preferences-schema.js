@@ -281,12 +281,12 @@ const PREFERENCES = {
   },
   meetViewSize: {
     type: 'string',
-    default: '1600x900',
+    default: '2560x1440',
     enum: ['1600x900', '1920x1080', '2560x1440'],
     enumLabels: {
-      '1600x900': '1600 × 900 — default',
-      '1920x1080': '1920 × 1080 — roomier (3–6 people)',
-      '2560x1440': '2560 × 1440 — largest (big calls; recording still capped at 1080p)',
+      '1600x900': '1600 × 900 — smallest (a shared screen is usually too small to read)',
+      '1920x1080': '1920 × 1080 — roomier (large text on a shared screen only)',
+      '2560x1440': '2560 × 1440 — default (needed to read a shared screen; recording still capped at 1080p)',
     },
     label: 'Bot\'s Meet view size',
     description:

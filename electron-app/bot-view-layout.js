@@ -74,13 +74,41 @@ const MEET_VIEW_SIZES = {
   '1920x1080': { width: 1920, height: 1080 },
   '2560x1440': { width: 2560, height: 1440 },
 };
-const DEFAULT_MEET_VIEW_SIZE = '1600x900';
+
+// #673: the largest size, NOT the historical 1600x900. Measured against a real
+// remote share (a second machine sharing a 1920x1080 screen into the call):
+//
+//   view 1600x900   share renders ~875px  (46% of source) — UNREADABLE below ~18px
+//   view 1920x1080  share renders ~1100px (57%)           — 14px and above only
+//   view 2560x1440  share renders ~1550px (81%)           — all of it, 10px included
+//
+// At the old default the bot genuinely could not read a student's screen: a
+// 1920-wide share downscaled into an ~875px tile puts 12px editor text at about
+// 5.5 effective pixels. That is the whole of Bethany's "I shared it 10 seconds
+// ago, why aren't you seeing it" report.
+//
+// WHY A BIGGER VIEW ACTUALLY HELPS, which was not obvious: Meet adapts what it
+// SENDS to what the receiver renders. Probed live, a share whose source was
+// 1920x1080 arrived as 1606x830 against a 1608x832 rendering — Meet downscaled
+// it BELOW its source to match the layout, to within two pixels. So enlarging
+// the view does not upscale pixels we already had, it makes Meet transmit more.
+//
+// The ceiling is the sharer's own screen: Meet never sends more than the source,
+// so this buys legibility only until the rendered share approaches the sharer's
+// width. 2560x1440 is close to the practical maximum for a 1080p sharer.
+//
+// The recording is NOT affected: renderer/call-recording-window.js's
+// CAPTURE_CONSTRAINTS bounds the capture to 1080p, so this buys screenshot
+// pixels without growing recordings.
+const DEFAULT_MEET_VIEW_SIZE = '2560x1440';
 
 // The hidden host window's size for a meetViewSize pref value. Anything
-// unrecognised (unset, a typo, a size removed from the table) is the default,
-// never a throw — this feeds window creation.
+// unrecognised (unset, a typo, a size removed from the table) is the DEFAULT,
+// never a throw — this feeds window creation. Resolved through the table rather
+// than a hardcoded constant so the fallback can never drift away from the
+// default the way it would if both were written out separately.
 function hiddenSizeFor(pref) {
-  return MEET_VIEW_SIZES[pref] || HIDDEN_SIZE;
+  return MEET_VIEW_SIZES[pref] || MEET_VIEW_SIZES[DEFAULT_MEET_VIEW_SIZE];
 }
 // No compensation needed when we aren't squeezing it into a narrow column.
 const HIDDEN_ZOOM = 1;

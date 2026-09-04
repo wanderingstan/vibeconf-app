@@ -231,11 +231,16 @@ test('thumbnail is unchanged — the legacy path still works exactly as before',
 });
 
 test('meetViewSize resolves to a 16:9 host size, and anything unknown is the default', () => {
+  const defaultSize = L.MEET_VIEW_SIZES[L.DEFAULT_MEET_VIEW_SIZE];
   assert.deepEqual(L.hiddenSizeFor('1600x900'), L.HIDDEN_SIZE);
-  assert.deepEqual(L.hiddenSizeFor(L.DEFAULT_MEET_VIEW_SIZE), L.HIDDEN_SIZE);
+  assert.deepEqual(L.hiddenSizeFor(L.DEFAULT_MEET_VIEW_SIZE), defaultSize);
   assert.deepEqual(L.hiddenSizeFor('1920x1080'), { width: 1920, height: 1080 });
+  // #673: the fallback must track the DEFAULT, not a hardcoded size. Pinned
+  // because the two were once the same value, so a test written against the
+  // constant would have kept passing while the fallback silently disagreed
+  // with the default the moment the default moved.
   for (const bad of [undefined, null, '', '1234x567', 'huge', 42]) {
-    assert.deepEqual(L.hiddenSizeFor(bad), L.HIDDEN_SIZE, `${String(bad)} must fall back`);
+    assert.deepEqual(L.hiddenSizeFor(bad), defaultSize, `${String(bad)} must fall back to the default`);
   }
   for (const [key, size] of Object.entries(L.MEET_VIEW_SIZES)) {
     assert.equal(key, `${size.width}x${size.height}`, 'the key names the size');

@@ -27,6 +27,22 @@ function applyTtsPronunciationFixes(text) {
   return out;
 }
 
+// Resolve espeak-ng (preferred) or espeak once per process. Returns the binary
+// name, or null when neither is installed (it's a Recommends of the .deb, not a
+// Depends). Module-level rather than a method because main.js needs the SAME
+// answer to enumerate Linux voices (#575) — the picker must offer voices from
+// the binary that will actually be asked to speak them.
+let _linuxTtsBinCache;
+function resolveLinuxTtsBin() {
+  if (_linuxTtsBinCache !== undefined) return _linuxTtsBinCache;
+  const { execFileSync } = require('child_process');
+  _linuxTtsBinCache = null;
+  for (const bin of ['espeak-ng', 'espeak']) {
+    try { execFileSync('which', [bin], { stdio: 'ignore' }); _linuxTtsBinCache = bin; break; } catch { /* not found */ }
+  }
+  return _linuxTtsBinCache;
+}
+
 // A finite number, or the fallback. Guards against a pref arriving as '' or a
 // non-numeric string from the store/IPC, which would otherwise reach ElevenLabs
 // as NaN and turn every line into a 422 with no audio.
@@ -328,14 +344,10 @@ class TTSProvider {
   }
 
   // Resolve espeak-ng (preferred) or espeak once. Returns the binary name or null.
+  // Delegates to the module-level resolver so main.js's voice ENUMERATION (#575)
+  // probes for the same binary this speaks through, instead of duplicating it.
   _linuxTtsBin() {
-    if (this._linuxBinCache !== undefined) return this._linuxBinCache;
-    const { execFileSync } = require('child_process');
-    this._linuxBinCache = null;
-    for (const bin of ['espeak-ng', 'espeak']) {
-      try { execFileSync('which', [bin], { stdio: 'ignore' }); this._linuxBinCache = bin; break; } catch { /* not found */ }
-    }
-    return this._linuxBinCache;
+    return resolveLinuxTtsBin();
   }
 
   // Linux's equivalent of the `say` / SAPI paths (#21): espeak-ng (or espeak),
@@ -363,14 +375,33 @@ class TTSProvider {
     try {
       fs.writeFileSync(txtPath, text, 'utf8');
       // -f: read the utterance from a file; -w: write a WAV (22.05kHz mono 16-bit
-      // by default). We deliberately DON'T pass -v: the shared `macosVoice` field
-      // defaults to a macOS voice name ('Daniel') on non-Windows platforms, which
-      // espeak would reject — unlike `say`/SAPI it errors on an unknown voice
-      // rather than substituting. So Linux uses espeak's default voice for now;
-      // an espeak voice picker (via `espeak-ng --voices`) is the follow-up.
+      // by default). -v names the voice, whose values now come from the picker
+      // (#575: `espeak-ng --voices`, parsed in system-voices.js).
+      //
+      // The retry is not belt-and-braces. `macosVoice` is shared across all
+      // three platforms and defaults to 'Daniel', a macOS name espeak has never
+      // heard of — and unlike `say`/SAPI, espeak ERRORS on an unknown voice
+      // instead of substituting. Dropping -v and going again keeps the bot
+      // audible in espeak's default voice, which is what it did before a Linux
+      // voice could be picked at all.
+      //
+      // A rejection is remembered so the double exec (and the warning) happens
+      // ONCE, not on every line of every call — the mismatched default is the
+      // common case on Linux, not the rare one. Keyed by the name, so picking a
+      // different voice is tried afresh.
       const args = ['-f', txtPath, '-w', wavPath];
+      const opts = { timeout: 20000, stdio: ['ignore', 'ignore', 'pipe'] };
+      const wanted = String(this.macosVoice || '').trim();
+      const voice = wanted && wanted !== this._espeakRejectedVoice ? wanted : '';
       try {
-        execFileSync(bin, args, { timeout: 20000, stdio: ['ignore', 'ignore', 'pipe'] });
+        try {
+          execFileSync(bin, voice ? ['-v', voice, ...args] : args, opts);
+        } catch (first) {
+          if (!voice) throw first;
+          this._espeakRejectedVoice = voice;
+          console.warn(`[tts] ${bin} rejected voice "${voice}" — falling back to its default voice`);
+          execFileSync(bin, args, opts);
+        }
       } catch (err) {
         const detail = String(err.stderr || '').trim().split('\n')[0] || err.message;
         throw new Error(`Linux TTS (${bin}) failed: ${detail}`);
@@ -535,4 +566,5 @@ class TTSProvider {
 if (typeof globalThis !== 'undefined') {
   globalThis.TTSProvider = TTSProvider;
   globalThis.applyTtsPronunciationFixes = applyTtsPronunciationFixes; // for tests (#383)
+  globalThis.resolveLinuxTtsBin = resolveLinuxTtsBin; // for main.js's voice enumeration (#575)
 }

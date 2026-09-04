@@ -999,19 +999,76 @@ function isElevenLabsActive() {
   return !!readConfig().ttsApiKey;
 }
 
+// What to call the built-in voices in agent-facing copy. Mirrors
+// electron-app/system-voices.js systemVoiceLabel().
+function platformVoiceLabel() {
+  if (process.platform === 'darwin') return 'macOS';
+  if (process.platform === 'win32') return 'Windows';
+  if (process.platform === 'linux') return 'Linux';
+  return 'system';
+}
+
 // The OS's built-in voices as [{ name, locale, sample, tier }], quality first
 // (Premium > Enhanced > plain), English first, then name.
 //
 // macOS reads `say -v '?'`; Windows has no `say`, so it asks SAPI through
-// PowerShell (#18) — the same two commands the app itself renders with.
+// PowerShell (#18); Linux reads `espeak-ng --voices` (#575) — the same commands
+// the app itself renders with.
 //
 // DUPLICATED from electron-app/system-voices.js on purpose: this file is copied
 // into the packaged app standalone (extraResources) and cannot require() into
 // electron-app/. Keep the two in sync, same as elevenLabsErrorText below.
 function listSystemVoices() {
   if (process.platform === 'win32') return listSapiVoices();
+  if (process.platform === 'linux') return listEspeakVoices();
   if (process.platform !== 'darwin') return [];
   return listMacosVoices();
+}
+
+// Linux's built-in voices, from `espeak-ng --voices` (#575). Before this, the
+// agent's list_voices showed nothing at all on Linux even though the app could
+// speak through espeak — so it looked like the box had no voice, rather than
+// one unnameable default.
+//
+// espeak-ng is preferred over espeak, and neither being installed means "no
+// built-in voices here" (it's a Recommends of the .deb, not a Depends), which
+// is an empty list, not an error. Mirrors electron-app/tts.js's probe.
+function listEspeakVoices() {
+  let bin = null;
+  for (const candidate of ['espeak-ng', 'espeak']) {
+    try { execFileSync('which', [candidate], { stdio: 'ignore' }); bin = candidate; break; } catch { /* not found */ }
+  }
+  if (!bin) return [];
+  let output;
+  try { output = execFileSync(bin, ['--voices'], { encoding: 'utf-8', timeout: 5000 }); }
+  catch { return []; }
+  const voices = [];
+  for (const line of String(output).split('\n')) {
+    // "Pty Language Age/Gender VoiceName File [Other Languages]"; the VoiceName
+    // column never contains a space ("English_(Great_Britain)"), so a plain
+    // split works. Requiring a numeric priority drops the header row.
+    const cols = line.trim().split(/\s+/);
+    if (cols.length < 5 || !/^\d+$/.test(cols[0])) continue;
+    const [, language, ageGender, name] = cols;
+    const parts = language.split('-');
+    if (parts.length > 1 && /^[a-z]{2}$/.test(parts[1])) parts[1] = parts[1].toUpperCase();
+    const g = (ageGender.split('/')[1] || '').toUpperCase();
+    // tier 1, same reasoning as SAPI: espeak's languages are all a Linux box
+    // has, so demoting them to "lower quality" would empty the main group.
+    voices.push({
+      name,
+      locale: parts.join('_'),
+      sample: g === 'M' ? 'Male' : g === 'F' ? 'Female' : '',
+      tier: 1,
+    });
+  }
+  const seen = new Set();
+  return voices.filter(v => (seen.has(v.name) ? false : seen.add(v.name)))
+    .sort((a, b) => {
+      const ae = a.locale.startsWith('en'), be = b.locale.startsWith('en');
+      if (ae !== be) return ae ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
 }
 
 // PowerShell that prints "Name|Culture|Gender" per installed SAPI voice, passed
@@ -1249,7 +1306,7 @@ server.tool(
 // --- list_voices ---
 server.tool(
   "list_voices",
-  "List available text-to-speech voices across all providers — Voicebox (if its local server is running), ElevenLabs (if an API key is configured), and the operating system's built-in voices (macOS `say` voices, or Windows SAPI voices such as 'Microsoft Zira Desktop') — matching what the settings picker shows. To use one, call set_voice with its EXACT name (e.g. 'Ava (Premium)') or id. Prefer Voicebox/ElevenLabs or the Premium/Enhanced macOS voices; the plain 'Other' macOS ones sound robotic.",
+  "List available text-to-speech voices across all providers — Voicebox (if its local server is running), ElevenLabs (if an API key is configured), and the operating system's built-in voices (macOS `say` voices, Windows SAPI voices such as 'Microsoft Zira Desktop', or Linux espeak-ng voices such as 'English_(Great_Britain)') — matching what the settings picker shows. To use one, call set_voice with its EXACT name (e.g. 'Ava (Premium)') or id. Prefer Voicebox/ElevenLabs or the Premium/Enhanced macOS voices; the plain 'Other' macOS ones and all the Linux espeak ones sound robotic.",
   {},
   async () => {
     // The RUNNING bot's voice, from the app — not the config file. Read from
@@ -1261,9 +1318,19 @@ server.tool(
 
     // Current voice, derived from the active provider.
     const usingVb = prefs.ttsProvider === 'voicebox' && prefs.voiceboxProfileId;
-    const osLabel = process.platform === 'win32' ? 'Windows' : process.platform === 'darwin' ? 'macOS' : 'system';
+    const osLabel = platformVoiceLabel();
     const usingSys = !usingVb && (prefs.ttsProvider === 'macos-say' || !isElevenLabsActive());
-    const sysVoiceName = prefs.macosVoice || (process.platform === 'win32' ? 'the system default' : 'Daniel');
+    // Enumerated once and reused by the built-in section below.
+    const sys = listSystemVoices();
+    // The stored name is shared across platforms and defaults to macOS's
+    // 'Daniel', which espeak has never heard of — reporting that as the current
+    // Linux voice was the same fiction as showing no voices at all (#575).
+    const sysNameKnown = !!prefs.macosVoice && sys.some((v) => v.name.toLowerCase() === String(prefs.macosVoice).toLowerCase());
+    const sysVoiceName = (prefs.macosVoice && (process.platform !== 'linux' || sysNameKnown))
+      ? prefs.macosVoice
+      : process.platform === 'win32' ? 'the system default'
+      : process.platform === 'linux' ? "espeak's default"
+      : 'Daniel';
     sections.push(`Current voice: ${usingVb ? `Voicebox profile ${prefs.voiceboxProfileId}` : usingSys ? `${sysVoiceName} (built-in ${osLabel})` : 'ElevenLabs (see below)'}`);
 
     // Voicebox (local TTS) — listed first when the server is up (#340), matching
@@ -1292,11 +1359,16 @@ server.tool(
 
     // The OS's built-in voices — always shown so the bot can pick a decent
     // built-in voice even when an ElevenLabs key is set (e.g. to save EL quota).
-    const sys = listSystemVoices();
     if (sys.length) {
       const fmt = (v) => `${v.name} (${v.locale})`;
       const lines = [`=== Built-in ${osLabel} voices ===`];
-      if (process.platform === 'win32') {
+      if (process.platform === 'linux') {
+        // espeak has no quality tiers — one flat list of languages, every one
+        // of which the box can actually speak.
+        lines.push(sys.map(fmt).join(', '));
+        lines.push('These are espeak-ng\'s voices. They all sound robotic, but they need no key and no network — worth switching to only if ElevenLabs is unavailable or you want to save quota.');
+        lines.push('To use one, call set_voice with the EXACT name, underscores included (e.g. "English_(Great_Britain)").');
+      } else if (process.platform === 'win32') {
         // SAPI has no Premium/Enhanced tiering — it's one flat list, and every
         // entry is a voice the machine can actually speak in.
         lines.push(sys.map(fmt).join(', '));
@@ -1324,9 +1396,9 @@ server.tool(
 // --- set_voice ---
 server.tool(
   "set_voice",
-  "Change the bot's text-to-speech voice. Use list_voices to see options. Pass the EXACT voice name — a built-in OS voice (e.g. 'Ava (Premium)' on macOS, 'Microsoft Zira Desktop' on Windows), an ElevenLabs voice name/ID, or a Voicebox profile name/id. Matched in that order; the chosen voice becomes primary (its provider is forced, so e.g. a built-in voice wins even with an ElevenLabs key set). Takes effect immediately and is saved to this bot's profile, so it persists after the call and across restarts.",
+  "Change the bot's text-to-speech voice. Use list_voices to see options. Pass the EXACT voice name — a built-in OS voice (e.g. 'Ava (Premium)' on macOS, 'Microsoft Zira Desktop' on Windows, 'English_(Great_Britain)' on Linux), an ElevenLabs voice name/ID, or a Voicebox profile name/id. Matched in that order; the chosen voice becomes primary (its provider is forced, so e.g. a built-in voice wins even with an ElevenLabs key set). Takes effect immediately and is saved to this bot's profile, so it persists after the call and across restarts.",
   {
-    voice: z.string().describe("Exact voice name. Built-in OS voice (macOS 'Ava (Premium)' / 'Samantha', Windows 'Microsoft Zira Desktop') or ElevenLabs voice name/ID."),
+    voice: z.string().describe("Exact voice name. Built-in OS voice (macOS 'Ava (Premium)' / 'Samantha', Windows 'Microsoft Zira Desktop', Linux 'English_(Great_Britain)') or ElevenLabs voice name/ID."),
   },
   async ({ voice }) => {
     try {
@@ -1337,8 +1409,8 @@ server.tool(
       // Match a built-in OS voice first (case-insensitive, exact) — lets the
       // bot pick a built-in voice regardless of the EL key. The stored keys are
       // still named macosVoice/'macos-say' for config compatibility; on Windows
-      // they hold a SAPI voice name (#18).
-      const osLabel = process.platform === 'win32' ? 'Windows' : 'macOS';
+      // they hold a SAPI voice name (#18) and on Linux an espeak one (#575).
+      const osLabel = platformVoiceLabel();
       const sys = listSystemVoices();
       const sysMatch = sys.find(v => v.name.toLowerCase() === voice.toLowerCase());
       if (sysMatch) {

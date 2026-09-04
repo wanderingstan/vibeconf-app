@@ -29,7 +29,7 @@ const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
 const recordRegion = require('./record-region.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
-const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl } = require('./calendar-auto-join.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl, shouldSkipCalendarJoin } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 const {
@@ -9669,10 +9669,25 @@ allURLs`;
   // for the same event, but a join that was merely SCHEDULED and never fired
   // (e.g. the app quit first) should be reconsidered on the next run, not
   // treated as handled.
+  //
+  // #588: this is also where the "already in this room" stand-down has to be
+  // DECISIVE, because it is the last check before the join. handleCalendarEvents
+  // stands down too, but minutes pass between a poll arming this timer and the
+  // timer firing, and in the reported failure the bot was joined to the room
+  // manually inside exactly that gap — every earlier gate had already been
+  // passed. The event still gets marked handled above: its start has arrived and
+  // the bot IS in its room, which is the outcome auto-join was after.
   function performScheduledCalendarJoin(event, meetUrl) {
     scheduledCalendarJoins.delete(eventDedupeKey(event));
     const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
     store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
+    // #588 — see the note above this function.
+    if (shouldSkipCalendarJoin(meetUrl, { currentRoom: localServer.roomId, callStatus: localServer.callStatus })) {
+      console.log(`[calendar] Not auto-joining "${event.summary || event.id}" — already `
+        + `${localServer.callStatus} in ${localServer.roomId}, the room this event points at. `
+        + 'Rejoining would drop the screen share and wipe the whiteboard.');
+      return;
+    }
     console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
     activateMeetProvider(); // no-op if already on a live Meet view
     joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
@@ -9844,6 +9859,20 @@ allURLs`;
       console.warn(`[calendar] Matched event "${event.summary || event.id}" but its hangoutLink `
         + `("${event.hangoutLink}") isn't a recognizable Meet URL — skipping, still marking as handled.`);
       store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
+      return;
+    }
+
+    // #588: don't even arm a timer to rejoin the room the bot is already in.
+    // The `callStatus === 'in-call'` gate above stops the common case, but not
+    // a poll that lands while the bot is still 'joining'/'navigating' into that
+    // same room — which is precisely the window the reported failure fell into.
+    //
+    // Deliberately NOT marked as handled (same as that gate): if the in-flight
+    // join never completes, the next tick reconsiders this event on its merits
+    // rather than having written it off.
+    if (shouldSkipCalendarJoin(meetUrl, { currentRoom: localServer.roomId, callStatus: localServer.callStatus })) {
+      console.log(`[calendar] Not scheduling auto-join for "${event.summary || event.id}" — already `
+        + `${localServer.callStatus} in ${localServer.roomId}, the room this event points at.`);
       return;
     }
 

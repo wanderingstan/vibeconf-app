@@ -37,6 +37,14 @@ const DEFAULT_DEDUPE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const MEET_CODE_RE = /meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/;
 
+// The SAME duplicate-join rule join_call answers with (#26). Required here on
+// purpose rather than restated: #588 was calendar auto-join holding a second
+// opinion about "we are already in this room" — it had none — and yanking the
+// bot out of a call it was already in, which dropped the live screen share and
+// wiped the whiteboard. Both entry points now funnel through one rule.
+// rejoin-guard.js is pure too, so this file stays plain-Node testable.
+const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
+
 // Case-insensitive substring/equality helpers. Kept tiny and local rather
 // than pulling in a string-utils dependency for two one-liners.
 function norm(s) {
@@ -245,6 +253,38 @@ function resolveMeetUrl(hangoutLink) {
   return null;
 }
 
+// The Meet code ("abc-defg-hij") inside a Meet URL, or null. Same capture
+// joinMeetUrl uses to derive the room id it hands to localServer.setRoom, so a
+// code from here compares directly against the app's current roomId.
+function meetCodeFromUrl(meetUrl) {
+  const m = (meetUrl || '').toString().match(MEET_CODE_RE);
+  return m ? m[1] : null;
+}
+
+// #588: should this calendar-triggered join stand down because the bot is
+// already in (or on its way into) the very room the event points at?
+//
+// The live failure: the bot was manually joined to the room at 09:28, the
+// event for that same room started at 09:30, and auto-join fired anyway.
+// Rejoining tears down and rebuilds the Meet view, so from the room the bot
+// silently vanished and came back — minus the screen share it had been
+// presenting, and with the whiteboard blanked. Room-level state nobody asked
+// to lose.
+//
+// A DIFFERENT room is deliberately still a real join: that is a bot moving
+// between meetings, which is the whole point of auto-join. Note also that
+// shouldIgnoreRejoin does NOT cover 'waiting-to-be-admitted' — by its own
+// design (#26) a green room isn't yet a session worth protecting, and there is
+// no share or board there to drop. Reused as-is rather than forked, so the two
+// entry points can't drift apart again.
+function shouldSkipCalendarJoin(meetUrl, { currentRoom, callStatus } = {}) {
+  return shouldIgnoreRejoin({
+    requestedRoom: meetCodeFromUrl(meetUrl),
+    currentRoom,
+    callStatus,
+  });
+}
+
 module.exports = {
   DEFAULT_LOOKAHEAD_MS,
   DEFAULT_DEDUPE_MAX_AGE_MS,
@@ -257,4 +297,6 @@ module.exports = {
   selectEventToJoin,
   selectUpcomingMatches,
   resolveMeetUrl,
+  meetCodeFromUrl,
+  shouldSkipCalendarJoin,
 };

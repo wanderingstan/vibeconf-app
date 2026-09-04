@@ -129,14 +129,17 @@ test('the camera overlay slices its own tail rather than shrinking the buffer', 
     'sliced at draw time, off the shared buffer');
 });
 
-test('the troubleshooting dump also takes a tail, not the whole buffer', () => {
-  // A third consumer that had also silently inherited the 16. It is one section
-  // of a flat <pre> of call state; a thousand agent lines pasted into the middle
-  // would bury everything else the screen exists to show.
-  const fn = panelJs.slice(panelJs.indexOf('function agentActivityLines'));
-  const body = fn.slice(0, fn.indexOf('\n}'));
-  assert.match(body, /slice\(-TROUBLESHOOTING_AGENT_LINES\)/);
-  // The COUNT stays the full buffer's — it is how you confirm the fix without
-  // counting lines by eye.
-  assert.match(body, /\$\{log\.length\}/);
+test('the troubleshooting dump no longer carries an agent tail (#668)', () => {
+  // A third consumer that had also silently inherited the 16, until the 🧠
+  // window's 1000-line scrollback made it redundant — its own header already
+  // pointed at 🧠 for the full history. The state dump is a fixed-height block
+  // of health lines; a rolling feed at the bottom pushed them up for a signal
+  // that now has a window of its own. The BUFFER is untouched — this removed a
+  // view, not a pipeline.
+  assert.doesNotMatch(panelJs, /agentActivityLines/,
+    'the troubleshooting tail and its call site are gone');
+  assert.doesNotMatch(panelJs, /TROUBLESHOOTING_AGENT_LINES/,
+    'and the depth constant went with it');
+  assert.match(panelJs, /d\.agentLog|s\.agentLog|agentLog/,
+    'agentLog itself still feeds the brain window');
 });

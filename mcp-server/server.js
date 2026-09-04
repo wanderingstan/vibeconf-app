@@ -2702,6 +2702,16 @@ server.tool(
     if (data?.reason === 'chat-space-unreachable') {
       return { content: [{ type: "text", text: `⚠️ Couldn't post to chat: this meeting's chat is a Google Chat space the bot can't access. SAY IT ALOUD instead (the participants can't get it from you in text here). If it was a link/snippet, read or describe it verbally. (To fix for future calls, have the organizer create the meeting from a personal @gmail account.)` }] };
     }
+    // A TIMEOUT is not a failure — it means the app stopped waiting, not that the
+    // send stopped. The send flow keeps running and the message usually lands
+    // (#572: five timed-out sends on the 2026-08-27 call were all in the chat).
+    // Resending is the natural reaction and the wrong one: it is what put one
+    // long assessment into the call chat three times, in front of everyone. So
+    // say plainly that this is unknown-not-failed, and that read_chat — not
+    // another send — is how to find out.
+    if (data?.error === 'Chat operation timed out') {
+      return { content: [{ type: "text", text: `⚠️ Timed out waiting for confirmation — but the message was probably still posted. DO NOT send it again; a resend posts it twice in front of the call. If you need to know, call read_chat and look for it before doing anything else.` }] };
+    }
     return { content: [{ type: "text", text: `Error sending chat: ${data?.error || "unknown"}` }] };
   }
 );

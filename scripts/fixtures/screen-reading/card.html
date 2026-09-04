@@ -1,0 +1,66 @@
+<!doctype html>
+<!--
+  card.html — the calibrated legibility card for screen-reading-test.mjs (#673).
+
+  WHY CALIBRATED px ROWS rather than one big nonce: whiteboard-e2e-test.mjs
+  already proves a share ARRIVES, using a large heading. That answers "is the
+  pipeline connected" and says nothing about "can the bot READ a student's
+  editor", which is the actual complaint. A student's terminal is 12-14px, and
+  12px is exactly where the answer flips.
+
+  Every row carries its own nonce, so a vision check cannot pass by recognising
+  the sentence shape at a size it cannot actually resolve — it has to read the
+  digits. Same reason the rows are otherwise identical: only the size varies, so
+  a pass at 12px and a fail at 10px is a statement about resolution and nothing
+  else.
+
+  Sizes are ABSOLUTE px and must stay that way. The window this renders in does
+  not change them, it only changes how much empty space surrounds them — which
+  is the point, since what determines legibility is text px relative to the
+  ENCODED FRAME width, exactly as on a student's real screen.
+-->
+<meta charset="utf-8">
+<title>Vibeconf screen-reading calibration card</title>
+<style>
+  body { margin: 0; background: #1e1e1e; color: #e6e6e6;
+         font-family: ui-monospace, SFMono-Regular, Menlo, monospace; padding: 20px; }
+  h1 { font: 600 20px system-ui; margin: 0 0 14px; color: #7fd1ff; }
+  .row { margin: 0 0 9px; white-space: nowrap; overflow: hidden; }
+  .lbl { color: #8a8a8a; font-size: 11px; display: inline-block; width: 46px; }
+  .err { color: #ff6b6b; } .ok { color: #6bff9e; } .warn { color: #ffd76b; }
+</style>
+
+<h1>VIBECONF SCREEN-READING CALIBRATION</h1>
+
+<!-- Each row's trailing token is what the vision check must actually read. -->
+<div class="row"><span class="lbl">10px</span><span style="font-size:10px">npm ERR! ECONNREFUSED 127.0.0.1:5432 — check_db(pool) failed — TOKEN-10-<span class="n10">000000</span></span></div>
+<div class="row"><span class="lbl">11px</span><span style="font-size:11px">npm ERR! ECONNREFUSED 127.0.0.1:5432 — check_db(pool) failed — TOKEN-11-<span class="n11">000000</span></span></div>
+<div class="row"><span class="lbl">12px</span><span style="font-size:12px">npm ERR! ECONNREFUSED 127.0.0.1:5432 — check_db(pool) failed — TOKEN-12-<span class="n12">000000</span></span></div>
+<div class="row"><span class="lbl">13px</span><span style="font-size:13px">npm ERR! ECONNREFUSED 127.0.0.1:5432 — check_db(pool) failed — TOKEN-13-<span class="n13">000000</span></span></div>
+<div class="row"><span class="lbl">14px</span><span style="font-size:14px">npm ERR! ECONNREFUSED 127.0.0.1:5432 — check_db(pool) failed — TOKEN-14-<span class="n14">000000</span></span></div>
+<div class="row"><span class="lbl">16px</span><span style="font-size:16px">npm ERR! ECONNREFUSED 127.0.0.1:5432 — TOKEN-16-<span class="n16">000000</span></span></div>
+<div class="row"><span class="lbl">18px</span><span style="font-size:18px">npm ERR! ECONNREFUSED — TOKEN-18-<span class="n18">000000</span></span></div>
+
+<hr style="border:0;border-top:1px solid #444;margin:16px 0">
+
+<div style="font-size:13px;line-height:1.6">
+  <div><span class="err">✖ FAIL</span> tests/auth.test.mjs:212 — expected <span class="ok">200</span> got <span class="err">401</span></div>
+  <div><span class="warn">⚠</span> WARN unused import 'useMemo' at src/App.tsx:7</div>
+  <div>$ git commit -m "fix: token refresh race" &amp;&amp; git push origin HEAD</div>
+</div>
+
+<hr style="border:0;border-top:1px solid #444;margin:16px 0">
+
+<!-- The control: if even THIS is unreadable the share never arrived, which is a
+     different failure from "arrived but too small to read", and the test says so. -->
+<div style="font:700 44px system-ui;letter-spacing:2px">CONTROL-<span class="ctl">000000</span></div>
+
+<script>
+  // Nonces come from the query string so each run is unique and a vision model
+  // cannot pass from memory of a previous run's image.
+  const q = new URLSearchParams(location.search);
+  const stamp = (q.get('stamp') || '000000').replace(/[^A-Za-z0-9]/g, '').slice(0, 8) || '000000';
+  for (const cls of ['n10', 'n11', 'n12', 'n13', 'n14', 'n16', 'n18', 'ctl']) {
+    for (const el of document.querySelectorAll('.' + cls)) el.textContent = stamp;
+  }
+</script>

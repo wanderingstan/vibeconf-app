@@ -1,0 +1,93 @@
+<!doctype html>
+<!--
+  terminal.html — a student's terminal, working through a git problem, in four
+  steps. Drives the STALENESS half of screen-reading-test.mjs (#673).
+
+  WHY A SEQUENCE rather than one change: a single before/after can pass on luck
+  (one poll happened to be in flight). What the bot has to survive is a student
+  working — several changes in a row, minutes apart, with nobody narrating. Each
+  step is a state a real student actually gets stuck in, and each carries its own
+  nonce so "the bot saw step 3" is unambiguous rather than inferred from the
+  screen merely having changed.
+
+  WHY GIT ERRORS specifically: it is the case Bethany described. The student does
+  not know what they are looking at, so they do not know what to say out loud —
+  which is exactly why the bot cannot wait to be told, and why speech is the
+  wrong trigger for looking.
+
+  Step is chosen by ?step=N&stamp=XXXX. Rendering is deliberately plain: this
+  stands in for a terminal, and its font sizes are the ones a student actually
+  has (13px), not a size chosen to make the test pass.
+-->
+<meta charset="utf-8">
+<title>Vibeconf staleness fixture — terminal</title>
+<style>
+  body { margin: 0; background: #0c0c0c; color: #d4d4d4;
+         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+         font-size: 13px; line-height: 1.55; padding: 18px; }
+  .p { color: #6bff9e; }        /* prompt */
+  .e { color: #ff6b6b; }        /* error */
+  .h { color: #ffd76b; }        /* hint */
+  .d { color: #8a8a8a; }        /* dim */
+  .step { position: fixed; top: 10px; right: 16px; font-size: 12px; color: #7fd1ff; }
+  pre { margin: 0; white-space: pre-wrap; }
+</style>
+
+<div class="step" id="badge"></div>
+<pre id="out"></pre>
+
+<script>
+  const q = new URLSearchParams(location.search);
+  const step = Math.max(1, Math.min(4, parseInt(q.get('step') || '1', 10) || 1));
+  const stamp = (q.get('stamp') || '000000').replace(/[^A-Za-z0-9]/g, '').slice(0, 8) || '000000';
+  // The nonce the vision check reads. Per-step, so seeing step 2's screen cannot
+  // be mistaken for still seeing step 1's.
+  const nonce = `STEP${step}-${stamp}`;
+
+  const steps = {
+    1: `<span class="p">student@laptop</span> project % git push origin main
+To github.com:student/project.git
+ <span class="e">! [rejected]</span>        main -> main (non-fast-forward)
+<span class="e">error: failed to push some refs to 'github.com:student/project.git'</span>
+<span class="h">hint: Updates were rejected because the tip of your current branch is behind</span>
+<span class="h">hint: its remote counterpart. Integrate the remote changes before pushing again.</span>
+
+<span class="d">-- ${nonce} --</span>`,
+
+    2: `<span class="p">student@laptop</span> project % git pull
+Auto-merging src/App.tsx
+<span class="e">CONFLICT (content): Merge conflict in src/App.tsx</span>
+<span class="e">Automatic merge failed; fix conflicts and then commit the result.</span>
+
+<span class="p">student@laptop</span> project % git status
+You have unmerged paths.
+  <span class="d">(fix conflicts and run "git commit")</span>
+Unmerged paths:
+  <span class="e">both modified:   src/App.tsx</span>
+
+<span class="d">-- ${nonce} --</span>`,
+
+    3: `<span class="p">student@laptop</span> project % git add src/App.tsx
+<span class="p">student@laptop</span> project % git commit
+<span class="e">error: Committing is not possible because you have unmerged files.</span>
+<span class="h">hint: Fix them up in the work tree, and then use 'git add/rm &lt;file&gt;'</span>
+<span class="e">fatal: Exiting because of an unresolved conflict.</span>
+
+<span class="d">&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD still present at src/App.tsx:41</span>
+
+<span class="d">-- ${nonce} --</span>`,
+
+    4: `<span class="p">student@laptop</span> project % git add src/App.tsx
+<span class="p">student@laptop</span> project % git commit -m "merge: resolve App.tsx conflict"
+[main 7f3a1c9] merge: resolve App.tsx conflict
+<span class="p">student@laptop</span> project % git push origin main
+Enumerating objects: 14, done.
+To github.com:student/project.git
+   9b21e04..7f3a1c9  main -> main
+
+<span class="d">-- ${nonce} --</span>`,
+  };
+
+  document.getElementById('out').innerHTML = steps[step];
+  document.getElementById('badge').textContent = `step ${step}/4 · ${nonce}`;
+</script>

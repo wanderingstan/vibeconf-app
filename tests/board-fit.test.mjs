@@ -56,9 +56,16 @@ function makeDom({ viewport = 800, content = 1766, blocks = [] } = {}) {
   };
 }
 
-function measure(dom) {
+// The script is async now — it waits for the board to stop reflowing before
+// measuring (see TRAP 2 in board-fit.js). The stub is a STATIC dom, so heights
+// never change and it settles on the second reading.
+async function measure(dom) {
   // eslint-disable-next-line no-new-func
-  return new Function('document', `return ${MEASURE_SCRIPT}`)(dom);
+  return new Function('document', 'requestAnimationFrame', 'setTimeout', `return ${MEASURE_SCRIPT}`)(
+    dom,
+    (cb) => cb(),                       // commit the frame immediately
+    (cb) => cb(),                       // and don't really sleep between polls
+  );
 }
 
 const BOARD_BLOCKS = [
@@ -70,8 +77,8 @@ const BOARD_BLOCKS = [
   { tag: 'P', text: 'z'.repeat(120), h: 95 },
 ];
 
-test('measures the SCROLLING element, not the document — the trap', () => {
-  const m = measure(makeDom({ blocks: BOARD_BLOCKS }));
+test('measures the SCROLLING element, not the document — the trap', async () => {
+  const m = await measure(makeDom({ blocks: BOARD_BLOCKS }));
 
   // If this reads the document it sees 800 vs 800 and says it fits.
   assert.equal(m.fits, false, 'must not report fits when content overflows the scroller');
@@ -81,20 +88,20 @@ test('measures the SCROLLING element, not the document — the trap', () => {
   assert.equal(m.screenfuls, 2.21);
 });
 
-test('names the block that got cut, which is what the author can act on', () => {
-  const m = measure(makeDom({ blocks: BOARD_BLOCKS }));
+test('names the block that got cut, which is what the author can act on', async () => {
+  const m = await measure(makeDom({ blocks: BOARD_BLOCKS }));
 
   // H1 60 + H2 61 + P 95 = 216; the TABLE runs 216→981, crossing the 800 fold.
   assert.match(m.firstCutOff, /^TABLE:/);
   assert.match(m.lastFullyVisible, /^P:/);
 });
 
-test('a board that fits says so, and is not scolded', () => {
+test('a board that fits says so, and is not scolded', async () => {
   const short = [
     { tag: 'H1', text: 'Short board', h: 60 },
     { tag: 'P', text: 'a'.repeat(100), h: 95 },
   ];
-  const m = measure(makeDom({ viewport: 800, content: 800, blocks: short }));
+  const m = await measure(makeDom({ viewport: 800, content: 800, blocks: short }));
 
   assert.equal(m.fits, true);
   assert.equal(m.overflowPx, 0);
@@ -102,8 +109,8 @@ test('a board that fits says so, and is not scolded', () => {
   assert.match(formatFitReport(m), /Fits/);
 });
 
-test('the overflow report leads with the lost content, not the pixel count', () => {
-  const m = measure(makeDom({ blocks: BOARD_BLOCKS }));
+test('the overflow report leads with the lost content, not the pixel count', async () => {
+  const m = await measure(makeDom({ blocks: BOARD_BLOCKS }));
   const report = formatFitReport(m);
 
   assert.match(report, /DOES NOT FIT/);
@@ -113,8 +120,8 @@ test('the overflow report leads with the lost content, not the pixel count', () 
   assert.match(report, /cannot scroll/);
 });
 
-test('density constants are measured per element type, not assumed', () => {
-  const m = measure(makeDom({ blocks: BOARD_BLOCKS }));
+test('density constants are measured per element type, not assumed', async () => {
+  const m = await measure(makeDom({ blocks: BOARD_BLOCKS }));
 
   // A table costs far more height per character than prose; a bot budgeting
   // with one number for both will overshoot badly on a table-heavy board.
@@ -124,12 +131,12 @@ test('density constants are measured per element type, not assumed', () => {
   assert.equal(m.constants.H1.avgPx, 60);
 });
 
-test('budget only quotes what was actually on the board', () => {
+test('budget only quotes what was actually on the board', async () => {
   const proseOnly = [
     { tag: 'H1', text: 'Just prose', h: 60 },
     { tag: 'P', text: 'p'.repeat(200), h: 110 },
   ];
-  const m = measure(makeDom({ viewport: 800, content: 800, blocks: proseOnly }));
+  const m = await measure(makeDom({ viewport: 800, content: 800, blocks: proseOnly }));
   const budget = formatBudget(m);
 
   assert.match(budget, /prose ~\d+ chars\/screen/);
@@ -138,19 +145,19 @@ test('budget only quotes what was actually on the board', () => {
   assert.doesNotMatch(budget, /table/);
 });
 
-test('an unmeasurable surface returns null rather than a confident zero', () => {
+test('an unmeasurable surface returns null rather than a confident zero', async () => {
   const empty = {
     querySelectorAll: () => [],
     querySelector: () => null,
     documentElement: { clientHeight: 0, scrollHeight: 0 },
     body: { querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }), scrollTop: 0 },
   };
-  assert.equal(measure(empty), null);
+  assert.equal(await measure(empty), null);
   assert.equal(formatFitReport(null), '');
   assert.equal(formatBudget(null), '');
 });
 
-test('the measurement does not change with scroll position', () => {
+test('the measurement does not change with scroll position', async () => {
   // Same board, scrolled to the bottom. Note what actually moves: a scrolling
   // CONTAINER stays where it is — only its content slides up — so the slide's
   // own rect is unchanged and each block's rect.top drops by scrollTop. (My
@@ -158,7 +165,7 @@ test('the measurement does not change with scroll position', () => {
   // is a fair reminder that the stub is a model and can be wrong.)
   // The script adds scrollTop back, so the answer must be identical.
   const dom = makeDom({ blocks: BOARD_BLOCKS });
-  const before = measure(dom);
+  const before = await measure(dom);
 
   const slide = dom.querySelector('.wb-slide');
   const scrolled = 966;
@@ -168,8 +175,67 @@ test('the measurement does not change with scroll position', () => {
     el.getBoundingClientRect = () => ({ top: orig.top - scrolled, height: orig.height });
   }
 
-  const after = measure(dom);
+  const after = await measure(dom);
   assert.equal(after.overflowPx, before.overflowPx);
   assert.equal(after.firstCutOff, before.firstCutOff,
     'a scrolled board must not report a different cut point');
+});
+
+// ── TRAP 2: the measurement must not describe the PREVIOUS board ─────────────
+// Live on 2026-09-06, minutes after shipping the fit report: a board cut from
+// ~4,000 chars to ~1,200 still reported "3.11 screenfuls, 1687px over" and
+// quoted the OLD board's last visible line. It had already become 1.04
+// screenfuls. A stale report is worse than none — it tells the author the cut
+// failed, so they cut again, and the board was already fine.
+
+// A DOM that reflows LATE: the scroller reports the old tall height for the
+// first few readings, then settles to the new short one. Measuring eagerly
+// returns the tall (wrong) answer; waiting for it to settle returns the right one.
+function makeReflowingDom({ oldHeight = 2489, newHeight = 836, settleAfter = 3 } = {}) {
+  let reads = 0;
+  const block = {
+    tagName: 'P', textContent: 'x'.repeat(400), scrollHeight: 100, clientHeight: 100,
+    scrollTop: 0, parentElement: { closest: () => null },
+    getBoundingClientRect: () => ({ top: 0, height: 100 }), querySelectorAll: () => [],
+  };
+  const slide = {
+    tagName: 'DIV', className: 'wb-slide', clientHeight: 800, scrollTop: 0,
+    get scrollHeight() { reads += 1; return reads <= settleAfter ? oldHeight : newHeight; },
+    getBoundingClientRect: () => ({ top: 0, height: 800 }),
+    querySelectorAll: () => [block],
+  };
+  return {
+    querySelectorAll: (sel) => (sel === '*' ? [slide, block] : [block]),
+    querySelector: (sel) => (sel === '.wb-slide' ? slide : null),
+    documentElement: { clientHeight: 800, scrollHeight: 800 },
+    body: { querySelectorAll: () => [block], getBoundingClientRect: () => ({ top: 0 }), scrollTop: 0 },
+  };
+}
+
+test('waits for the board to stop reflowing before measuring', async () => {
+  const m = await measure(makeReflowingDom());
+
+  // The eager answer is 2489px (3.11 screenfuls) — the board BEFORE the edit.
+  // Settling must yield the new, shorter board instead.
+  assert.equal(m.settled, true, 'should report having settled');
+  assert.equal(m.contentPx, 836, 'must measure the NEW board, not the previous layout');
+  assert.notEqual(m.screenfuls, 3.11, 'reporting the pre-edit board is the bug');
+});
+
+test('an unsettled measurement is flagged, not presented as fact', () => {
+  // A board that never stops changing hits the timeout. It still reports — the
+  // write must not be held up — but the caller has to say the number is suspect.
+  const unsettled = {
+    settled: false, viewportPx: 800, contentPx: 2489, overflowPx: 1689,
+    screenfuls: 3.11, fits: false, lastFullyVisible: 'P: old content', firstCutOff: null,
+    blocks: 4, constants: {},
+  };
+  const report = formatFitReport(unsettled);
+
+  assert.match(report, /DOES NOT FIT/);
+  assert.match(report, /may describe the previous/,
+    'an unsettled reading must be caveated, or it sends the author cutting a board that was fine');
+
+  // And a settled one carries no such hedge.
+  assert.doesNotMatch(formatFitReport({ ...unsettled, settled: true }), /may describe the previous/);
 });

@@ -263,25 +263,6 @@
         <input type="text" id="botName" value="" placeholder="Unnamed bot" />
       </div>
 
-      <!-- EXPERIMENT. Above the voice picker rather than below it, because it
-           REPLACES everything under it: a realtime bot never calls ElevenLabs,
-           so a voice chosen there would silently not be the voice you hear.
-           Hiding a setting that is in effect is how a bot ends up sounding like
-           something nobody can find in the UI. -->
-      <div class="field">
-        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-          <input type="checkbox" id="realtimeVoice" />
-          <span>Realtime voice <span class="helper-text">(experiment)</span></span>
-        </label>
-        <div style="font-size:11px;color:#666;margin-top:2px;line-height:1.4">
-          This bot hears the call as audio and answers in under a second, in one of
-          OpenAI's voices, with Claude feeding it facts behind the scenes. It replaces
-          the voice settings below. Needs an OpenAI key in <strong>App Settings</strong> (⌘,),
-          and audio bills per minute for as long as the bot is in a call, including
-          while nobody is talking.
-        </div>
-      </div>
-
       <!-- The SAME control as the one below, for a bot in realtime mode. One
            "Voice" field either way: showing both at once offers a choice that
            will not be used, which is how somebody picks a voice, hears a
@@ -329,6 +310,25 @@
             non-macOS doesn't leave a dangling " · ".
        --><span id="macVoicesLink"> ·
           <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a></span>
+        </div>
+      </div>
+
+      <!-- EXPERIMENT. Directly under the Voice picker it replaces: a realtime
+           bot never calls ElevenLabs, so a voice chosen above would silently not
+           be the voice you hear, and the two belong side by side. Ticking this
+           swaps the picker above for the OpenAI one — see paintRealtimeVoiceField.
+           -->
+      <div class="field">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="realtimeVoice" />
+          <span>Realtime voice <span class="helper-text">(experiment)</span></span>
+        </label>
+        <div style="font-size:11px;color:#666;margin-top:2px;line-height:1.4">
+          This bot hears the call as audio and answers in under a second, in one of
+          OpenAI's voices, with Claude feeding it facts behind the scenes. It replaces
+          the voice settings above. Needs an OpenAI key in <strong>App Settings</strong> (⌘,),
+          and audio bills per minute for as long as the bot is in a call, including
+          while nobody is talking.
         </div>
       </div>
       <!-- The language the bot LISTENS in. Not a display setting: the bot reads
@@ -432,6 +432,13 @@
             Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn't need to be a real, working email. You can also put <code>#vibeconf:&lt;this bot's name&gt;</code> in the event's title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.
           </div>
         </div>
+        <div class="field">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="sessionPerCalendarInvitees" />
+            One session per calendar meeting
+          </label>
+          <div style="font-size:11px;color:#666;margin-top:2px">Off, this bot keeps <em>one</em> session, so everyone it ever talks to shares the same context. On, a call it joined for a <em>calendar event</em> runs in its own folder named for that event's invitees — meet the same people next week and it resumes what it knew; meet different people and it doesn't. Same bot, same name, same personality either way (the <code>CLAUDE.md</code> personality below is copied into each new folder, then free to drift). The key is the invitee <em>emails</em>, never the names people type into Meet. A call with no calendar event behind it is unaffected. Note: setting a Working Directory under <strong>Launched Claude</strong> below overrides this.</div>
+        </div>
       </div>
 
       <div class="section">
@@ -455,13 +462,19 @@
           <input type="text" id="agentSessionId" placeholder="(the bot’s name)" />
           <div style="font-size:11px;color:#666;margin-top:2px">The bot keeps <em>one</em> ongoing session and resumes it every launch, instead of starting fresh and forgetting the last call. It follows the bot's name on its own, so you shouldn't need to touch this — rename the bot and the session is renamed too, keeping its history. The name is shown because it's a real handle: <code>claude --resume &lt;name&gt;</code> in the working folder above reaches the same session. Type a name here to take it over (it then stops following the bot's name), or paste a session id to pin this bot to a specific existing session; clear the field to go back to following. Sessions belong to the working directory above, so changing that starts a new one.</div>
           <div style="font-size:11px;color:#666;margin-top:6px" id="agentSessionStatus">…</div>
+          <!-- A name that isn't the bot's name is legal (see above) but is
+               almost always a typo: the field has stopped following renames, so
+               the bot resumes a session belonging to some other name. Loud
+               enough to notice, soft enough to ignore on purpose — pinning a
+               session id here is a real thing to want. -->
+          <div id="agentSessionMismatch" class="session-mismatch" style="display:none"></div>
         </div>
         <div class="field">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-            <input type="checkbox" id="sessionPerCalendarInvitees" />
-            One session per calendar meeting
+            <input type="checkbox" id="dangerousMode" />
+            Dangerously bypass permissions
           </label>
-          <div style="font-size:11px;color:#666;margin-top:2px">Off, this bot keeps <em>one</em> session, so everyone it ever talks to shares the same context. On, a call it joined for a <em>calendar event</em> runs in its own folder named for that event's invitees — meet the same people next week and it resumes what it knew; meet different people and it doesn't. Same bot, same name, same personality either way (the <code>CLAUDE.md</code> below is copied into each new folder, then free to drift). The key is the invitee <em>emails</em>, never the names people type into Meet. A call with no calendar event behind it is unaffected. Note: setting a Working Directory above overrides this.</div>
+          <div style="font-size:11px;color:#c00;margin-top:2px">Launches Claude with --dangerously-skip-permissions. Use with caution. Applies to all bots on this machine.</div>
         </div>
         <div class="field">
           <label for="agentClaudeMd">Personality (CLAUDE.md)</label>
@@ -471,13 +484,6 @@
             <button id="saveAgentClaudeMdBtn" class="popout-btn">Save personality</button>
             <span id="agentClaudeMdStatus" style="font-size:11px;color:#81c995"></span>
           </div>
-        </div>
-        <div class="field">
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-            <input type="checkbox" id="dangerousMode" />
-            Dangerously bypass permissions
-          </label>
-          <div style="font-size:11px;color:#c00;margin-top:2px">Launches Claude with --dangerously-skip-permissions. Use with caution. Applies to all bots on this machine.</div>
         </div>
       </div>
 

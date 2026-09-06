@@ -108,6 +108,24 @@ h2 {
   border-color: #8ab4f8;
 }
 
+/* A Session name/id that has drifted off the bot's own name. Warning, not
+   error: pinning another session here is legal, so this is amber rather than
+   red, and it never blocks the write. */
+.field input.is-warning:not([type="checkbox"]) {
+  border-color: #fdd663;
+}
+
+.field input.is-warning:focus {
+  border-color: #fdd663;
+}
+
+.session-mismatch {
+  font-size: 11px;
+  color: #fdd663;
+  margin-top: 6px;
+  line-height: 1.4;
+}
+
 button {
   padding: 8px 16px;
   border-radius: 20px;

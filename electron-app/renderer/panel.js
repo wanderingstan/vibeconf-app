@@ -2237,6 +2237,9 @@ function loadConfigIntoControls() {
   // WOULD be used rather than a vague "(auto)" — same reason the field is
   // pinned on first use: the name is the thing you can type at `claude --resume`.
   if (agentSessionIdInput) agentSessionIdInput.placeholder = result?.botName || '(the bot’s name)';
+  // The stored value and the bot name are both known only now, so this is the
+  // first point at which a mismatch can be judged.
+  updateAgentSessionMismatch();
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
   if (emojiSetInput && result?.emojiSet) {
     // emojiSet has two OPEN forms — `font:<Family>` and `dir:<path>` — and
@@ -3334,6 +3337,8 @@ botNameInput.addEventListener('change', () => {
     api.send('to-meet', { action: 'set-config', payload: { botName: typed } });
     updateBotNameBig();
     refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
+    // A rename can turn a matching session name into a mismatched one.
+    updateAgentSessionMismatch();
     return;
   }
   // Emptying the field CLEARS the stored name rather than persisting the
@@ -3355,6 +3360,7 @@ botNameInput.addEventListener('change', () => {
     if (info?.name) botNameInput.placeholder = info.name;
     updateBotNameBig();
     refreshBotIdentity();
+    updateAgentSessionMismatch();
   }).catch(() => {
     currentBotName = 'Unnamed bot';
     botNameDisplay = null;
@@ -3663,6 +3669,41 @@ async function refreshAgentSession() {
 }
 refreshAgentSession();
 
+// A typed Session name/id that isn't the bot's own name. It is a legal thing to
+// do — the field's whole point is that you CAN take it over — but it is far more
+// often a typo, and the failure is silent: the bot quietly resumes (or starts)
+// somebody else's session and stops following renames. So: amber, never
+// blocking, and worded for the two different things a mismatch can mean.
+function updateAgentSessionMismatch() {
+  // Looked up per call, not hoisted into a const: this runs from loadSettings,
+  // which can fire before this part of the file has been evaluated.
+  const agentSessionMismatchEl = document.getElementById('agentSessionMismatch');
+  if (!agentSessionIdInput || !agentSessionMismatchEl) return;
+  const typed = agentSessionIdInput.value.trim();
+  const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  // The name to compare against, freshest first. The field's own placeholder is
+  // the name as of the last settings load, and its "(the bot’s name)" fallback
+  // is not a name at all — comparing against that would warn on everything.
+  const placeholder = agentSessionIdInput.placeholder === '(the bot’s name)' ? '' : agentSessionIdInput.placeholder;
+  const botName = (botNameInput?.value.trim() || placeholder || currentBotName || '').trim();
+  const clean = () => {
+    agentSessionMismatchEl.style.display = 'none';
+    agentSessionMismatchEl.textContent = '';
+    agentSessionIdInput.classList.remove('is-warning');
+  };
+  // Empty = following the bot's name, which is the state this warns you left.
+  if (!typed || !botName || typed.toLowerCase() === botName.toLowerCase()) { clean(); return; }
+  agentSessionMismatchEl.textContent = SESSION_ID_RE.test(typed)
+    ? `Pinned to a session id, not to “${botName}”. This bot resumes that session and no longer follows renames — clear the field to go back to following its name.`
+    : `Doesn’t match this bot’s name (“${botName}”). This bot will use the session named “${typed}” instead, and renaming the bot won’t move it — clear the field to go back to following its name.`;
+  agentSessionMismatchEl.style.display = '';
+  agentSessionIdInput.classList.add('is-warning');
+}
+
+// On input, not just change: the warning is about what you are typing, and
+// waiting for blur means the field looks fine right up until you leave it.
+agentSessionIdInput?.addEventListener('input', updateAgentSessionMismatch);
+
 agentSessionIdInput?.addEventListener('change', async () => {
   const value = agentSessionIdInput.value.trim();
   // Typing here takes the field over, so renaming the bot no longer drags the
@@ -3671,6 +3712,7 @@ agentSessionIdInput?.addEventListener('change', async () => {
   await setConfig('agentSessionAuto', !value);
   await setConfig('agentSession', value);
   refreshAgentSession();
+  updateAgentSessionMismatch();
 });
 
 claudeModelInput.addEventListener('change', () => {

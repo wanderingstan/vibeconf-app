@@ -25,6 +25,7 @@ const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 // than throwing.
 let adoptSessionAsBot = null;
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
+const { MEASURE_SCRIPT: BOARD_FIT_SCRIPT } = require('./board-fit.js');
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
 const recordRegion = require('./record-region.js');
@@ -2610,6 +2611,20 @@ const localServer = new globalThis.LocalServer({
     const result = await evalInShare(wc, expression);
     console.log('[local-server] eval_share →', result.ok ? 'ok' : `error: ${result.error}`);
     return result;
+  },
+  // Measure how much of the board fits on the shared surface (#644). Returns
+  // null rather than an error when there is nothing to measure: this rides on
+  // every whiteboard write, and a board write must not fail because the bot
+  // happens not to be presenting yet.
+  onMeasureBoardFit: async () => {
+    const wc = shareWebContents();
+    if (!wc) return null;
+    try {
+      const result = await evalInShare(wc, BOARD_FIT_SCRIPT);
+      return result?.ok ? (result.result ?? null) : null;
+    } catch {
+      return null;
+    }
   },
   // Locate an element by description on the share surface (#244).
   onFindShareElement: async ({ description, max_results } = {}) => {

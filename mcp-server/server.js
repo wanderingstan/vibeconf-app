@@ -30,6 +30,8 @@ import { homedir } from "os";
 import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
 import { formatCallClock } from './call-time.js';
 import { parseMeetRoomId } from "./meet-room.js";
+import boardFit from "../electron-app/board-fit.js";
+const { formatFitReport, formatBudget } = boardFit;
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
@@ -1612,7 +1614,13 @@ server.tool(
         }
       } catch { /* best-effort — a failed status check shouldn't block the write confirmation */ }
 
-      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).${presenceNote}` }] };
+      // How much of it fit (#644). The write reaching the board says nothing
+      // about whether the room can READ it: content past the fold is invisible
+      // and nobody in the room can scroll a video stream. Reported on the same
+      // round trip, so the bot can split the board without measuring first.
+      const fitNote = formatFitReport(wb.fit) + (wb.fit && !wb.fit.fits ? formatBudget(wb.fit) : "");
+
+      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).${presenceNote}${fitNote}` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to update"}` }] };
     }

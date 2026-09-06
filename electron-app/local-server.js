@@ -119,7 +119,7 @@ function namesDiffer(a, b) {
 })();
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -180,6 +180,10 @@ class LocalServer {
     this.onRecord = onRecord || (async () => ({ ok: false, code: 'unsupported' })); // #209
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
     this.onEvalShare = onEvalShare || (async () => ({ ok: false, error: 'not implemented' }));
+    // Best-effort board measurement (#644). Defaults to "cannot measure" rather
+    // than throwing: a host that has not wired it up must still be able to
+    // write to the whiteboard.
+    this.onMeasureBoardFit = onMeasureBoardFit || (async () => null);
     this.onFindShareElement = onFindShareElement || (async () => ({ ok: false, error: 'not implemented' }));
     this.onReadShareConsole = onReadShareConsole || (async () => ({ ok: false, error: 'not implemented' }));
     this.onReadShareNetwork = onReadShareNetwork || (async () => ({ ok: false, error: 'not implemented' }));
@@ -5742,6 +5746,21 @@ class LocalServer {
       // it — the two failures are independent and the bot needs to tell them
       // apart ("it didn't save" vs "it saved and nobody can see it").
       const readable = this.boardReadHealthy !== false;
+      // How much of it actually fit (#644). Measured in the share surface AFTER
+      // the write has rendered, so the author learns on the same round trip
+      // whether the room can see what it just wrote — no extra call, and a
+      // running sense of the budget accumulates over a call for free.
+      //
+      // Best-effort by design: nothing is being shared, the surface is busy, or
+      // the measurement throws — none of those should turn a successful board
+      // write into a failure. A missing measurement is silence, not a lie.
+      let fit = null;
+      if (delivered !== false) {
+        try {
+          fit = await this.onMeasureBoardFit();
+        } catch { /* not measurable; say nothing rather than guess */ }
+      }
+
       results.whiteboard = {
         ok: delivered !== false,
         delivered,
@@ -5749,6 +5768,7 @@ class LocalServer {
         version: this.whiteboard.version,
         lastModified: now,
         lastEditor: data.sender,
+        ...(fit ? { fit } : {}),
         ...(delivered === false ? { error: push.error } : {}),
       };
     }

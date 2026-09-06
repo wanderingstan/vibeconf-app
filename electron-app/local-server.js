@@ -118,6 +118,8 @@ function namesDiffer(a, b) {
   console.error = wrap(console.error.bind(console));
 })();
 
+const { formatFitReport, formatBudget } = require('./board-fit.js');
+
 class LocalServer {
   constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
@@ -5754,10 +5756,21 @@ class LocalServer {
       // Best-effort by design: nothing is being shared, the surface is busy, or
       // the measurement throws — none of those should turn a successful board
       // write into a failure. A missing measurement is silence, not a lie.
+      // NOTE: the note is FORMATTED here, on the Electron side, and shipped as a
+      // finished string. mcp-server/ is copied into the package as extraResources
+      // and cannot reach into electron-app/ — importing board-fit.js from there
+      // resolves in the repo and then dies at runtime in the packaged app
+      // (ERR_MODULE_NOT_FOUND), taking the whole MCP server down with it. Passing
+      // the rendered string also avoids the "keep the two copies in sync" burden
+      // that the other cross-boundary helpers carry.
       let fit = null;
+      let fitNote = '';
       if (delivered !== false) {
         try {
           fit = await this.onMeasureBoardFit();
+          if (fit) {
+            fitNote = formatFitReport(fit) + (fit.fits ? '' : formatBudget(fit));
+          }
         } catch { /* not measurable; say nothing rather than guess */ }
       }
 
@@ -5769,6 +5782,7 @@ class LocalServer {
         lastModified: now,
         lastEditor: data.sender,
         ...(fit ? { fit } : {}),
+        ...(fitNote ? { fitNote } : {}),
         ...(delivered === false ? { error: push.error } : {}),
       };
     }

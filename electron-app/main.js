@@ -7007,14 +7007,48 @@ function ensureMeetingWorkdir(invitees) {
     }
     // COPIED from the bot's own folder, not imported from it. A sibling cannot
     // read its way up the tree — that is the point of siblings — so the
-    // personality has to be physically present here. It then belongs to this
-    // meeting and can drift: notes about these people, gathered over weeks, is
-    // most of what the feature is for.
+    // personality has to be physically present here.
+    //
+    // Re-copied on EVERY call, not once at creation (#697). Copy-once meant a
+    // meeting folder froze the personality as of the day it was created: a week
+    // of edits to agent/CLAUDE.md reached the bot's own session and no meeting
+    // session at all, silently, because nothing on the lookup path connects the
+    // two. The report that found this had six sessions running August rules.
+    //
+    // Deliberately a copy and NOT a symlink, which is the obvious fix and the
+    // wrong one. The bot has Write and Edit auto-allowed in this directory (and
+    // in dangerous mode, which headless requires, no permission check at all),
+    // so a link would turn every meeting folder into a write path back to the
+    // shared file: one participant talking the bot into editing its own
+    // personality would rewrite it for everyone, past and future. Claude Code
+    // refuses to write through a symlink, but its refusal names the target path
+    // as the place to write instead, which is a hint, not a wall. A copy tells
+    // the bot nothing about the shared file at all.
+    //
+    // This is freshness, NOT enforcement: a bot that goes looking can still
+    // reach ../../agent/CLAUDE.md, and re-copying would then deliver that edit
+    // to every folder. The only actual boundary is OS-level, the source owned by
+    // a user the bot is not. See #697.
+    //
+    // Anything the bot should keep about these people goes in the meeting
+    // folder's other files (calls/<call-id>/, notes), never here: this file is
+    // overwritten now, and per-meeting drift lives everywhere except it.
     const claudeMdPath = path.join(dir, 'CLAUDE.md');
-    if (!fs.existsSync(claudeMdPath)) {
-      const source = path.join(aw.agentDirFor(app.getPath('userData')), 'CLAUDE.md');
-      let seed = '';
-      try { seed = fs.readFileSync(source, 'utf-8'); } catch { seed = aw.defaultClaudeMd(); }
+    let existing = null;
+    try { existing = fs.lstatSync(claudeMdPath); } catch { /* absent, seed it below */ }
+    const source = path.join(aw.agentDirFor(app.getPath('userData')), 'CLAUDE.md');
+    let seed = null;
+    try { seed = fs.readFileSync(source, 'utf-8'); } catch { /* no source personality */ }
+    // Only fall back to the built-in default for a folder that has nothing yet.
+    // Doing it whenever the source is unreadable would overwrite a good copy
+    // with boilerplate on a transient read error.
+    if (seed === null && !existing) seed = aw.defaultClaudeMd();
+    if (seed !== null) {
+      // lstat, not existsSync, so a pre-existing SYMLINK is replaced rather than
+      // written through. Boxes that applied the symlink workaround by hand land
+      // back on a copy on the next call instead of having the write follow the
+      // link into the shared file.
+      if (existing && existing.isSymbolicLink()) fs.unlinkSync(claudeMdPath);
       fs.writeFileSync(claudeMdPath, seed);
     }
     // Trust is recorded PER DIRECTORY, so a folder created today is untrusted

@@ -301,7 +301,7 @@ test('the MCP side consumes a finished value and never reaches across the packag
 });
 
 test('the watch is a mode, off by default, and only runs in a call', () => {
-  assert.match(schema, /watchSharedScreen:[\s\S]{0,200}default: false/);
+  assert.match(schema, /watchSharedScreen:[\s\S]{0,200}default: true/);
   assert.match(main, /prefValue\('watchSharedScreen'\) === true && localServer\.callStatus === 'in-call'/);
   assert.match(main, /meetView\.webContents\.capturePage\(\)[\s\S]{0,900}grayGridFromBitmap/,
     'the pixels come from the SAME capture get_call_screenshot uses, resized in-process');

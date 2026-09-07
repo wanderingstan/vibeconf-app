@@ -232,7 +232,7 @@ const PREFERENCES = {
   },
   watchSharedScreen: {
     type: 'boolean',
-    default: false,
+    default: true,
     label: 'Watch a shared screen for changes',
     description:
       'While in a call, sample the bot\'s Meet view every couple of seconds and '
@@ -241,9 +241,11 @@ const PREFERENCES = {
       + 'asked to share again (#673). The watching itself is arithmetic over a '
       + '320x180 grid (electron-app/screen-settle.js): no vision model, no network, '
       + 'no tokens. What it gates is the expensive look, which the agent takes only '
-      + 'when the picture actually moved. OFF by default: it is the right mode for '
-      + '"coach me through my screen" and pointless noise for a normal meeting. '
-      + 'Applies immediately, including mid-call.',
+      + 'when the picture actually moved. ON by default (Stan, 7 Sept): a student '
+      + 'who needs this would never find a setting to turn it on, so the failure it '
+      + 'prevents is silent while the cost of it being wrong is merely noise we can '
+      + 'hear and switch off. Turn it OFF for a meeting where someone presents slides '
+      + 'and nobody wants a remark on each one. Applies immediately, including mid-call.',
     requiresRestart: false,
   },
   recordCallAudio: {

@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <!-- Chrome icons as monochrome SVG (generated; see scripts/gen-ui-icons.mjs).
        Loaded BEFORE panel.css so the per-button sizing there wins. -->
+  <link rel="stylesheet" href="fonts.css" />
   <link rel="stylesheet" href="ui-icons.css" />
   <link rel="stylesheet" href="panel.css" />
 </head>
@@ -273,7 +274,7 @@
           <input type="checkbox" id="realtimeVoice" />
           <span>Realtime voice <span class="helper-text">(experiment)</span></span>
         </label>
-        <div style="font-size:11px;color:#666;margin-top:2px;line-height:1.4">
+        <div style="font-size:11px;color:#6B5566;margin-top:2px;line-height:1.4">
           This bot hears the call as audio and answers in under a second, in one of
           OpenAI's voices, with Claude feeding it facts behind the scenes. It replaces
           the voice settings below. Needs an OpenAI key in <strong>App Settings</strong> (⌘,),
@@ -288,8 +289,8 @@
            different one, and reasonably calls it broken. -->
       <div class="field" id="realtimeVoiceNameField" style="display:none">
         <label for="realtimeVoiceName">Voice</label>
-        <select id="realtimeVoiceName" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit"></select>
-        <div style="font-size:11px;color:#666;margin-top:2px">
+        <select id="realtimeVoiceName"></select>
+        <div style="font-size:11px;color:#6B5566;margin-top:2px">
           OpenAI's voices, not ElevenLabs'. A realtime bot never calls ElevenLabs, so these
           are the only voices it can use. No cloning, and the choice is fixed for the length
           of a call. Takes effect the next time the bot joins.
@@ -298,17 +299,17 @@
 
       <div class="field" id="unifiedVoiceField">
         <label for="unifiedVoice">Voice</label>
-        <select id="unifiedVoice" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
+        <select id="unifiedVoice">
           <option value="">Loading voices…</option>
         </select>
         <!-- Mid-call the audible audition is skipped (#394) — the human is
              already listening to the live call — so this note is the only
              feedback that a voice pick registered. Shown briefly, then cleared. -->
-        <div id="voiceSetNote" style="display:none;font-size:11px;color:#81c995;margin-top:4px;line-height:1.4"></div>
+        <div id="voiceSetNote" style="display:none;font-size:11px;color:#4A3140;margin-top:4px;line-height:1.4"></div>
         <!-- Why ElevenLabs voices are missing, when we know. A scoped key that
              lacks `voices_read` 401s the list call while TTS still works, which
              otherwise looks identical to "no key set". -->
-        <div id="elevenVoiceError" style="display:none;font-size:11px;color:#fdd663;margin-top:4px;line-height:1.4"></div>
+        <div id="elevenVoiceError" style="display:none;font-size:11px;color:#B31199;margin-top:4px;line-height:1.4"></div>
         <!-- The way in when the LIST is unavailable. A key scoped without
              `voices_read` can synthesise but not enumerate, so pasting an id is
              the only route to an ElevenLabs voice — which makes this belong
@@ -320,15 +321,15 @@
         <div class="field" id="ttsVoiceIdField" style="display:none;margin-top:8px">
           <label for="ttsVoiceId">ElevenLabs Voice ID</label>
           <input type="text" id="ttsVoiceId" placeholder="CwhRBWXzGAHq8TQ4Fs17" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Paste the id from the end of the voice's page URL on elevenlabs.io. Overrides the picker above.</div>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">Paste the id from the end of the voice's page URL on elevenlabs.io. Overrides the picker above.</div>
         </div>
-        <div style="font-size:11px;color:#666;margin-top:2px">
+        <div style="font-size:11px;color:#6B5566;margin-top:2px">
           Every voice available right now, best first. ElevenLabs voices appear once a key is set in <strong>App Settings</strong> (⌘,); Voicebox voices when its local app is running.
-          <a href="#" id="refreshVoicesBtn" style="color:#8ab4f8;text-decoration:underline">Refresh voices</a><!--
+          <a href="#" id="refreshVoicesBtn" style="color:#9F0BA4;text-decoration:underline">Refresh voices</a><!--
             The separator lives INSIDE the span with the link, so hiding it on
             non-macOS doesn't leave a dangling " · ".
        --><span id="macVoicesLink"> ·
-          <a href="#" id="openVoiceSettingsBtn" style="color:#8ab4f8;text-decoration:underline">Download more macOS voices…</a></span>
+          <a href="#" id="openVoiceSettingsBtn" style="color:#9F0BA4;text-decoration:underline">Download more macOS voices…</a></span>
         </div>
       </div>
       <!-- The language the bot LISTENS in. Not a display setting: the bot reads
@@ -341,7 +342,7 @@
            still be set via the preference or set_caption_language. -->
       <div class="field">
         <label for="captionLanguage">Language spoken in calls</label>
-        <select id="captionLanguage" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
+        <select id="captionLanguage">
           <option value="">Don't change it</option>
           <option value="en-US">English</option>
           <option value="en-GB">English (UK)</option>
@@ -363,12 +364,12 @@
           <option value="tr-TR">Turkish</option>
           <option value="vi-VN">Vietnamese</option>
         </select>
-        <div style="font-size:11px;color:#666;margin-top:2px">What the bot listens for. Set this to the language people actually speak in the call.</div>
+        <div style="font-size:11px;color:#6B5566;margin-top:2px">What the bot listens for. Set this to the language people actually speak in the call.</div>
       </div>
 
       <div class="field">
         <label for="emojiSet">Emoji style</label>
-        <select id="emojiSet" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit">
+        <select id="emojiSet">
           <option value="native">Native (OS font)</option>
           <option value="twemoji">Twemoji (flat)</option>
           <option value="openmoji">OpenMoji (outlined)</option>
@@ -394,9 +395,9 @@
         <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
           <button id="chooseAvatarBgBtn" class="popout-btn">Choose image…</button>
           <button id="clearAvatarBgBtn" class="popout-btn" style="display:none">Clear</button>
-          <span id="avatarBgStatus" style="font-size:11px;color:#81c995"></span>
+          <span id="avatarBgStatus" style="font-size:11px;color:#4A3140"></span>
         </div>
-        <div style="font-size:11px;color:#666;margin-top:4px">
+        <div style="font-size:11px;color:#6B5566;margin-top:4px">
           Cropped to 16:9, so keep the subject centred. SVG, PNG, JPEG, GIF or WebP.
         </div>
       </div>
@@ -428,7 +429,7 @@
         <div class="field" id="calendarIdentityEmailField" style="margin-top:16px">
           <label for="calendarIdentityEmail">Calendar invite email</label>
           <input type="text" id="calendarIdentityEmail" value="" placeholder="e.g. jimmy@example.com" />
-          <div style="font-size:11px;color:#666;margin-top:2px" id="calendarIdentityEmailCaption">
+          <div style="font-size:11px;color:#6B5566;margin-top:2px" id="calendarIdentityEmailCaption">
             Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn't need to be a real, working email. You can also put <code>#vibeconf:&lt;this bot's name&gt;</code> in the event's title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.
           </div>
         </div>
@@ -439,12 +440,12 @@
         <div class="field">
           <label for="claudeModel">Claude Model</label>
           <input type="text" id="claudeModel" placeholder="opus" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Model for the launched Claude session (passed as <code>--model</code>). Blank = <code>opus</code>. Use an alias (<code>sonnet</code>, <code>opus</code>, <code>haiku</code>) or a full model id.</div>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">Model for the launched Claude session (passed as <code>--model</code>). Blank = <code>opus</code>. Use an alias (<code>sonnet</code>, <code>opus</code>, <code>haiku</code>) or a full model id.</div>
         </div>
         <div class="field">
           <label for="claudeWorkDir">Working Directory</label>
           <input type="text" id="claudeWorkDir" placeholder="(auto: this bot's trusted folder)" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Where the bot's agent session starts. Leave blank to use this bot's own trusted folder (recommended); set a path to override.</div>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">Where the bot's agent session starts. Leave blank to use this bot's own trusted folder (recommended); set a path to override.</div>
           <div class="workdir-row" style="display:flex;align-items:center;gap:8px;margin-top:6px">
             <code id="agentWorkdirPath" class="workdir-path" title="The folder the bot's session actually starts in">…</code>
             <button id="openAgentWorkdirBtn" class="popout-btn" title="Reveal the bot's working folder in Finder">Open in Finder</button>
@@ -453,23 +454,23 @@
         <div class="field">
           <label for="agentSessionId">Session name/id</label>
           <input type="text" id="agentSessionId" placeholder="(the bot’s name)" />
-          <div style="font-size:11px;color:#666;margin-top:2px">The bot keeps <em>one</em> ongoing session and resumes it every launch, instead of starting fresh and forgetting the last call. It follows the bot's name on its own, so you shouldn't need to touch this — rename the bot and the session is renamed too, keeping its history. The name is shown because it's a real handle: <code>claude --resume &lt;name&gt;</code> in the working folder above reaches the same session. Type a name here to take it over (it then stops following the bot's name), or paste a session id to pin this bot to a specific existing session; clear the field to go back to following. Sessions belong to the working directory above, so changing that starts a new one.</div>
-          <div style="font-size:11px;color:#666;margin-top:6px" id="agentSessionStatus">…</div>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">The bot keeps <em>one</em> ongoing session and resumes it every launch, instead of starting fresh and forgetting the last call. It follows the bot's name on its own, so you shouldn't need to touch this — rename the bot and the session is renamed too, keeping its history. The name is shown because it's a real handle: <code>claude --resume &lt;name&gt;</code> in the working folder above reaches the same session. Type a name here to take it over (it then stops following the bot's name), or paste a session id to pin this bot to a specific existing session; clear the field to go back to following. Sessions belong to the working directory above, so changing that starts a new one.</div>
+          <div style="font-size:11px;color:#6B5566;margin-top:6px" id="agentSessionStatus">…</div>
         </div>
         <div class="field">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="sessionPerCalendarInvitees" />
             One session per calendar meeting
           </label>
-          <div style="font-size:11px;color:#666;margin-top:2px">Off, this bot keeps <em>one</em> session, so everyone it ever talks to shares the same context. On, a call it joined for a <em>calendar event</em> runs in its own folder named for that event's invitees — meet the same people next week and it resumes what it knew; meet different people and it doesn't. Same bot, same name, same personality either way (the <code>CLAUDE.md</code> below is copied into each new folder, then free to drift). The key is the invitee <em>emails</em>, never the names people type into Meet. A call with no calendar event behind it is unaffected. Note: setting a Working Directory above overrides this.</div>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">Off, this bot keeps <em>one</em> session, so everyone it ever talks to shares the same context. On, a call it joined for a <em>calendar event</em> runs in its own folder named for that event's invitees — meet the same people next week and it resumes what it knew; meet different people and it doesn't. Same bot, same name, same personality either way (the <code>CLAUDE.md</code> below is copied into each new folder, then free to drift). The key is the invitee <em>emails</em>, never the names people type into Meet. A call with no calendar event behind it is unaffected. Note: setting a Working Directory above overrides this.</div>
         </div>
         <div class="field">
           <label for="agentClaudeMd">Personality (CLAUDE.md)</label>
-          <div style="font-size:11px;color:#666;margin:0 0 6px">The bot's standing instructions, loaded at the start of every call. This is the <code>CLAUDE.md</code> in its working folder. Edit freely.</div>
+          <div style="font-size:11px;color:#6B5566;margin:0 0 6px">The bot's standing instructions, loaded at the start of every call. This is the <code>CLAUDE.md</code> in its working folder. Edit freely.</div>
           <textarea id="agentClaudeMd" rows="12" spellcheck="false" placeholder="(loading…)" style="width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.45;resize:vertical"></textarea>
           <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
             <button id="saveAgentClaudeMdBtn" class="popout-btn">Save personality</button>
-            <span id="agentClaudeMdStatus" style="font-size:11px;color:#81c995"></span>
+            <span id="agentClaudeMdStatus" style="font-size:11px;color:#4A3140"></span>
           </div>
         </div>
         <div class="field">
@@ -491,7 +492,7 @@
 
       <div class="section">
         <h2>Acknowledgments</h2>
-        <div style="font-size:11px;color:#666;margin-bottom:8px">
+        <div style="font-size:11px;color:#6B5566;margin-bottom:8px">
           When someone finishes speaking, the bot can play a short ack ("Mm-hmm")
           or a longer one ("Let me think about that") while the agent generates a
           real response. Below the short threshold, no ack plays at all.
@@ -499,22 +500,22 @@
         <div class="field">
           <label for="ackShortMin">Short-ack threshold (words)</label>
           <input type="number" id="ackShortMin" min="0" step="1" placeholder="20" />
-          <div style="font-size:11px;color:#666;margin-top:2px">Below this, skip the ack entirely. Default: 20.</div>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">Below this, skip the ack entirely. Default: 20.</div>
         </div>
         <div class="field">
           <label for="ackLongMin">Long-ack threshold (words)</label>
           <input type="number" id="ackLongMin" min="0" step="1" placeholder="50" />
-          <div style="font-size:11px;color:#666;margin-top:2px">At or above this, use the longer "let me think" ack. Default: 50.</div>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">At or above this, use the longer "let me think" ack. Default: 50.</div>
         </div>
         <div class="field">
           <label for="ackShortPhrases">Short ack phrases (one per line)</label>
-          <textarea id="ackShortPhrases" rows="4" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit;resize:vertical" placeholder="Mm-hmm.&#10;Okay.&#10;Got it.&#10;Mm."></textarea>
-          <div style="font-size:11px;color:#666;margin-top:2px">Bot picks one at random. The agent can also edit these mid-call via set_preference.</div>
+          <textarea id="ackShortPhrases" rows="4" style="resize:vertical" placeholder="Mm-hmm.&#10;Okay.&#10;Got it.&#10;Mm."></textarea>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">Bot picks one at random. The agent can also edit these mid-call via set_preference.</div>
         </div>
         <div class="field">
           <label for="ackLongPhrases">Long ack phrases (one per line)</label>
-          <textarea id="ackLongPhrases" rows="4" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid #5f6368;background:#303134;color:#e8eaed;font-size:12px;font-family:inherit;resize:vertical" placeholder="Let me think about that.&#10;Hmm, let me consider that.&#10;Give me a moment."></textarea>
-          <div style="font-size:11px;color:#666;margin-top:2px">Used when the user spoke a lot. Gives the agent more time to respond.</div>
+          <textarea id="ackLongPhrases" rows="4" style="resize:vertical" placeholder="Let me think about that.&#10;Hmm, let me consider that.&#10;Give me a moment."></textarea>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">Used when the user spoke a lot. Gives the agent more time to respond.</div>
         </div>
       </div>
     </div>
@@ -691,7 +692,7 @@
             <div class="field">
               <label for="websiteUrl">Website URL</label>
               <input type="text" id="websiteUrl" placeholder="https://vibeconferencing.com" />
-              <div style="font-size:11px;color:#666;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch. Applies to all bots on this machine.</div>
+              <div style="font-size:11px;color:#6B5566;margin-top:2px">Leave blank for the production default (vibeconferencing.com). Set to a Vercel preview URL to test against a feature branch. Applies to all bots on this machine.</div>
             </div>
           </div>
         </div>

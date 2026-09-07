@@ -25,7 +25,7 @@ const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 // than throwing.
 let adoptSessionAsBot = null;
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
-const { MEASURE_SCRIPT: BOARD_FIT_SCRIPT } = require('./board-fit.js');
+const { readFitScriptFor: boardFitReaderFor, FIT_VERSION_SCRIPT: BOARD_FIT_VERSION_SCRIPT } = require('./board-fit.js');
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
 const recordRegion = require('./record-region.js');
@@ -2612,15 +2612,28 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] eval_share →', result.ok ? 'ok' : `error: ${result.error}`);
     return result;
   },
-  // Measure how much of the board fits on the shared surface (#644). Returns
-  // null rather than an error when there is nothing to measure: this rides on
-  // every whiteboard write, and a board write must not fail because the bot
-  // happens not to be presenting yet.
-  onMeasureBoardFit: async () => {
+  // Read how much of the board fits from the measurement the RENDERER publishes
+  // about itself (#644, vibeconferencing#540). Returns null rather than an error
+  // when there is nothing to read: this rides on every whiteboard write, and a
+  // board write must not fail because the bot happens not to be presenting yet,
+  // or because the website build in front of us predates the publisher.
+  onMeasureBoardFit: async ({ previousVersion } = {}) => {
     const wc = shareWebContents();
     if (!wc) return null;
     try {
-      const result = await evalInShare(wc, BOARD_FIT_SCRIPT);
+      const result = await evalInShare(wc, boardFitReaderFor(previousVersion ?? null));
+      return result?.ok ? (result.result ?? null) : null;
+    } catch {
+      return null;
+    }
+  },
+  // The version stamp of the measurement currently on the board, read BEFORE a
+  // write so the read afterwards can tell the new board from the old one (#644).
+  onBoardFitVersion: async () => {
+    const wc = shareWebContents();
+    if (!wc) return null;
+    try {
+      const result = await evalInShare(wc, BOARD_FIT_VERSION_SCRIPT);
       return result?.ok ? (result.result ?? null) : null;
     } catch {
       return null;

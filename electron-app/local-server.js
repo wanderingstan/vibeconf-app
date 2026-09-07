@@ -121,7 +121,7 @@ function namesDiffer(a, b) {
 const { formatFitReport, formatBudget } = require('./board-fit.js');
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onBoardFitVersion, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -186,6 +186,7 @@ class LocalServer {
     // than throwing: a host that has not wired it up must still be able to
     // write to the whiteboard.
     this.onMeasureBoardFit = onMeasureBoardFit || (async () => null);
+    this.onBoardFitVersion = onBoardFitVersion || (async () => null);
     this.onFindShareElement = onFindShareElement || (async () => ({ ok: false, error: 'not implemented' }));
     this.onReadShareConsole = onReadShareConsole || (async () => ({ ok: false, error: 'not implemented' }));
     this.onReadShareNetwork = onReadShareNetwork || (async () => ({ ok: false, error: 'not implemented' }));
@@ -5726,6 +5727,18 @@ class LocalServer {
 
     // Handle whiteboard update
     if (data.whiteboard && typeof data.whiteboard.content === 'string') {
+      // Note the version stamp of the measurement already on the board, BEFORE
+      // overwriting it. The renderer publishes its own fit stamped with the
+      // board version it describes (#644, vibeconferencing#540), so this is what
+      // lets the read afterwards tell "this is the board I just wrote" from
+      // "this is the one before it" — instead of guessing with a timeout.
+      // Skipped when the content is unchanged: nothing will re-render, so there
+      // is no newer measurement coming and the current one is already correct.
+      const contentChanged = this.whiteboard.content !== data.whiteboard.content;
+      let fitVersionBefore = null;
+      if (contentChanged) {
+        try { fitVersionBefore = await this.onBoardFitVersion(); } catch { /* best effort */ }
+      }
       this.whiteboard.content = data.whiteboard.content;
       this.whiteboard.version++;
       this.whiteboard.lastModified = now;
@@ -5748,14 +5761,18 @@ class LocalServer {
       // it — the two failures are independent and the bot needs to tell them
       // apart ("it didn't save" vs "it saved and nobody can see it").
       const readable = this.boardReadHealthy !== false;
-      // How much of it actually fit (#644). Measured in the share surface AFTER
-      // the write has rendered, so the author learns on the same round trip
-      // whether the room can see what it just wrote — no extra call, and a
-      // running sense of the budget accumulates over a call for free.
+      // How much of it actually fit (#644). The RENDERER measures itself and
+      // publishes the answer stamped with the board version it describes
+      // (vibeconferencing#540); we read that back and accept it only when the
+      // stamp is newer than the one we noted before the write. So the author
+      // learns on the same round trip whether the room can see what it just
+      // wrote — no extra call, no polling, and no timeout standing in for an
+      // answer — and a running sense of the budget accumulates for free.
       //
-      // Best-effort by design: nothing is being shared, the surface is busy, or
-      // the measurement throws — none of those should turn a successful board
-      // write into a failure. A missing measurement is silence, not a lie.
+      // Best-effort by design: nothing is being shared, the surface is busy, the
+      // website build in front of us is older than the publisher, or the read
+      // throws — none of those should turn a successful board write into a
+      // failure. A missing measurement is silence, not a lie.
       // NOTE: the note is FORMATTED here, on the Electron side, and shipped as a
       // finished string. mcp-server/ is copied into the package as extraResources
       // and cannot reach into electron-app/ — importing board-fit.js from there
@@ -5767,7 +5784,7 @@ class LocalServer {
       let fitNote = '';
       if (delivered !== false) {
         try {
-          fit = await this.onMeasureBoardFit();
+          fit = await this.onMeasureBoardFit({ previousVersion: fitVersionBefore });
           if (fit) {
             fitNote = formatFitReport(fit) + (fit.fits ? '' : formatBudget(fit));
           }

@@ -1,0 +1,13 @@
+@font-face{font-family:'DM Sans';font-style:normal;font-weight:400;font-display:swap;src:url('fonts/DMSans-400.woff2') format('woff2');}
+@font-face{font-family:'DM Sans';font-style:normal;font-weight:500;font-display:swap;src:url('fonts/DMSans-500.woff2') format('woff2');}
+@font-face{font-family:'DM Sans';font-style:normal;font-weight:600;font-display:swap;src:url('fonts/DMSans-600.woff2') format('woff2');}
+@font-face{font-family:'DM Sans';font-style:normal;font-weight:700;font-display:swap;src:url('fonts/DMSans-700.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url('fonts/JetBrainsMono-400.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:500;font-display:swap;src:url('fonts/JetBrainsMono-500.woff2') format('woff2');}
+@font-face{font-family:'Syne';font-style:normal;font-weight:700;font-display:swap;src:url('fonts/Syne-700.woff2') format('woff2');}
+@font-face{font-family:'Syne';font-style:normal;font-weight:800;font-display:swap;src:url('fonts/Syne-800.woff2') format('woff2');}
+
+/* Vendored, not fetched: these windows must paint the same offline and on first
+   launch, with no request to Google. Latin subset only — the same call as the
+   bundled Fluent 3D set. Syne = display (names, headings, buttons), DM Sans =
+   body, JetBrains Mono = the mono labels. Source: fonts.googleapis.com, OFL. */

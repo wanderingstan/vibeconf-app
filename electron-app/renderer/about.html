@@ -3,15 +3,17 @@
 <head>
   <meta charset="utf-8" />
   <title>About Vibeconferencing</title>
+  <link rel="stylesheet" href="fonts.css" />
   <style>
-    /* Same dark palette as the panel and App Settings — this is a window of the
-       same app, not a system dialog. */
+    /* The site's system (decided 2026-09-06): cream ground, plum ink, Syne for
+       the name, mono for the small facts. Layer 1 only — see the site repo's
+       docs/APP-UI-SPEC.md. Same tokens as panel.css. */
     body {
       margin: 0;
       padding: 28px 24px 22px;
-      background: #202124;
-      color: #e8eaed;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: #FFF4DA;
+      color: #4A3140;
+      font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
       text-align: center;
       -webkit-user-select: none;
       user-select: none;
@@ -19,39 +21,40 @@
          there is nothing to grab. Interactive bits opt back out below. */
       -webkit-app-region: drag;
     }
-    /* The app icon, shown at its native aspect. Deliberately the same file the
-       packaged app uses for its bundle icon (build.mac.icon), so this can never
-       drift from what the Dock shows. No border-radius: the artwork is a
-       transparent logo rather than a filled tile, so rounding would clip
-       nothing and only risk shaving a corner off a shape. */
+    /* The app icon, at its native aspect and the file the Dock uses, so this can
+       never drift from the bundle icon. Untouched by the restyle on purpose. */
     .logo {
       width: 96px; height: 96px;
       margin: 0 auto 14px;
       display: block;
+      filter: drop-shadow(-1px 2px 4px rgba(74, 49, 64, 0.22));
     }
-    h1 { font-size: 17px; font-weight: 600; margin: 0 0 3px; letter-spacing: 0.2px; }
-    .version { font-size: 12px; color: #9aa0a6; margin: 0 0 2px; }
+    h1 { font-family: 'Syne', Futura, sans-serif; font-size: 19px; font-weight: 800; margin: 0 0 4px; letter-spacing: -0.01em; }
+    .version, .runtime, .copyright, .unknown {
+      font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+      letter-spacing: 0.06em;
+    }
+    .version { font-size: 11px; color: #6B5566; margin: 0 0 2px; text-transform: uppercase; letter-spacing: 0.12em; }
     /* The product line. Filled from package.json's description at runtime — see
-       about.js — so this file holds no copy of the wording to drift out of sync.
-       Empty until that resolves, hence no styling that would show a blank box. */
-    .tagline { font-size: 12px; color: #9aa0a6; margin: 12px 0 0; line-height: 1.45; }
+       about.js — so this file holds no copy of the wording to drift out of sync. */
+    .tagline { font-size: 13px; color: #6B5566; margin: 12px 0 0; line-height: 1.45; }
     /* Runtime versions: support detail, so present but visually subordinate. */
     .runtime {
       margin-top: 16px; padding-top: 14px;
-      border-top: 1px solid #3c4043;
-      font-size: 11px; color: #5f6368; line-height: 1.6;
+      border-top: 1px solid #F1D9A4;
+      font-size: 10.5px; color: #6B5566; line-height: 1.6;
       font-variant-numeric: tabular-nums;
     }
-    .links { margin-top: 14px; font-size: 12px; }
+    .links { margin-top: 14px; font-size: 13px; }
     a {
-      color: #8ab4f8; text-decoration: none;
+      color: #9F0BA4; text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1.5px;
       -webkit-app-region: no-drag;   /* a draggable link cannot be clicked */
     }
-    a:hover { text-decoration: underline; }
-    .copyright { margin-top: 14px; font-size: 11px; color: #5f6368; }
+    a:hover { color: #B31199; }
+    .copyright { margin-top: 12px; font-size: 10.5px; color: #6B5566; }
     /* Shown instead of the version when the lookup fails, so the box degrades
        to "we don't know" rather than to a blank space. */
-    .unknown { color: #5f6368; font-style: italic; }
+    .unknown { color: #9A8798; font-style: italic; }
   </style>
 </head>
 <body>

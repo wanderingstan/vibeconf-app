@@ -956,8 +956,14 @@ lane_done linux
 if [[ -n "${VIBECONF_MEET_ROOM:-}" ]]; then
   echo "" | tee -a "$LOG"
   echo "=== conversational etiquette (#468) $STAMP ===" | tee -a "$LOG"
-  "$VIBECONF_REPO/scripts/etiquette-nightly.sh" --room "$VIBECONF_MEET_ROOM" --budget-sec 1500 2>&1 | tee -a "$LOG"
-  ETIQ_CODE=${pipestatus[1]}
+  # THROUGH rec_run, like every other live-call lane. It was invoked directly
+  # until 2026-09-02, so it produced no .mov and no Drive upload — while the log
+  # line below said "recorded". A lane whose whole subject is audio TIMING is the
+  # one where footage is worth most: the 09-02 failure turned on why an 8s clip
+  # registered as 416ms of speech at the peer, which is a question you answer by
+  # listening to the call, not by reading a verdict.
+  rec_run etiquette -- "$VIBECONF_REPO/scripts/etiquette-nightly.sh" --room "$VIBECONF_MEET_ROOM" --budget-sec 1500
+  ETIQ_CODE=$?
   echo "=== etiquette exit: $ETIQ_CODE (recorded, not gating) ===" | tee -a "$LOG"
 else
   echo "=== ⚠️  etiquette SKIPPED — no VIBECONF_MEET_ROOM (join-route never minted one) ===" | tee -a "$LOG"

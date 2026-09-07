@@ -30,8 +30,6 @@ import { homedir } from "os";
 import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
 import { formatCallClock } from './call-time.js';
 import { parseMeetRoomId } from "./meet-room.js";
-import boardFit from "../electron-app/board-fit.js";
-const { formatFitReport, formatBudget } = boardFit;
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
@@ -1618,7 +1616,13 @@ server.tool(
       // about whether the room can READ it: content past the fold is invisible
       // and nobody in the room can scroll a video stream. Reported on the same
       // round trip, so the bot can split the board without measuring first.
-      const fitNote = formatFitReport(wb.fit) + (wb.fit && !wb.fit.fits ? formatBudget(wb.fit) : "");
+      //
+      // Arrives ALREADY FORMATTED from the app. This file is copied into the
+      // package as extraResources and cannot import from electron-app/ — doing so
+      // resolves in the repo and then throws ERR_MODULE_NOT_FOUND in the packaged
+      // build, killing the MCP server on startup so no bot can connect at all.
+      // Shipped exactly that way in 0.8.50; see the regression test.
+      const fitNote = wb.fitNote || "";
 
       return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).${presenceNote}${fitNote}` }] };
     } else {

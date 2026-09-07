@@ -13,41 +13,85 @@
 // 2.21 screenfuls, 966px past the fold, and Stan spent several minutes reading
 // the bottom half without either of us realising the top half existed.
 //
-// ── THE TRAP ─────────────────────────────────────────────────────────────────
+// ── TRAP 1: THE DOCUMENT DOES NOT SCROLL ─────────────────────────────────────
 // The obvious implementation is document.scrollingElement.scrollHeight vs
 // clientHeight. On the whiteboard that returns:
 //
 //     bodyScrollH 800  bodyClientH 800  docElScrollH 800  innerHeight 800
 //     → overflow 0, fits: true
 //
-// ...while 966px of content sits below the fold. The document does NOT scroll.
-// An inner `.wb-slide` (overflow-y:auto) does. So anything measuring the
-// document reports "fits" for every board ever written — a confident wrong
-// answer, which is worse than no signal at all and is the exact failure this
-// module exists to remove. findScroller() below is the whole point; see the
-// test that fails if the measurement is taken from the document.
+// ...while 966px of content sits below the fold. An inner `.wb-slide`
+// (overflow-y:auto) is the real scroller. So anything measuring the document
+// reports "fits" for every board ever written — a confident wrong answer, worse
+// than no signal at all. findScroller below is the whole point; see the test
+// that fails if the measurement is taken from the document.
+//
+// ── TRAP 2: THE PIXELS HAVE NOT MOVED YET ────────────────────────────────────
+// Measuring straight after the write returns reads the PREVIOUS layout. The
+// write goes to the sync server; the board re-renders asynchronously from that.
+//
+// Caught live on 2026-09-06, minutes after shipping trap 1: a board cut from
+// ~4,000 characters to ~1,200 still reported "3.11 screenfuls, 1687px over" and
+// quoted the OLD board's last visible line. It had in fact become 1.04
+// screenfuls — the cut had worked. A stale fit report is worse than none: it
+// tells the author their fix failed, so they cut again, and the board they are
+// trying to fix was already fine.
+//
+// So the script waits for the scroller height to stop changing before measuring.
+// Bounded, because a board that never settles must not hold up the write: on
+// timeout it measures anyway and reports `settled: false`, and the caller says so
+// rather than presenting a possibly-stale number as fact.
 
 'use strict';
+
+const SETTLE_POLL_MS = 40;
+const SETTLE_TIMEOUT_MS = 600;
 
 // Runs INSIDE the share surface (a sandboxed browser page), so it must be a
 // self-contained expression with no imports and no closure over this module.
 // Kept as a string because that is how it reaches the page — see
-// evalInShare()/onEvalShare in main.js.
+// evalInShare()/onEvalShare in main.js. Async: executeJavaScript resolves the
+// promise it returns.
 //
-// Returns null when there is no scrollable container at all, which is how a
-// caller distinguishes "measured, and it fits" from "could not measure".
-const MEASURE_SCRIPT = `(() => {
-  // The scrolling element is NOT the document — see board-fit.js.  Walk for a
-  // real scroller and take the tallest, so a small inner scroller (a code block
-  // with overflow, say) cannot be mistaken for the board container.
-  let scroller = null;
-  for (const n of document.querySelectorAll('*')) {
-    if (n.scrollHeight > n.clientHeight + 4 && n.clientHeight > 100) {
-      if (!scroller || n.clientHeight > scroller.clientHeight) scroller = n;
+// Returns null when there is nothing measurable, which is how a caller
+// distinguishes "measured, and it fits" from "could not measure".
+const MEASURE_SCRIPT = `(async () => {
+  const POLL = ${SETTLE_POLL_MS}, LIMIT = ${SETTLE_TIMEOUT_MS};
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // The scrolling element is NOT the document — see board-fit.js. Take the
+  // tallest real scroller, so a small inner one (an overflowing code block, say)
+  // cannot be mistaken for the board container.
+  const findScroller = () => {
+    let best = null;
+    for (const n of document.querySelectorAll('*')) {
+      if (n.scrollHeight > n.clientHeight + 4 && n.clientHeight > 100) {
+        if (!best || n.clientHeight > best.clientHeight) best = n;
+      }
     }
+    return best;
+  };
+  const heightNow = () => {
+    const el = findScroller();
+    if (el) return el.scrollHeight;
+    const slide = document.querySelector('.wb-slide');
+    return slide ? slide.scrollHeight : 0;
+  };
+
+  // Let the renderer commit a frame first, so an instant render is not measured
+  // mid-reconcile.
+  await new Promise((r) => requestAnimationFrame(() => r()));
+
+  let settled = false, previous = -1;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < LIMIT) {
+    const h = heightNow();
+    if (h === previous) { settled = true; break; }
+    previous = h;
+    await sleep(POLL);
   }
-  // No overflow anywhere: the board fits. Fall back to the visible viewport so
-  // the caller still learns the surface size and the density constants.
+
+  const scroller = findScroller();
   const fitted = !scroller;
   const view = scroller ? scroller.clientHeight
     : (document.querySelector('.wb-slide')?.clientHeight || document.documentElement.clientHeight);
@@ -60,16 +104,14 @@ const MEASURE_SCRIPT = `(() => {
     (el) => !el.parentElement.closest(BLOCK),
   );
 
-  // Offset of each block relative to the scroller's content box, so the answer
-  // does not change with the current scroll position. getBoundingClientRect is
-  // viewport-relative; add scrollTop back to get a stable content offset.
+  // Offset relative to the scroller's content box, so the answer does not change
+  // with scroll position (getBoundingClientRect is viewport-relative).
   const originTop = root.getBoundingClientRect().top - (root.scrollTop || 0);
   const label = (el) => el
     ? el.tagName + ': ' + (el.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 70)
     : null;
 
-  let lastFullyVisible = null;
-  let firstCutOff = null;
+  let lastFullyVisible = null, firstCutOff = null;
   const cost = {};
   for (const el of blocks) {
     const r = el.getBoundingClientRect();
@@ -77,12 +119,10 @@ const MEASURE_SCRIPT = `(() => {
     const bottom = top + r.height;
     if (bottom <= view) lastFullyVisible = el;
     else if (!firstCutOff && top < view) firstCutOff = el;
-    // Density per element type, so a bot can estimate BEFORE writing. These are
-    // measured rather than hard-coded because set_whiteboard_style can change
-    // the type at any moment (#704) and a stale constant is a wrong constant.
-    const tag = el.tagName;
+    // Density per element type, measured rather than assumed: set_whiteboard_style
+    // can change the type at any moment, so a hard-coded constant is a wrong one.
     const chars = (el.textContent || '').trim().length;
-    const c = (cost[tag] = cost[tag] || { n: 0, px: 0, chars: 0 });
+    const c = (cost[el.tagName] = cost[el.tagName] || { n: 0, px: 0, chars: 0 });
     c.n += 1; c.px += r.height; c.chars += chars;
   }
 
@@ -98,6 +138,7 @@ const MEASURE_SCRIPT = `(() => {
   }
 
   return {
+    settled,
     viewportPx: Math.round(view),
     contentPx: Math.round(total),
     overflowPx: Math.max(0, Math.round(total - view)),
@@ -118,13 +159,19 @@ const MEASURE_SCRIPT = `(() => {
 function formatFitReport(m) {
   if (!m || !m.viewportPx) return '';
 
+  // An unsettled measurement may describe the PREVIOUS board. Say so rather than
+  // presenting it as fact — that is what sends an author cutting content which
+  // was already fine.
+  const caveat = m.settled === false
+    ? ' (measured before the board finished rendering, so this may describe the previous'
+      + ' content — write again to confirm)'
+    : '';
+
   if (m.fits) {
     const room = m.viewportPx - m.contentPx;
-    // Only mention headroom when there is a useful amount, otherwise every
-    // successful write grows a sentence nobody needs.
     return room >= 80
-      ? ` Fits, with about ${room}px to spare.`
-      : ' Fits, but only just — no room for another line.';
+      ? ` Fits, with about ${room}px to spare.${caveat}`
+      : ` Fits, but only just — no room for another line.${caveat}`;
   }
 
   const parts = [
@@ -134,6 +181,7 @@ function formatFitReport(m) {
   if (m.firstCutOff) parts.push(` Cut from: "${m.firstCutOff}".`);
   if (m.lastFullyVisible) parts.push(` Last fully visible: "${m.lastFullyVisible}".`);
   parts.push(' Split it across several writes, or shorten it.');
+  if (caveat) parts.push(caveat);
   return parts.join('');
 }
 
@@ -143,8 +191,8 @@ function formatFitReport(m) {
 // informed decision."
 //
 // Only reports what was actually on the board — a board with no table cannot
-// tell you what a table costs, and inventing a figure for one would be worse
-// than staying quiet about it.
+// tell you what a table costs, and inventing a figure would be worse than
+// staying quiet about it.
 function formatBudget(m) {
   if (!m || !m.constants || !m.viewportPx) return '';
   const c = m.constants;
@@ -158,4 +206,4 @@ function formatBudget(m) {
   return bits.length ? ` Budget for this board's styling: ${bits.join(', ')}.` : '';
 }
 
-module.exports = { MEASURE_SCRIPT, formatFitReport, formatBudget };
+module.exports = { MEASURE_SCRIPT, formatFitReport, formatBudget, SETTLE_TIMEOUT_MS };

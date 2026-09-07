@@ -577,6 +577,8 @@ class LocalServer {
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
     this.lastWaitForSpeechAt = null; // ms timestamp of the most recent wait_for_speech call
+    this.lastScreenChangeAt = null;  // #673: when the watched share last settled
+    this.lastScreenChange = null;    // ...and how big that change was
     // Anything the AGENT did, not just wait_for_speech (#38). Every MCP tool
     // reaches the app over HTTP, so one stamp at the request door covers the
     // whole surface — including the long tool-work stretches where the loop is
@@ -1664,6 +1666,47 @@ class LocalServer {
 
   setSharing(sharing) {
     this.sharing = sharing;
+  }
+
+  // #673 — a participant's shared screen changed and has now stopped changing.
+  // Wake a parked wait_for_speech the same way a new chat message does.
+  //
+  // WHY THIS EXISTS AT ALL. Bethany, 2026-09-02: "I shared it like 10 seconds
+  // ago. Why aren't you seeing it?" A bot between turns is inside a long poll
+  // that only speech resolves, so a screen changing in silence is not slow to
+  // reach it — it cannot reach it. This is a new wake REASON, not new
+  // machinery: chat proved the shape (see setChatUnread).
+  //
+  // The gates are chat's, for chat's reasons:
+  //   - somebody speaking: the floor beats the screen. Nothing is lost — the
+  //     agent will look at the screen on the turn it is about to be handed.
+  //   - no waiter: nobody to wake; the next wait_for_speech sees it as part of
+  //     the normal snapshot.
+  // Plus one of its own: only in a call, because outside one there is no screen
+  // and no agent loop.
+  noteScreenSettled(info = {}) {
+    if (this.callStatus !== 'in-call') return false;
+    this.lastScreenChangeAt = Date.now();
+    this.lastScreenChange = {
+      at: this.lastScreenChangeAt,
+      regions: Array.isArray(info.tiles) ? info.tiles.length : 0,
+      cells: info.cells || 0,
+    };
+    const blocked = this.anyoneSpeaking ? 'someone-speaking'
+      : this.waiters.length === 0 ? 'no-active-waiter'
+      : null;
+    if (blocked) {
+      console.log(ts(), '🖥️ [screen-wake] shared screen settled but NOT waking —', blocked,
+        '(anyoneSpeaking=' + this.anyoneSpeaking + ' waiters=' + this.waiters.length + ')');
+      return false;
+    }
+    console.log(ts(), '🖥️ [screen-wake] shared screen settled in a quiet room — waking',
+      this.waiters.length, 'waiter(s)',
+      '(' + this.lastScreenChange.regions + ' region(s), ' + this.lastScreenChange.cells + ' cells)');
+    for (const waiter of [...this.waiters]) {
+      this._resolveWaiter(waiter, 'screen');
+    }
+    return true;
   }
 
   setDetectedMeetUrls(urls) {
@@ -4369,6 +4412,12 @@ class LocalServer {
     // Tag a chat-triggered wake so the MCP layer can phrase it as "new chat"
     // rather than a misleading "no one spoke / timed out".
     if (reason === 'chat') response.chatWake = true;
+    // #673: same idea for a shared screen that changed and settled. Without the
+    // tag the agent gets "no one spoke, timed out" and has no reason to look.
+    if (reason === 'screen') {
+      response.screenWake = true;
+      response.screenChange = this.lastScreenChange || null;
+    }
 
     // If there are actual transcript entries, the agent will now process them → thinking state.
     // Captions arrive as multiple progressively-growing entries for one utterance

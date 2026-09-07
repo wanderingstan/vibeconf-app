@@ -230,6 +230,22 @@ const PREFERENCES = {
       'settled. The messy data needed to test utterance-completeness detection ' +
       '(#243). Verbose; turn ON only when collecting test data, OFF for normal use.',
   },
+  watchSharedScreen: {
+    type: 'boolean',
+    default: false,
+    label: 'Watch a shared screen for changes',
+    description:
+      'While in a call, sample the bot\'s Meet view every couple of seconds and '
+      + 'wake the bot when a shared screen CHANGES and then stops changing — so a '
+      + 'student who shares something in silence gets looked at instead of being '
+      + 'asked to share again (#673). The watching itself is arithmetic over a '
+      + '320x180 grid (electron-app/screen-settle.js): no vision model, no network, '
+      + 'no tokens. What it gates is the expensive look, which the agent takes only '
+      + 'when the picture actually moved. OFF by default: it is the right mode for '
+      + '"coach me through my screen" and pointless noise for a normal meeting. '
+      + 'Applies immediately, including mid-call.',
+    requiresRestart: false,
+  },
   recordCallAudio: {
     type: 'boolean',
     default: false,

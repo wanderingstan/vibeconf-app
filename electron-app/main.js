@@ -2912,6 +2912,10 @@ const localServer = new globalThis.LocalServer({
     // possible — 'navigating' fires well before the agent is ready to speak,
     // so synthesis happens in the background while the bot is still joining.
     if (isInCall(status)) prewarmAckCache();
+    // #673: the shared-screen watch only runs inside a call. Reconciled here so
+    // every route in and out of a call — panel, calendar, CLI, agent — is
+    // covered by one place rather than each remembering.
+    reconcileScreenSettleWatcher();
     if (isFinished(status)) { _noVoiceAnnouncedFor = null; ackCachePrewarmedForCall = false; }
     // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
     // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the
@@ -3404,6 +3408,10 @@ const localServer = new globalThis.LocalServer({
     } else if (key === 'remoteLogging') {
       setRemoteLoggingEnabled(value === true);
       console.log('[electron] Remote logging', value === true ? 'ENABLED' : 'disabled', '(live)');
+    } else if (key === 'watchSharedScreen') {
+      // Live, mid-call: this is a mode you turn on when the conversation becomes
+      // "coach me through my screen", which is exactly mid-call.
+      reconcileScreenSettleWatcher();
     }
   },
 });
@@ -3809,6 +3817,63 @@ const { SIGNATURE_SIDE, signatureFromBitmap } = require('./ui-signature.js');
 function uiSignature(image) {
   return signatureFromBitmap(image.resize({ width: SIGNATURE_SIDE, height: SIGNATURE_SIDE, quality: 'good' }).toBitmap());
 }
+// #673 — watch a participant's shared screen for changes while nobody speaks.
+// The comparison lives in screen-settle.js (pure, tested); everything here is
+// wiring: where the pixels come from, and where a settle event goes.
+//
+// The pixels come from the SAME capture the bot already uses to look at the
+// room — meetView.webContents.capturePage(), the thing behind
+// get_call_screenshot. Deliberately not a new capture path: the bot cannot see
+// another participant's stream directly (get_shared_screenshot is its OWN
+// share), so the Meet view as rendered is the honest and only route, and it is
+// the picture the agent will be looking at anyway when it wakes.
+//
+// Resized in-process to the detector's grid, so the full-size PNG is never
+// encoded and nothing is written to disk on the 2-second path.
+const screenSettle = require('./screen-settle.js');
+let screenSettleWatcher = null;
+
+async function captureMeetViewGrid() {
+  if (!meetView || meetView.webContents.isDestroyed()) return null;
+  const image = await meetView.webContents.capturePage();
+  // A view with no display surface captures as 0x0 rather than throwing. Do NOT
+  // self-heal by showing the hidden host the way onCaptureScreenshot does: that
+  // flashes a window on screen, and doing it every two seconds for a monitor
+  // nobody asked to see would be its own bug. Skip the sample instead.
+  if (!image || image.isEmpty()) return null;
+  const small = image.resize({ width: screenSettle.GRID_W, height: screenSettle.GRID_H, quality: 'good' });
+  return screenSettle.grayGridFromBitmap(small.toBitmap(), screenSettle.GRID_W, screenSettle.GRID_H);
+}
+
+// Start/stop to match (pref is on) AND (we are in a call). Called from both
+// edges — the pref changing and the call status changing — so neither has to
+// know about the other.
+function reconcileScreenSettleWatcher() {
+  try {
+    const want = prefValue('watchSharedScreen') === true && localServer.callStatus === 'in-call';
+    if (want && !screenSettleWatcher) {
+      screenSettleWatcher = screenSettle.createScreenSettleWatcher({
+        capture: captureMeetViewGrid,
+        onSettled: (v) => localServer.noteScreenSettled(v),
+        log: (msg) => console.log('[screen-settle]', msg),
+      });
+      screenSettleWatcher.start();
+      console.log('[electron] Shared-screen watch ON (#673) — sampling every',
+        screenSettle.DEFAULT_INTERVAL_MS + 'ms at', screenSettle.GRID_W + 'x' + screenSettle.GRID_H);
+    } else if (!want && screenSettleWatcher) {
+      screenSettleWatcher.stop();
+      console.log('[electron] Shared-screen watch OFF —',
+        screenSettleWatcher.stats.samples, 'samples,', screenSettleWatcher.stats.settles, 'settle(s),',
+        screenSettleWatcher.stats.failures, 'capture failure(s)');
+      screenSettleWatcher = null;
+    }
+  } catch (err) {
+    // Never let the monitor's own bookkeeping reach a call. Worst case the bot
+    // behaves exactly as it did before #673.
+    console.warn('[electron] screen-settle reconcile failed (watch disabled):', err && err.message);
+  }
+}
+
 let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
 let troubleshootingWindow = null; // the ⓘ window — a second copy of panel.html
@@ -12198,6 +12263,7 @@ function setupIPC() {
     if (key === 'emojiSet') pushEmojiSet(value);
     if (key === 'meetViewSize') applyMeetViewSize();
     if (key === 'botName') applyAllWindowTitles();
+    if (key === 'watchSharedScreen') reconcileScreenSettleWatcher();
     // The background is settable from Bot Settings now, not just by the agent.
     // Without this the in-call avatar kept the OLD background until the next
     // launch, while the panel preview showed the new one.

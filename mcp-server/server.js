@@ -600,6 +600,16 @@ server.tool(
     // chat without missing speech. The agent should call read_chat when it sees this.
     const chatLine = data.chatUnread
       ? '\n[Unread chat messages — call read_chat to see them, then respond.]' : '';
+    // #673: the shared screen changed while the room was silent. The app noticed
+    // it (electron-app/screen-settle.js) and handed us a finished verdict — this
+    // side just phrases it. Nothing is computed across the packaging boundary.
+    const screenLine = data.screenWake
+      ? '\n[The SHARED SCREEN just changed and settled' + (data.screenChange?.regions
+          ? ' (' + data.screenChange.regions + ' region(s) of it)' : '')
+        + ' — nobody spoke. Call get_call_screenshot to LOOK before you say anything: '
+        + 'somebody is showing you something rather than telling you. If it does not need '
+        + 'a comment, stay silent and wait again.]'
+      : '';
     // Continuation: this window is the same speaker extending the utterance you
     // already answered. Stay quiet unless there's genuinely new content, to
     // avoid responding twice to one thought.
@@ -652,13 +662,18 @@ server.tool(
       if (data.chatWake) {
         return { content: [{ type: "text", text: `(New chat message — the room was quiet, so you were woken to handle it.)${clockLine}${chatLine || '\n[Call read_chat to see it, then respond aloud and/or in chat.]'}${statusLine}${errorLines}` }] };
       }
+      // #673: same shape for a screen that changed in silence. Lead with it, for
+      // the same reason: "no one spoke / timed out" is true and useless here.
+      if (data.screenWake) {
+        return { content: [{ type: "text", text: `(The shared screen changed — the room was quiet, so you were woken to look.)${clockLine}${screenLine}${chatLine}${statusLine}${errorLines}` }] };
+      }
       // Deaf-bot hint: if Meet captions are off, the bot can't hear anything.
       // Distinguish that from "the room is silent" so the agent can ask humans
       // to re-enable captions instead of looping silent timeouts.
       const deafLine = status.captionsOn === false
         ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
         : '';
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${voiceLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${voiceLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}${screenLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -689,7 +704,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${voiceLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${voiceLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}${screenLine}`,
       }],
     };
   }

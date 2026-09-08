@@ -995,7 +995,8 @@ button.agent-namebtn:hover:not(:disabled) { background: rgba(74, 49, 64, 0.75); 
      the ellipsis nor fitBotName() could ever see a long name overflow. */
   display: block; min-width: 0;
   font-family: var(--font-display);
-  font-size: 26px; font-weight: 800; color: var(--on-art); letter-spacing: -0.01em;
+  /* 700, not 800: user text, often with a g — Syne's g stub reads cut off at 800 (Seth, Sept 8). */
+  font-size: 26px; font-weight: 700; color: var(--on-art); letter-spacing: -0.01em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   /* Sits on the user's own artwork — a shadow keeps it readable on anything. */
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);

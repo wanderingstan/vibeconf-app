@@ -2759,6 +2759,7 @@ function updateBotNameBig() {
   // Friendly name first (the Bot Name preference); fall back to the on-disk
   // profile name only if there isn't one, so the heading is never empty.
   botNameBig.textContent = botNameDisplay || currentBotName || appProfileName || 'Default';
+  fitBotName();
   // The pre-call button says the bot's name too ("Call Jimmy now"), so it has
   // to follow a rename. One choke point keeps the two from drifting.
   updateJoinBtnState();
@@ -2771,6 +2772,34 @@ function updateBotNameBig() {
   // same reasoning: a rename should not leave the title above it stale.
   updateSettingsHeading();
 }
+
+// The name is set in Syne, which runs wider than the Google Sans it replaced, so
+// a long one ("Optimus Prime") overflows the 380px banner where the old face
+// still fit. Step the size down from the stylesheet's 26px to a 15px floor;
+// only past that does the ellipsis take over. Measured against the button that
+// wraps the name, since that is the box the name actually has. Runs on every
+// rename and on resize, and is a no-op when the name fits at full size.
+function fitBotName() {
+  if (!botNameBig) return;
+  // Measure against the BANNER, which is the window's width. Neither the name
+  // row nor the button around the name is a reliable bound: both are flex boxes
+  // that grow to fit their content, so asking them always says "fits".
+  // 8 + 44 = the row's padding (clear of the gear); 60 = the chip + caret.
+  const hero = botNameBig.closest('.bot-hero');
+  if (!hero) return;
+  botNameBig.style.fontSize = '';           // start from the stylesheet size
+  const max = parseFloat(getComputedStyle(botNameBig).fontSize) || 26;
+  const room = Math.max(0, hero.clientWidth - 8 - 44 - 60);
+  let size = max;
+  while (size > 15 && botNameBig.scrollWidth > room) {
+    size -= 1;
+    botNameBig.style.fontSize = `${size}px`;
+  }
+}
+window.addEventListener('resize', fitBotName);
+// Syne is a vendored webfont and can land AFTER the first name paint; a size
+// measured against the fallback face is wrong once the real one arrives.
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitBotName);
 
 // "Jimmy Settings" — same shape and fallback as updateSetupCallBtnLabel, so a
 // bot with no name yet reads the same way in both places.

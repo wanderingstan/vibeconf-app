@@ -1,3 +1,36 @@
+/* ── The site's system, in the app ──────────────────────────────────────────
+   Decided 2026-09-06 (Seth + Stan): the Fluent palette + Syne, the same tokens
+   as vibeconferencing.com. Layer 1 only here — docs/APP-UI-SPEC.md in the site
+   repo: cream grounds, ink lines, mono eyebrows, the face big, native controls
+   left native. No billboard type, seals or grain at app density.
+
+   The ONE exception is the bot hero on the main screen: the window IS the bot
+   (Stan, 2026-09-07 — "the window is the identity"), so the user's own avatar
+   background fills it and the chrome on top of it keeps its dark scrims and
+   light text, because it has to survive any artwork someone picks. Everything
+   that is app furniture rather than the bot sits on cream. */
+:root {
+  --cream: #FFF4DA;
+  --paper: #FFFDF7;
+  --paper-lo: #FFE7B3;
+  --ink: #4A3140;         /* the Fluent set's darkest pixel is #3F2831 — nothing pure */
+  --ink-soft: #6B5566;
+  --ink-faint: #9A8798;   /* decorative only — fails contrast for body text */
+  --pink: #E62776;        /* the one primary */
+  --pink-deep: #B31199;
+  --magenta: #9F0BA4;     /* links, eyebrows */
+  --line: #F1D9A4;
+  /* Soft plum, falling down-and-LEFT: the key light is upper-right, because
+     that's where every Fluent face is lit from. Never a hard black offset. */
+  --shadow: -1px 2px 6px rgba(74, 49, 64, 0.20);
+  --shadow-lo: -1px 1px 3px rgba(74, 49, 64, 0.14);
+  --font-display: 'Syne', Futura, 'Trebuchet MS', sans-serif;
+  --font-body: 'DM Sans', 'Avenir Next', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* On-art chrome (the hero): light text that survives any background. */
+  --on-art: #FFF4DA;
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -5,10 +38,10 @@
 }
 
 body {
-  font-family: 'Google Sans', Roboto, Arial, sans-serif;
+  font-family: var(--font-body);
   min-width: 280px;
-  background: #202124;
-  color: #e8eaed;
+  background: var(--cream);
+  color: var(--ink);
   /* This is an app surface, not a document. Selecting the bot's name or a
      button label achieves nothing and actively gets in the way — the banner's
      top strip is a window drag handle, so a slightly-off drag was selecting
@@ -52,33 +85,41 @@ pre,
 #mainScreen .container { padding-bottom: 0; }
 
 h1 {
-  font-size: 18px;
-  font-weight: 500;
+  font-family: var(--font-display);
+  font-size: 17px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   margin-bottom: 12px;
-  color: #8ab4f8;
+  color: var(--ink);
 }
 
+/* Section headers are mono eyebrows — the strongest brand tell at app scale. */
 h2 {
-  font-size: 13px;
-  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
   margin-bottom: 8px;
-  color: #9aa0a6;
+  color: var(--magenta);
   text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.18em;
 }
+h2::before { content: "✦ "; color: var(--pink); }
+h2 .helper-text { text-transform: none; letter-spacing: 0; font-family: var(--font-body); font-weight: 400; }
 
 .status {
   font-size: 13px;
   padding: 8px 12px;
-  border-radius: 8px;
-  background: #303134;
+  border-radius: 6px;
+  background: var(--paper);
+  border: 1px solid var(--line);
   margin-bottom: 16px;
-  color: #9aa0a6;
+  color: var(--ink-soft);
 }
 
+/* State is a glyph + a word, in ink — the palette has no green. */
 .status.active {
-  color: #81c995;
-  background: #1b3626;
+  color: var(--ink);
+  background: var(--paper-lo);
 }
 
 .field {
@@ -88,101 +129,118 @@ h2 {
 .field label {
   display: block;
   font-size: 12px;
-  color: #9aa0a6;
+  font-weight: 500;
+  color: var(--ink);
   margin-bottom: 4px;
 }
 
-.field input:not([type="checkbox"]) {
+/* Text fields are cream wells with a 1.5px ink line (2px reads heavy at this
+   density). Focus is a pink outline, never a glow. Selects keep their native
+   shape and take the same border. */
+.field input:not([type="checkbox"]),
+.field select,
+.field textarea,
+select {
   width: 100%;
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid #5f6368;
-  background: #303134;
-  color: #e8eaed;
-  font-size: 14px;
+  padding: 8px 10px;
+  border-radius: 5px;
+  border: 1.5px solid var(--ink);
+  background: var(--cream);
+  color: var(--ink);
+  font-size: 13px;
   font-family: inherit;
   outline: none;
 }
 
-.field input:focus {
-  border-color: #8ab4f8;
+.field input:focus,
+.field select:focus,
+.field textarea:focus,
+select:focus {
+  outline: 2px solid var(--pink);
+  outline-offset: 1px;
 }
 
+/* Buttons: Syne, pill, 1.5px ink border. The primary is the one pink thing in
+   a window; everything else is paper. */
 button {
   padding: 8px 16px;
-  border-radius: 20px;
-  border: none;
-  font-size: 14px;
-  font-family: inherit;
+  border-radius: 999px;
+  border: 1.5px solid var(--ink);
+  font-size: 12.5px;
+  font-weight: 700;
+  font-family: var(--font-display);
   cursor: pointer;
   width: 100%;
   margin-bottom: 8px;
 }
 
 button.primary {
-  background: #8ab4f8;
-  color: #202124;
-  font-weight: 500;
+  background: var(--pink);
+  color: var(--cream);
+  box-shadow: var(--shadow);
 }
 
 button.primary:hover:not(:disabled) {
-  background: #aecbfa;
+  background: var(--pink-deep);
 }
 
 button:not(.primary) {
-  background: #303134;
-  color: #e8eaed;
+  background: var(--paper);
+  color: var(--ink);
 }
 
 button:not(.primary):hover:not(:disabled) {
-  background: #3c4043;
+  background: var(--paper-lo);
 }
 
 button:disabled {
-  opacity: 0.5;
+  opacity: 0.45;
   cursor: default;
+  box-shadow: none;
 }
 /* Opacity alone wasn't enough on the accent-blue primary: at 0.5 over the dark
    hero it still read as a live, pressable button — which is exactly wrong while
    the bot is mid-join. Drop the accent entirely so the control goes grey and
    flat, the way a disabled button is expected to look. */
 button.primary:disabled {
-  background: #3c4043;
-  color: #9aa0a6;
-  opacity: 0.75; /* less needed now the colour carries the state */
+  background: var(--paper-lo);
+  color: var(--ink-faint);
+  border-color: var(--ink-faint);
+  opacity: 0.85; /* the colour carries the state */
 }
 
 .section {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #3c4043;
+  border-top: 1px solid var(--line);
 }
 
 .audio-status {
   font-size: 12px;
-  color: #9aa0a6;
+  color: var(--ink-soft);
   margin-bottom: 8px;
 }
 
 .audio-status.active {
-  color: #81c995;
+  color: var(--ink);
 }
 
+/* Diagnostic blocks: paper, ink, the mono face. */
 .call-state-debug {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.5;
-  color: #e8eaed;
-  background: #303134;
-  border: 1px solid #5f6368;
-  border-radius: 8px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 6px;
   padding: 10px 12px;
   white-space: pre-wrap;
 }
 
 .room-link {
   display: block;
-  color: #8ab4f8;
+  color: var(--magenta);
   font-size: 13px;
   margin-bottom: 8px;
   text-decoration: none;
@@ -194,21 +252,24 @@ button.primary:disabled {
 
 .debug-toggle {
   font-size: 13px;
-  color: #9aa0a6;
+  color: var(--ink-soft);
   cursor: pointer;
   user-select: none;
 }
 
 .debug-toggle:hover {
-  color: #e8eaed;
+  color: var(--ink);
 }
 
+/* An error, on cream (Troubleshooting's mic warning). The hero variant below
+   keeps its dark translucent treatment because it sits on artwork. */
 .error-bar {
   font-size: 12px;
   padding: 8px 12px;
-  border-radius: 8px;
-  background: #3b1818;
-  color: #f28b82;
+  border-radius: 6px;
+  background: var(--paper-lo);
+  color: var(--pink-deep);
+  border: 1px solid var(--pink-deep);
   margin-bottom: 8px;
   align-items: center;
   justify-content: space-between;
@@ -220,7 +281,7 @@ button.primary:disabled {
 .error-close {
   background: none;
   border: none;
-  color: #f28b82;
+  color: inherit;
   font-size: 18px;
   cursor: pointer;
   padding: 0 4px;
@@ -231,7 +292,7 @@ button.primary:disabled {
   border-radius: 0;
 }
 .error-close:hover {
-  color: #ffffff;
+  color: var(--ink);
 }
 
 /* ── Notice stack ──────────────────────────────────────────────────────────
@@ -279,8 +340,10 @@ body[data-titlebar] .hero-notices {
    Troubleshooting); this only makes it translucent over artwork. */
 .hero-notice.error-bar {
   background: rgba(59, 24, 24, 0.82);
+  color: #f28b82;
   border: 1px solid rgba(242, 139, 130, 0.45);
 }
+.hero-notice.error-bar .error-close:hover { color: #fff; }
 /* Warnings — amber, and not an error: something is off, nothing is broken. */
 .notice-warn {
   display: none;              /* JS flips this to flex */
@@ -309,11 +372,11 @@ body[data-titlebar] .hero-notices {
 }
 button.notice-action {
   width: auto; margin: 0; flex: 0 0 auto;
-  background: #8ab4f8; border: none; color: #202124;
-  border-radius: 14px; padding: 5px 12px;
-  font-weight: 600; font-size: 12px; white-space: nowrap; cursor: pointer;
+  background: var(--pink); border: 1.5px solid var(--ink); color: var(--cream);
+  border-radius: 999px; padding: 5px 12px;
+  font-weight: 700; font-size: 11.5px; white-space: nowrap; cursor: pointer;
 }
-button.notice-action:hover:not(:disabled) { background: #aecbfa; }
+button.notice-action:hover:not(:disabled) { background: var(--pink-deep); }
 
 .participant-row {
   display: flex;
@@ -325,26 +388,26 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
 
 .participant-id {
   flex: 0 0 100px;
-  color: #e8eaed;
+  color: var(--ink);
 }
 
 .level-bar {
   flex: 1;
   height: 6px;
-  background: #303134;
+  background: var(--paper-lo);
   border-radius: 3px;
   overflow: hidden;
 }
 
 .level-fill {
   height: 100%;
-  background: #8ab4f8;
+  background: var(--magenta);
   border-radius: 3px;
   transition: width 0.15s;
 }
 
 .level-fill.speaking {
-  background: #81c995;
+  background: var(--pink);
 }
 
 .speaking-indicator {
@@ -361,20 +424,21 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
 
 .transcript-entry {
   padding: 4px 0;
-  border-bottom: 1px solid #303134;
+  border-bottom: 1px solid var(--line);
 }
 
 .transcript-speaker {
-  color: #8ab4f8;
-  font-weight: 500;
+  color: var(--magenta);
+  font-weight: 600;
 }
 
 .transcript-text {
-  color: #e8eaed;
+  color: var(--ink);
 }
 
 .transcript-time {
-  color: #5f6368;
+  color: var(--ink-faint);
+  font-family: var(--font-mono);
   font-size: 10px;
 }
 
@@ -390,7 +454,9 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
   /* On the artwork now, not on the panel background — the old #5f6368 would be
      invisible against a dark avatar. Dim white + a shadow reads on anything
      while staying clearly secondary to the call button above it. */
@@ -417,7 +483,7 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
 .icon-btn {
   background: none;
   border: none;
-  color: #9aa0a6;
+  color: var(--ink-soft);
   font-size: 20px;
   cursor: pointer;
   padding: 4px 8px;
@@ -427,8 +493,8 @@ button.notice-action:hover:not(:disabled) { background: #aecbfa; }
 }
 
 .icon-btn:hover {
-  color: #e8eaed;
-  background: #3c4043;
+  color: var(--ink);
+  background: var(--paper-lo);
 }
 
 /* Bot Settings heading — the bot's own avatar next to the title, so this screen
@@ -453,7 +519,7 @@ button.screen-close {
      enter was. Safe at 8px on both platforms because it's top-RIGHT, away from
      the macOS traffic lights; Windows' caption buttons are dodged below. */
   position: fixed; top: 8px; right: 8px; z-index: 20;
-  width: 36px; height: 36px; padding: 0; margin: 0;
+  width: 44px; height: 44px; padding: 0; margin: 0;
   display: inline-flex; align-items: center; justify-content: center;
   border: none; cursor: pointer;
   font-size: 19px; line-height: 1; border-radius: 50%;
@@ -463,10 +529,11 @@ button.screen-close {
      needed to keep text scrolling underneath from showing through.
      iOS greys this out until something has changed; we don't track a dirty
      state (each control here saves as you touch it), so it stays blue. */
-  background: #8ab4f8;
-  color: #202124;
+  background: var(--ink);
+  color: var(--cream);
+  box-shadow: var(--shadow);
 }
-button.screen-close:hover:not(:disabled) { background: #aecbfa; color: #202124; }
+button.screen-close:hover:not(:disabled) { background: var(--ink-soft); color: var(--cream); }
 /* (A 146px dodge lived here for the Windows caption-button overlay. Windows has
    a standard title bar again — see titleBarOptions in main.js — so nothing
    floats over this button any more. macOS needs no nudge: controls are
@@ -492,7 +559,7 @@ body[data-titlebar] #settingsScreen .settings-head {
   position: sticky;
   top: 0;
   z-index: 15;
-  background: #202124;
+  background: var(--cream);
   margin: 0 -16px 14px;   /* escape the container's side padding, as .bot-hero does */
   padding: 34px 16px 0;
 }
@@ -502,7 +569,8 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
    Settings" rather than a third sibling competing with the close button. */
 .settings-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .settings-profile {
-  font-size: 11px; color: #9aa0a6; line-height: 1.2;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-soft); line-height: 1.4;
   /* A long profile name must not push the close button off — truncate instead. */
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -516,7 +584,7 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
    border, which made a sentence about the page look like a warning about it. */
 .settings-intro {
   margin: 0 0 14px;
-  color: #9aa0a6;
+  color: var(--ink-soft);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -530,10 +598,10 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
   position: relative;
   width: 100%;
   aspect-ratio: 16 / 9;
-  border: 1px solid #5f6368;
-  border-radius: 8px;
+  border: 1.5px solid var(--ink);
+  border-radius: 6px;
   overflow: hidden;
-  background: #202124;
+  background: var(--ink);
   /* container-type lets the face size itself as a fraction of the PREVIEW
      rather than the window, the same trick .hero-art uses. */
   container-type: size;
@@ -573,7 +641,7 @@ body[data-titlebar] #settingsScreen .settings-head button { -webkit-app-region: 
 button.back-btn {
   background: none;
   border: none;
-  color: #8ab4f8;
+  color: var(--magenta);
   font-size: 13px;
   cursor: pointer;
   padding: 4px 0;
@@ -584,18 +652,18 @@ button.back-btn {
 
 button.back-btn:hover:not(:disabled) {
   background: none;
-  color: #aecbfa;
+  color: var(--pink-deep);
 }
 
 .nav-buttons {
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid #3c4043;
+  border-top: 1px solid var(--line);
 }
 
 .helper-text {
   font-size: 12px;
-  color: #9aa0a6;
+  color: var(--ink-soft);
   margin-bottom: 12px;
   line-height: 1.4;
 }
@@ -603,7 +671,7 @@ button.back-btn:hover:not(:disabled) {
 .auth-section {
   margin-bottom: 16px;
   padding-bottom: 16px;
-  border-bottom: 1px solid #3c4043;
+  border-bottom: 1px solid var(--line);
 }
 
 .auth-row {
@@ -615,13 +683,13 @@ button.back-btn:hover:not(:disabled) {
 
 .auth-status {
   font-size: 13px;
-  color: #9aa0a6;
+  color: var(--ink-soft);
 }
 
 button.auth-action-btn {
   background: none;
   border: none;
-  color: #8ab4f8;
+  color: var(--magenta);
   font-size: 12px;
   cursor: pointer;
   padding: 2px 0;
@@ -631,68 +699,77 @@ button.auth-action-btn {
 
 button.auth-action-btn:hover:not(:disabled) {
   background: none;
-  color: #aecbfa;
+  color: var(--pink-deep);
 }
 
 /* Live caption feed — the bot's-eye view (#troubleshooting) */
+.caption-feed { font-family: var(--font-mono); }
 .caption-feed .cap-line {
   padding: 1px 0;
   line-height: 1.35;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--line);
 }
 .caption-feed .cap-tag {
   display: inline-block;
   min-width: 48px;
   font-size: 9px;
-  color: #9aa0a6;
+  color: var(--ink-faint);
   text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
-.caption-feed .cap-live { color: #8ab4f8; }
-.caption-feed .cap-live .cap-tag { color: #8ab4f8; font-weight: 600; }
-.caption-feed .cap-speaker { color: #e8eaed; font-weight: 600; }
+.caption-feed .cap-live { color: var(--magenta); }
+.caption-feed .cap-live .cap-tag { color: var(--magenta); font-weight: 600; }
+.caption-feed .cap-speaker { color: var(--ink); font-weight: 600; }
 
 .caption-badge {
   display: inline-block;
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--ink);
 }
-.caption-badge.cap-on { background: rgba(129, 201, 149, 0.18); color: #81c995; }
-.caption-badge.cap-off { background: rgba(242, 139, 130, 0.18); color: #f28b82; font-weight: 600; }
+.caption-badge.cap-on { background: var(--paper-lo); color: var(--ink); }
+.caption-badge.cap-off { background: var(--paper-lo); color: var(--pink-deep); border-color: var(--pink-deep); font-weight: 700; }
 
 /* Pop-out panel button (troubleshooting header) */
 .popout-btn {
   flex: 0 0 auto;
   width: auto; /* override the global `button { width: 100% }` so it sizes to its text */
-  font-size: 12px;
-  padding: 4px 10px;
-  border-radius: 8px;
-  border: 1px solid #5f6368;
-  background: #303134;
-  color: #e8eaed;
+  font-size: 11.5px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1.5px solid var(--ink);
+  background: var(--paper);
+  color: var(--ink);
   cursor: pointer;
   white-space: nowrap;
 }
-.popout-btn:hover { background: #3c4043; border-color: #8ab4f8; color: #aecbfa; }
+.popout-btn:hover { background: var(--paper-lo); }
 
 /* Sign-ins section — which Google account is actually signed in */
 .account-email {
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
   margin: 0 0 8px;
   padding: 6px 10px;
-  border-radius: 8px;
-  background: #303134;
+  border-radius: 5px;
+  background: var(--paper-lo);
+  color: var(--ink);
   word-break: break-all;
 }
-.account-email.email-ok { background: rgba(129, 201, 149, 0.15); color: #81c995; }
-.account-email.email-bad { background: rgba(242, 139, 130, 0.15); color: #f28b82; }
+.account-email.email-ok { color: var(--ink); }
+.account-email.email-bad { color: var(--pink-deep); }
 
 /* Small inline debug link (e.g. default testing meet) */
 .text-link {
-  color: #8ab4f8;
-  text-decoration: none;
+  color: var(--magenta);
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
-.text-link:hover { color: #aecbfa; text-decoration: underline; }
+.text-link:hover { color: var(--pink-deep); }
 
 /* ── Bot identity — the full-bleed avatar banner ────────────────────────────
    The avatar IS the masthead: flush to the window's top / left / right edges,
@@ -720,6 +797,12 @@ button.auth-action-btn:hover:not(:disabled) {
   margin: -16px -16px 0;
   aspect-ratio: 1 / 1;
   flex: 0 0 auto;
+  /* min-width: 0 — a flex item's automatic minimum is its content's min-content
+     width, and a long bot name (nowrap) makes that wider than the window. Without
+     this the whole banner grows past the window's right edge and takes the gear
+     with it. 0 lets it be exactly as wide as the window, and the name shrinks
+     (fitBotName) or ellipsises inside it instead. */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -747,6 +830,7 @@ button.auth-action-btn:hover:not(:disabled) {
 .hero-top, .hero-bottom { position: relative; z-index: 4; }
 .hero-top {
   display: flex; align-items: flex-start;
+  min-width: 0;
   padding: 10px 10px 0;
   /* Own stacking context, above .hero-notices (z-index: 5) — the bot switcher
      dropdown lives in here and must never be obscured by a notice banner
@@ -773,13 +857,15 @@ body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
    sits in the corner on every platform.) */
 /* The name is centred across the FULL banner width; the gear is pinned to the
    corner and taken out of the flow so it can't push the name off-centre. */
-.hero-top .agent-name-row { flex: 1 1 auto; justify-content: center; min-width: 0; }
+/* Leaves room for the 44px gear on the right so the centred name never runs
+   under it; fitBotName() measures against this row. */
+.hero-top .agent-name-row { flex: 1 1 auto; justify-content: center; min-width: 0; padding: 0 44px 0 8px; }
 .hero-top .agent-gear { position: absolute; top: 8px; right: 8px; }
 /* Only 5px below the status line — it's the quietest thing on screen and reads
    better tucked against the edge than floating above it. */
 .hero-bottom { padding: 0 12px 5px; }
 .hero-bottom .field { margin-bottom: 8px; }
-.hero-bottom .field label { color: #e8eaed; text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
+.hero-bottom .field label { color: var(--on-art); text-shadow: 0 1px 2px rgba(0,0,0,0.6); }
 
 /* The art layer — fills the banner and is the only thing that clips.
    container-type lets the face size itself as a fraction of the banner (cqmin)
@@ -886,23 +972,37 @@ body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
 /* `button.` prefix, not a bare class: the global `button:not(.primary)` fill is
    specificity (0,1,1) and would otherwise beat a plain class and paint these
    ghost controls solid grey. */
+/* The name sits on a translucent ink chip, always — not only on hover. The
+   window is the bot (2026-09-07), so the artwork under this can be anything a
+   user picks, and Stan's own gear vanished on a light one. A chip gives the
+   name and the gear their own contrast instead of borrowing it from the image;
+   the scrims above/below stay as the softer general lift. */
 button.agent-namebtn {
-  width: auto; min-width: 0;
+  width: auto; min-width: 0; max-width: 100%;
   display: flex; align-items: center; gap: 5px;
-  background: none; border: none; cursor: pointer;
-  padding: 2px 6px; margin: 0 0 0 -6px; border-radius: 8px;
+  background: rgba(74, 49, 64, 0.55); border: none; cursor: pointer;
+  padding: 3px 12px 3px 12px; margin: 0; border-radius: 999px;
   text-align: left;
+  backdrop-filter: blur(6px);
 }
-button.agent-namebtn:hover:not(:disabled) { background: #3c4043; }
+button.agent-namebtn:hover:not(:disabled) { background: rgba(74, 49, 64, 0.75); }
+/* The name, in the display face. Syne is wider than Google Sans, so long names
+   (“Optimus Prime”) run out of room at 380 sooner — fitBotName() in panel.js
+   steps this size down to 15px before the ellipsis takes over. */
 .agent-name {
-  font-family: 'Google Sans', Roboto, sans-serif;
-  font-size: 26px; font-weight: 700; color: #e8eaed; letter-spacing: 0.3px;
+  /* block, not the span's default inline: overflow/ellipsis only apply to a
+     block box, and scrollWidth on an inline element is always 0 — so neither
+     the ellipsis nor fitBotName() could ever see a long name overflow. */
+  display: block; min-width: 0;
+  font-family: var(--font-display);
+  /* 700, not 800: user text, often with a g — Syne's g stub reads cut off at 800 (Seth, Sept 8). */
+  font-size: 26px; font-weight: 700; color: var(--on-art); letter-spacing: -0.01em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   /* Sits on the user's own artwork — a shadow keeps it readable on anything. */
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
-.agent-caret { flex: 0 0 auto; font-size: 13px; color: #e8eaed; text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
-button.agent-namebtn:hover:not(:disabled) .agent-caret { color: #e8eaed; }
+.agent-caret { flex: 0 0 auto; font-size: 13px; color: var(--on-art); text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+button.agent-namebtn:hover:not(:disabled) .agent-caret { color: var(--on-art); }
 /* Bot settings gear — sits next to the name, ghost-icon treatment. Stays
    visible in-call (unlike the switcher). */
 /* Same 36px circle as button.screen-close, which is what replaces it on the
@@ -910,15 +1010,19 @@ button.agent-namebtn:hover:not(:disabled) .agent-caret { color: #e8eaed; }
    the same target. Sized by an explicit box rather than font-size + padding: the
    ⚙ icon and the ✕ glyph have quite different shape-to-em ratios, so matching
    their font sizes would NOT have matched their buttons. */
+/* 44px, not 36: Stan, 2026-09-07 — the gear was "microscopic" against the
+   name, and it is the only way into Bot Settings. Same box as .screen-close,
+   which replaces it on the Settings screen. */
 button.agent-gear {
-  width: 36px; height: 36px; padding: 0; margin: 0;
+  width: 44px; height: 44px; padding: 0; margin: 0;
   flex: 0 0 auto; align-self: center;
   display: inline-flex; align-items: center; justify-content: center;
-  background: none; border: none; color: #e8eaed; cursor: pointer;
+  background: rgba(74, 49, 64, 0.55); border: none; color: var(--on-art); cursor: pointer;
   font-size: 26px; line-height: 1; border-radius: 50%;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(6px);
 }
-button.agent-gear:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
+button.agent-gear:hover:not(:disabled) { background: rgba(74, 49, 64, 0.8); color: var(--on-art); }
 /* These controls sit ON the avatar, over whatever artwork the bot is using, so
    they need the same lift the name and buttons get. text-shadow cannot do it:
    an icon is a masked box, not text, and has no glyph to shadow. drop-shadow
@@ -947,8 +1051,9 @@ body[data-call-state="in-call"] button.agent-namebtn:hover:not(:disabled) { back
 body[data-call-state="in-call"] .hero-precall { display: none; }
 body[data-call-state="in-call"] .hero-incall { display: block; }
 /* Leave Call — the primary action's shape, in red. */
-button.primary.danger { background: #d93025; color: #fff; }
-button.primary.danger:hover:not(:disabled) { background: #e8544a; }
+/* Leave Call — the primary's shape, in the deep pink. The palette has no red. */
+button.primary.danger { background: var(--pink-deep); color: var(--cream); }
+button.primary.danger:hover:not(:disabled) { background: var(--ink); }
 /* Primary action + the ⋯ that reveals manual URL entry, on one line. The
    primary flexes so it stays the obvious target; ⋯ is a fixed ghost square. */
 /* Centred, and each control sized to its own content — a full-width button for
@@ -981,15 +1086,15 @@ button.join-more {
   width: 36px; height: 36px;
   display: inline-flex; align-items: center; justify-content: center;
   background: none; border: none; border-radius: 50%;
-  color: #e8eaed;
+  color: var(--on-art);
   font-size: 15px; line-height: 1;
 }
-button.join-more:hover:not(:disabled) { background: #3c4043; color: #e8eaed; }
+button.join-more:hover:not(:disabled) { background: rgba(74, 49, 64, 0.45); color: var(--on-art); }
 /* The bot's-view toggle swaps 👀 for ✕ once the view is popped out. Both are
    drawn art in the same icon box now, so neither needs a size correction — the
    .is-close class survives only as a state hook for anything that wants it. */
 /* Open state — reads as "this is what's showing the field below". */
-button.join-more[aria-expanded="true"] { color: #8ab4f8; background: rgba(60, 64, 67, 0.9); }
+button.join-more[aria-expanded="true"] { color: var(--pink); background: rgba(74, 49, 64, 0.7); }
 /* ONE glyph, rotated. Swapping icons (+ for ×, or the old ▸ for ▴) makes the
    control jump: different optical weights and advance widths in the same pill.
    Rotating a single glyph keeps the size identical and animates for free.
@@ -1019,28 +1124,29 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: 45deg; }
      ellipsises) when a link is too long for the banner. */
   flex: 0 1 auto; min-width: 0;
   /* On the artwork now — needs the same shadow treatment as the status line. */
-  font-size: 12px; color: #e8eaed;
+  font-family: var(--font-mono);
+  font-size: 11px; color: var(--on-art);
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   user-select: text;
 }
 .call-url-copy {
   flex: 0 0 auto; width: auto; margin: 0; padding: 2px 6px;
-  background: none; border: none; color: #9aa0a6; cursor: pointer;
+  background: none; border: none; color: var(--on-art); cursor: pointer;
   font-size: 13px; border-radius: 6px;
 }
-.call-url-copy:hover { background: #3c4043; color: #e8eaed; }
+.call-url-copy:hover { background: rgba(74, 49, 64, 0.45); color: var(--on-art); }
 
 /* #305 — the bot's effective working dir under the Claude Working Directory field. */
 .workdir-path {
   flex: 1 1 auto;
   min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
-  color: #9aa0a6;
-  background: #303134;
-  border: 1px solid #3c4043;
-  border-radius: 6px;
+  color: var(--ink-soft);
+  background: var(--paper-lo);
+  border: 1px solid var(--line);
+  border-radius: 5px;
   padding: 4px 8px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1066,14 +1172,14 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: 45deg; }
   font-size: 12px;
   font-weight: 600;
   line-height: 1.6;
-  border-radius: 8px;
-  border: 1px solid rgba(232, 234, 237, 0.4);
-  background: rgba(32, 33, 36, 0.55);
-  color: #e8eaed;
+  border-radius: 999px;
+  border: 1.5px solid rgba(255, 244, 218, 0.55);
+  background: rgba(74, 49, 64, 0.55);
+  color: var(--on-art);
   cursor: pointer;
   white-space: nowrap;
 }
-.share-window-btn:hover:not(:disabled) { background: #3c4043; border-color: #8ab4f8; }
+.share-window-btn:hover:not(:disabled) { background: rgba(74, 49, 64, 0.85); border-color: var(--on-art); }
 .share-window-btn:disabled { opacity: 0.55; cursor: default; }
 
 /* ── Chrome icon sizes ────────────────────────────────────────────────────────
@@ -1088,10 +1194,10 @@ button.join-more[aria-expanded="true"] .join-caret { rotate: 45deg; }
 /* 20, not 24: the gear is Octicons art, whose glyph fills its canvas edge to
    edge, where the OpenMoji outlines around it leave a wide margin. At the same
    box it reads a size larger than every other icon on the banner. */
-button.agent-gear .ui-icon { width: 20px; height: 20px; vertical-align: 0; }
+button.agent-gear .ui-icon { width: 24px; height: 24px; vertical-align: 0; }
 /* The Done check spans ~half its 36px circle — it's the only affordance on that
    screen, so it carries more weight than the icons packed into the call row. */
-.screen-close .ui-icon { width: 26px; height: 26px; vertical-align: 0; }
+.screen-close .ui-icon { width: 28px; height: 28px; vertical-align: 0; }
 button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 /* Leading a label: small, and tied to the label's size. */
 .share-window-btn .ui-icon { width: 16px; height: 16px; }
@@ -1102,8 +1208,9 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 .profile-menu {
   display: none;
   position: absolute; z-index: 50; top: 100%; left: 0; right: 0; margin-top: 4px;
-  background: #2a2d31; border: 1px solid #5f6368; border-radius: 8px;
-  box-shadow: 0 6px 24px rgba(0,0,0,0.5); padding: 6px; font-size: 12px;
+  background: var(--paper); border: 1.5px solid var(--ink); border-radius: 6px;
+  color: var(--ink);
+  box-shadow: var(--shadow); padding: 6px; font-size: 12px;
   max-height: 60vh; overflow: auto;
 }
 
@@ -1111,8 +1218,8 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 /* User (vibeconferencing.com) login — de-emphasized, transitional (#289) */
 .user-id-line {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  margin-top: 10px; padding-top: 8px; border-top: 1px solid #3c4043;
-  font-size: 11px; color: #9aa0a6;
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line);
+  font-size: 11px; color: var(--ink-soft);
 }
 
 /* ── Troubleshooting: two columns, and the call-feedback bar ────────────────
@@ -1160,8 +1267,9 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   flex: 1 1 0; min-width: 0; width: auto;
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   padding: 10px 4px;
-  background: #2a2d31; color: #e8eaed;
-  border: 1px solid #5f6368; border-radius: 8px; cursor: pointer;
+  background: var(--paper); color: var(--ink);
+  border: 1.5px solid var(--ink); border-radius: 6px; cursor: pointer;
+  font-family: var(--font-body); font-weight: 500;
 }
 .ts-feedback .fb-emoji { font-size: 24px; line-height: 1; }
 .ts-feedback .fb-label {
@@ -1174,7 +1282,7 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   .ts-feedback .fb-row { flex-wrap: wrap; }
   .ts-feedback button { flex: 1 1 auto; min-width: 96px; }
 }
-.ts-feedback button:hover { background: #3c4043; }
+.ts-feedback button:hover { background: var(--paper-lo); }
 /* Flash green on click. The whole point is confirming the mark landed without
    stealing attention from the call. */
 /* Submit feedback you can't miss. Mid-call the click is often peripheral —
@@ -1187,14 +1295,14 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   100% { transform: scale(1); }
 }
 .ts-feedback button.logged {
-  background: #1e4620; border-color: #34a853;
+  background: var(--pink); border-color: var(--ink); color: var(--cream);
   animation: fb-pop 320ms ease-out;
 }
 /* The note flashes too, so it is obvious the typed text went WITH the click
    rather than being left behind. */
 @keyframes fb-note-sent {
-  0%   { border-color: #34a853; background: #1e4620; }
-  100% { border-color: #5f6368; background: #2a2d31; }
+  0%   { border-color: var(--pink); background: var(--paper-lo); }
+  100% { border-color: var(--ink); background: var(--cream); }
 }
 .ts-feedback #feedbackNote.sent { animation: fb-note-sent 900ms ease-out; }
 /* Movement is the part that can be unwelcome; the colour still confirms. */
@@ -1207,21 +1315,21 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 .ts-feedback #feedbackNote {
   width: 100%; box-sizing: border-box; margin-top: 8px;
   padding: 7px 10px; font-size: 12px;
-  background: #2a2d31; color: #e8eaed;
-  border: 1px solid #5f6368; border-radius: 8px;
+  background: var(--cream); color: var(--ink);
+  border: 1.5px solid var(--ink); border-radius: 5px;
 }
-.ts-feedback #feedbackNote::placeholder { color: #80868b; }
+.ts-feedback #feedbackNote::placeholder { color: var(--ink-faint); }
 
 /* ── Brain pane (#242) ──────────────────────────────────────────────────────
    A read-only view of the agent's activity feed. Monospace because the lines
    are already formatted upstream (🗣 / 🔧 / 💬 prefixes and one-lined text) —
    proportional type would break that alignment for no gain. */
 .brain-feed {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 11px; line-height: 1.5;
   white-space: pre-wrap; word-break: break-word;
-  background: #202124; color: #e8eaed;
-  border: 1px solid #3c4043; border-radius: 8px;
+  background: var(--paper); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 6px;
   padding: 10px 12px;
   /* Fills the window: this is the only content on the screen, and a fixed
      height would waste a pane the user opened specifically to read. */
@@ -1233,13 +1341,13 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
      debugging. Opt back in, and take the I-beam so it looks selectable. */
   user-select: text; cursor: text;
 }
-.brain-feed .l-say  { color: #e8eaed; }
-.brain-feed .l-tool { color: #8ab4f8; }
-.brain-feed .l-ask  { color: #fdd663; }
+.brain-feed .l-say  { color: var(--ink); }
+.brain-feed .l-tool { color: var(--magenta); }
+.brain-feed .l-ask  { color: var(--pink-deep); }
 /* Reasoning. Dimmer than speech and italic — it is the agent's private working,
    so it should read as an aside rather than compete with what it actually said. */
-.brain-feed .l-think { color: #c58af9; font-style: italic; }
-.brain-feed .l-none { color: #9aa0a6; font-style: italic; }
+.brain-feed .l-think { color: var(--ink-soft); font-style: italic; }
+.brain-feed .l-none { color: var(--ink-faint); font-style: italic; }
 
 /* #255 — the share-this-call's-log control. A rule used to separate it from the
    feedback buttons above, on the argument that this one sends data off the

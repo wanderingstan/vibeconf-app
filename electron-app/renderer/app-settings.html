@@ -3,24 +3,49 @@
 <head>
   <meta charset="utf-8" />
   <title>App Settings</title>
+  <link rel="stylesheet" href="fonts.css" />
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background:#202124; color:#e8eaed; margin:0; }
-    .as-header { padding:14px 16px; border-bottom:1px solid #3c4043; }
-    .as-header h1 { font-size:15px; margin:0; }
-    .as-header .sub { color:#9aa0a6; font-size:12px; margin-top:3px; line-height:1.4; }
-    .as-section { padding:14px 16px; border-bottom:1px solid #2a2d31; }
-    .as-section h2 { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:#9aa0a6; margin:0 0 8px; }
-    label { display:block; font-size:12px; color:#c8ccd0; margin:8px 0 4px; }
-    input[type=text], input[type=password], select {
-      width:100%; box-sizing:border-box; background:#2a2d31; border:1px solid #5f6368;
-      border-radius:6px; color:#e8eaed; padding:8px; font-size:13px; outline:none;
+    /* The site's system (2026-09-06), Layer 1 only: cream ground, paper cards,
+       plum ink, mono eyebrows with a pink ✦, one pink primary per window.
+       Native inputs keep their shape; only colour, border and type change. */
+    :root {
+      --cream: #FFF4DA; --paper: #FFFDF7; --paper-lo: #FFE7B3;
+      --ink: #4A3140; --ink-soft: #6B5566; --ink-faint: #9A8798;
+      --pink: #E62776; --pink-deep: #B31199; --magenta: #9F0BA4; --line: #F1D9A4;
+      --shadow: -1px 2px 6px rgba(74, 49, 64, 0.20);
     }
-    input[type=text]:focus, input[type=password]:focus, select:focus { border-color:#8ab4f8; }
-    .desc { color:#9aa0a6; font-size:11px; margin-top:4px; line-height:1.4; }
-    .row-check { display:flex; align-items:center; gap:8px; margin-top:8px; }
-    .row-check label { margin:0; }
-    .ext-link { color:#8ab4f8; text-decoration:none; }
-    .ext-link:hover { text-decoration:underline; }
+    body { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--cream); color: var(--ink); margin: 0; font-size: 13px; }
+    .as-header { padding: 14px 16px 12px; background: var(--paper); border-bottom: 1px solid var(--line); }
+    .as-header h1 { font-family: 'Syne', Futura, sans-serif; font-size: 16px; font-weight: 800; margin: 0; letter-spacing: -0.01em; }
+    .as-header .sub { color: var(--ink-soft); font-size: 12px; margin-top: 4px; line-height: 1.45; }
+    .as-header .sub strong { color: var(--ink); }
+    .as-section { padding: 14px 16px 16px; border-bottom: 1px solid var(--line); }
+    /* Section headers are mono eyebrows — the strongest brand tell at app scale. */
+    .as-section h2 { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .18em; color: var(--magenta); margin: 0 0 10px; }
+    .as-section h2::before { content: "✦ "; color: var(--pink); }
+    label { display: block; font-size: 12px; font-weight: 500; color: var(--ink); margin: 8px 0 4px; }
+    input[type=text], input[type=password], select {
+      width: 100%; box-sizing: border-box; background: var(--cream); border: 1.5px solid var(--ink);
+      border-radius: 5px; color: var(--ink); padding: 8px 10px; font-size: 13px; font-family: inherit; outline: none;
+    }
+    input[type=text]:focus, input[type=password]:focus, select:focus { outline: 2px solid var(--pink); outline-offset: 1px; }
+    .desc { color: var(--ink-soft); font-size: 11.5px; margin-top: 5px; line-height: 1.45; }
+    .desc code { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10.5px; background: var(--paper-lo); padding: 1px 4px; border-radius: 3px; }
+    .row-check { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+    .row-check label { margin: 0; }
+    .ext-link, a { color: var(--magenta); text-decoration: underline; text-underline-offset: 2px; text-decoration-thickness: 1.5px; }
+    .ext-link:hover, a:hover { color: var(--pink-deep); }
+    /* Buttons: Syne, pill, 1.5px ink border. Primary = pink fill, the one per
+       window; secondary = paper. The inline styles that used to live on each
+       button are gone — these classes replace them. */
+    button { font-family: 'Syne', Futura, sans-serif; font-weight: 700; font-size: 12.5px; border-radius: 999px; padding: 8px 16px; border: 1.5px solid var(--ink); cursor: pointer; }
+    button.primary { background: var(--pink); color: var(--cream); box-shadow: var(--shadow); }
+    button.primary:hover { background: var(--pink-deep); }
+    button.secondary { background: var(--paper); color: var(--ink); }
+    button.secondary:hover { background: var(--paper-lo); }
+    /* State is a glyph + a word, in ink — the palette has no green. */
+    .state-ok { color: var(--ink); font-weight: 500; }
+    .state-bad { color: var(--pink-deep); font-weight: 500; }
   </style>
 </head>
 <body>
@@ -35,8 +60,8 @@
     <h2>You (vibeconferencing.com)</h2>
     <div id="userStatus" class="desc">Checking login…</div>
     <div style="margin-top:8px;display:flex;gap:8px">
-      <button type="button" id="userSignInBtn" style="display:none;background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Sign in with Google</button>
-      <button type="button" id="userSignOutBtn" style="display:none;background:#2a2d31;color:#e8eaed;border:1px solid #5f6368;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Log out</button>
+      <button type="button" id="userSignInBtn" class="primary" style="display:none">Sign in with Google</button>
+      <button type="button" id="userSignOutBtn" class="secondary" style="display:none">Log out</button>
     </div>
     <div class="desc">Your login for the shared whiteboard rooms. One sign-in covers every profile on this machine.</div>
   </div>
@@ -52,7 +77,7 @@
     <h2>Voice key gift</h2>
     <div class="desc" id="giftDesc">You've been gifted a voice key.</div>
     <div style="margin-top:8px">
-      <button type="button" id="giftAcceptBtn" style="background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Use it</button>
+      <button type="button" id="giftAcceptBtn" class="primary">Use it</button>
     </div>
   </div>
 
@@ -63,14 +88,14 @@
     <!-- Fires once, right after a paste verifies clean — pairs with the spoken
          confirmation in panel.js. Fades on its own rather than sitting forever,
          since ttsKeyProblem below already covers the persistent state. -->
-    <div class="desc" id="ttsKeyValidated" style="display:none;color:#81c995">✓ Key verified and active.</div>
+    <div class="desc state-ok" id="ttsKeyValidated" style="display:none">✓ Key verified and active.</div>
     <!-- Auto-applied when the slot was empty (see checkTtsGrant, #273) — this
          is the after-the-fact notice, not a prompt. -->
-    <div class="desc" id="ttsGiftedNotice" style="display:none;color:#81c995">✓ This is a gifted key — a voice with zero setup.</div>
+    <div class="desc state-ok" id="ttsGiftedNotice" style="display:none">✓ This is a gifted key — a voice with zero setup.</div>
     <!-- A key can be PRESENT and dead. Shown where the key is EDITED, because
          until now the only way to discover a dead one was to try picking a voice
          and read the failure. -->
-    <div class="desc" id="ttsKeyProblem" style="display:none;color:#f28b82"></div>
+    <div class="desc state-bad" id="ttsKeyProblem" style="display:none"></div>
     <div class="desc">The machine-wide ElevenLabs secret used for text-to-speech. Without it, bots fall back to the system's built-in voice, if the platform has one.</div>
     <div class="desc">Get a key at <a href="https://elevenlabs.io/app/settings/api-keys" id="ttsKeyLink" class="ext-link">elevenlabs.io ↗</a> — signup is free, and the free tier includes enough characters to try it out.</div>
   </div>
@@ -82,7 +107,7 @@
     <h2>Realtime voice (OpenAI, experiment)</h2>
     <label for="realtimeApiKey">API key</label>
     <input type="password" id="realtimeApiKey" placeholder="sk-..." autocomplete="off" spellcheck="false" />
-    <div class="desc" id="realtimeKeyProblem" style="display:none;color:#f28b82"></div>
+    <div class="desc state-bad" id="realtimeKeyProblem" style="display:none"></div>
     <div class="desc">Machine-wide OpenAI secret, stored once for every bot. Each bot then decides for itself whether to use it, via its own <code>realtimeVoice</code> setting, so a realtime bot and normal Claude-backed bots can sit in the same call.</div>
     <div class="desc">A realtime bot hears the call as audio and answers as audio, with sub-second turn-taking and real barge-in. It is NOT connected to Claude, so it cannot read your repo or use tools. Audio bills per minute in both directions for as long as that bot is in a call, including while nobody is talking.</div>
     <div class="desc">Get a key at <a href="https://platform.openai.com/api-keys" class="ext-link">platform.openai.com ↗</a>.</div>

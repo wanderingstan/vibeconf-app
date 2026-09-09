@@ -3836,15 +3836,46 @@ function uiSignature(image) {
 //
 // The pixels come from the SAME capture the bot already uses to look at the
 // room — meetView.webContents.capturePage(), the thing behind
-// get_call_screenshot. Deliberately not a new capture path: the bot cannot see
-// another participant's stream directly (get_shared_screenshot is its OWN
-// share), so the Meet view as rendered is the honest and only route, and it is
-// the picture the agent will be looking at anyway when it wakes.
+// get_call_screenshot.
+//
+// This used to say the Meet view was "the honest and only route", which was too
+// strong: the page could draw the presented <video> element to a canvas and get
+// the SOURCE resolution instead of whatever Meet's layout shrank it to (see
+// #694's measurements). That is a better picture and a worse dependency — it
+// leans on Meet's DOM, which changes. For DETECTION it also buys nothing, since
+// every sample is downscaled to a 320x180 grid immediately. So capturePage
+// stays here, and the canvas route is worth considering only where the
+// resolution is actually spent: the picture handed to the agent.
+//
+// CROPPED to the presented tile before it is downscaled (presentation-rect.js).
+// Faces are the hardest noise source this detector has — a webcam changes every
+// frame — and cropping removes them by construction instead of by the churn
+// filter. It also spends the grid on the thing being watched: a 1900px share
+// mapped onto 320 cells rather than a 2560px view in which the share is one
+// tile.
 //
 // Resized in-process to the detector's grid, so the full-size PNG is never
 // encoded and nothing is written to disk on the 2-second path.
 const screenSettle = require('./screen-settle.js');
+const presentationRect = require('./presentation-rect.js');
 let screenSettleWatcher = null;
+
+// Where the share is on screen, re-measured each sample because Meet re-lays
+// out constantly (someone joins, someone pins, the layout flips). Cheap: one
+// executeJavaScript returning a few rects, the same measurement record
+// record-region.js already defines.
+//
+// null means "cannot tell which tile is the share" — NOT "there is no share".
+// That second question is Meet's own presenting signal and is answered by the
+// caller. When it cannot tell, the sample falls back to the whole view, which
+// is what shipped before cropping existed.
+async function measurePresentationRect() {
+  if (!meetView || meetView.webContents.isDestroyed()) return null;
+  try {
+    const m = await meetView.webContents.executeJavaScript(recordRegion.MEASURE_SCRIPT, true);
+    return presentationRect.pickPresentationRect(m);
+  } catch { return null; }
+}
 
 async function captureMeetViewGrid() {
   if (!meetView || meetView.webContents.isDestroyed()) return null;
@@ -3854,8 +3885,36 @@ async function captureMeetViewGrid() {
   // flashes a window on screen, and doing it every two seconds for a monitor
   // nobody asked to see would be its own bug. Skip the sample instead.
   if (!image || image.isEmpty()) return null;
-  const small = image.resize({ width: screenSettle.GRID_W, height: screenSettle.GRID_H, quality: 'good' });
+
+  // Crop to the share when we can find it. capturePage returns pixels in the
+  // capture's own scale, which is not necessarily CSS pixels on a HiDPI
+  // display, so the measured CSS rect is scaled by the ratio between them
+  // rather than used directly.
+  let target = image;
+  const rect = await measurePresentationRect();
+  if (rect) {
+    try {
+      const size = image.getSize();
+      const scale = size.width / (await meetViewCssWidth()) || 1;
+      const cropped = image.crop({
+        x: Math.round(rect.x * scale), y: Math.round(rect.y * scale),
+        width: Math.round(rect.w * scale), height: Math.round(rect.h * scale),
+      });
+      if (cropped && !cropped.isEmpty()) target = cropped;
+    } catch { /* crop out of bounds mid-relayout — sample the whole view */ }
+  }
+
+  const small = target.resize({ width: screenSettle.GRID_W, height: screenSettle.GRID_H, quality: 'good' });
   return screenSettle.grayGridFromBitmap(small.toBitmap(), screenSettle.GRID_W, screenSettle.GRID_H);
+}
+
+// The view's width in CSS pixels, for converting a measured rect into capture
+// pixels. Cached per sample rather than per call: the bot view can be resized
+// mid-call (set_share_size, meetViewSize).
+async function meetViewCssWidth() {
+  try {
+    return await meetView.webContents.executeJavaScript('window.innerWidth', true);
+  } catch { return 0; }
 }
 
 // Start/stop to match (pref is on) AND (we are in a call). Called from both
@@ -3863,7 +3922,19 @@ async function captureMeetViewGrid() {
 // know about the other.
 function reconcileScreenSettleWatcher() {
   try {
-    const want = prefValue('watchSharedScreen') === true && localServer.callStatus === 'in-call';
+    // Three conditions, not two. The third is the one that matters most:
+    // WITHOUT AN ACTIVE SHARE THERE IS NOTHING TO WATCH. The watcher used to
+    // run for the whole call, sampling a view of faces every two seconds and
+    // relying on the churn filter to ignore them — work whose only possible
+    // output was a false wake. Stan, 2026-09-09: "when nobody is presenting,
+    // stop the watcher entirely."
+    //
+    // Reconciled on the presenting edge as well as the pref and call-status
+    // edges, so a share starting mid-call starts the watcher without waiting
+    // for anything else to change.
+    const want = prefValue('watchSharedScreen') === true
+      && localServer.callStatus === 'in-call'
+      && localServer.someoneElsePresenting === true;
     if (want && !screenSettleWatcher) {
       screenSettleWatcher = screenSettle.createScreenSettleWatcher({
         capture: captureMeetViewGrid,
@@ -3875,7 +3946,10 @@ function reconcileScreenSettleWatcher() {
         screenSettle.DEFAULT_INTERVAL_MS + 'ms at', screenSettle.GRID_W + 'x' + screenSettle.GRID_H);
     } else if (!want && screenSettleWatcher) {
       screenSettleWatcher.stop();
-      console.log('[electron] Shared-screen watch OFF —',
+      const why = prefValue('watchSharedScreen') !== true ? 'preference off'
+        : localServer.callStatus !== 'in-call' ? 'not in a call'
+        : 'nobody is presenting';
+      console.log('[electron] Shared-screen watch OFF (' + why + ') —',
         screenSettleWatcher.stats.samples, 'samples,', screenSettleWatcher.stats.settles, 'settle(s),',
         screenSettleWatcher.stats.failures, 'capture failure(s)');
       screenSettleWatcher = null;
@@ -14302,7 +14376,12 @@ function setupIPC() {
   });
 
   ipcMain.on(CALL_EVENTS.someonePresenting, (_event, { presenting, presenterName }) => {
+    const was = localServer.someoneElsePresenting;
     localServer.setSomeoneElsePresenting(presenting, presenterName);
+    // #673: the share starting or stopping is exactly when the settle watcher
+    // should start or stop. Reconciled on the EDGE so a share beginning mid-call
+    // does not wait for the next pref or call-status change.
+    if (was !== localServer.someoneElsePresenting) reconcileScreenSettleWatcher();
   });
 
   // Track our own presenting state from Meet UI (Stop presenting button visible)

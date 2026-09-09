@@ -289,7 +289,7 @@ test('the screen wake is a new REASON on the existing waiter machinery', () => {
     'it must resolve waiters the way chat does, not invent a second path');
   assert.match(server, /reason === 'screen'[\s\S]{0,120}screenWake = true/,
     'and tag the response so the agent is told WHY it woke');
-  assert.match(server, /noteScreenSettled[\s\S]{0,400}anyoneSpeaking \? 'someone-speaking'/,
+  assert.match(server, /noteScreenSettled[\s\S]{0,1800}anyoneSpeaking \? 'someone-speaking'/,
     'the floor beats the screen — same gate chat uses');
 });
 
@@ -300,9 +300,65 @@ test('the MCP side consumes a finished value and never reaches across the packag
     + 'would resolve in the repo and kill the MCP server in the built app (v0.8.50)');
 });
 
-test('the watch is a mode, off by default, and only runs in a call', () => {
+test('the watch is a mode, off by default, in a call, AND only while someone presents', () => {
   assert.match(schema, /watchSharedScreen:[\s\S]{0,200}default: false/);
-  assert.match(main, /prefValue\('watchSharedScreen'\) === true && localServer\.callStatus === 'in-call'/);
-  assert.match(main, /meetView\.webContents\.capturePage\(\)[\s\S]{0,900}grayGridFromBitmap/,
+
+  // Three conditions. The third was added on 2026-09-09 and is the one that
+  // matters most: without an active share there is nothing to watch, so the
+  // watcher used to sample a view of faces every two seconds and lean on the
+  // churn filter to ignore them — work whose only possible output was a false
+  // wake. Stan: "when nobody is presenting, stop the watcher entirely."
+  assert.match(main, /prefValue\('watchSharedScreen'\) === true/);
+  assert.match(main, /localServer\.callStatus === 'in-call'/);
+  assert.match(main, /localServer\.someoneElsePresenting === true/,
+    'no share means no watcher at all, not a watcher filtering faces');
+
+  assert.match(main, /meetView\.webContents\.capturePage\(\)[\s\S]{0,2000}grayGridFromBitmap/,
     'the pixels come from the SAME capture get_call_screenshot uses, resized in-process');
+});
+
+test('the watcher starts and stops on the presenting EDGE, not just on pref or call changes', () => {
+  // A share beginning mid-call must start the watcher then, rather than waiting
+  // for something unrelated to change.
+  assert.match(main, /someonePresenting[\s\S]{0,600}reconcileScreenSettleWatcher\(\)/,
+    'the presenting IPC edge must reconcile the watcher');
+});
+
+test('the sample is cropped to the presented tile before it is downscaled', () => {
+  // Faces are the hardest noise source this detector has, and cropping removes
+  // them by construction rather than by the churn filter. It also spends the
+  // 320x180 grid on the thing being watched instead of on a view in which the
+  // share is one tile among several.
+  assert.match(main, /pickPresentationRect/, 'the crop rect comes from presentation-rect.js');
+  assert.match(main, /capturePage\(\)[\s\S]{0,1500}\.crop\(/,
+    'and the crop happens on the captured image, before the resize');
+});
+
+// --- the throttle ----------------------------------------------------------
+
+test('a screen wake is throttled, and the throttle is a knob', () => {
+  // Debounce vs throttle, which are different mechanisms for different problems:
+  // "settle" IS the debounce (continuous typing never goes quiet, so it never
+  // fires). The throttle covers discrete edits with pauses, where every pause is
+  // a real settle. Stan, 2026-09-09: "we need some max rate at which these
+  // updates flow, one every 10 seconds?"
+  assert.match(schema, /screenWakeMinGapMs:[\s\S]{0,200}default: 10000/);
+  assert.match(server, /screenWakeMinGapMs/, 'the wake path must consult it');
+  assert.match(server, /throttled \(/, 'and say so, so a missing wake is explainable from the log');
+});
+
+test('the throttle is measured from the last WAKE, not the last settle', () => {
+  // The cost being limited is the agent's turn, not the detector's sample. A
+  // throttle keyed on samples would let a burst of settles through whenever the
+  // agent happened to be slow.
+  assert.match(server, /_lastScreenWakeAt = Date\.now\(\)[\s\S]{0,200}_resolveWaiter\(waiter, 'screen'\)/,
+    'the stamp is taken where the wake actually fires');
+});
+
+test('the existing back-pressure is kept, not replaced by the throttle', () => {
+  // Between a wake and the agent parking again, nothing can fire at all. The
+  // throttle only covers the case that slips through: the agent decides there is
+  // nothing to say, parks quickly, and the next keystroke pause wakes it again.
+  assert.match(server, /no-active-waiter/);
+  assert.match(server, /someone-speaking/, 'the floor still beats the screen');
 });

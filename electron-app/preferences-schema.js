@@ -230,6 +230,23 @@ const PREFERENCES = {
       'settled. The messy data needed to test utterance-completeness detection ' +
       '(#243). Verbose; turn ON only when collecting test data, OFF for normal use.',
   },
+  screenWakeMinGapMs: {
+    type: 'number',
+    default: 10000,
+    min: 0,
+    max: 600000,
+    description:
+      'With watchSharedScreen on, the minimum time between two screen wakes. '
+      + 'This is a THROTTLE, and it is not the same as the detector\'s settle, '
+      + 'which is a debounce: continuous typing never produces a settle at all, '
+      + 'because the frame never goes quiet. What this covers is discrete edits '
+      + 'with pauses — type a line, pause, type another — where every pause is a '
+      + 'genuine settle and would otherwise be a genuine wake. '
+      + 'Measured from the last WAKE, not the last settle, because the cost being '
+      + 'limited is the agent\'s turn rather than the detector\'s sample. '
+      + '0 disables it, leaving only the back-pressure of "no waiter, no wake".',
+  },
+
   watchSharedScreen: {
     type: 'boolean',
     default: false,

@@ -410,6 +410,7 @@ class LocalServer {
     this.participants = [];      // [{ name, speaking, isPseudo }] from DOM speaker tracker
     this.screenShares = [];      // [{ name, id }] — every screen share in the people pane
     this.someoneElsePresenting = false;  // another participant is screen sharing
+    this._lastScreenWakeAt = 0;          // #673 throttle: when a screen wake last fired
     this.presenterName = null;   // name of the person presenting (if any)
 
     // Real-time speaking state (from DOMSpeakerTracker, not captions)
@@ -1779,8 +1780,27 @@ class LocalServer {
       regions: Array.isArray(info.tiles) ? info.tiles.length : 0,
       cells: info.cells || 0,
     };
+    // THROTTLE, which is a different thing from the detector's debounce.
+    //
+    // "Settle" already debounces: continuous typing never produces one, because
+    // the frame never goes quiet. What it does not cover is discrete edits with
+    // pauses — type a line, pause, type another — where every pause is a real
+    // settle and every settle is a real wake. Stan, 2026-09-09: "we need some
+    // max rate at which these updates flow, one every 10 seconds?"
+    //
+    // The no-active-waiter gate below already provides back-pressure: between a
+    // wake and the agent parking again, nothing can fire. This covers the case
+    // that slips through — the agent decides there is nothing to say, parks
+    // again quickly, and is woken by the next keystroke pause.
+    //
+    // Measured from the last WAKE, not the last settle: the cost being limited
+    // is the agent's turn, not the detector's sample.
+    const minGapMs = Number(this._pref('screenWakeMinGapMs'));
+    const sinceWake = this._lastScreenWakeAt ? Date.now() - this._lastScreenWakeAt : Infinity;
     const blocked = this.anyoneSpeaking ? 'someone-speaking'
       : this.waiters.length === 0 ? 'no-active-waiter'
+      : (Number.isFinite(minGapMs) && minGapMs > 0 && sinceWake < minGapMs)
+        ? `throttled (${Math.round(sinceWake / 1000)}s since the last wake, min ${Math.round(minGapMs / 1000)}s)`
       : null;
     if (blocked) {
       console.log(ts(), '🖥️ [screen-wake] shared screen settled but NOT waking —', blocked,
@@ -1790,6 +1810,7 @@ class LocalServer {
     console.log(ts(), '🖥️ [screen-wake] shared screen settled in a quiet room — waking',
       this.waiters.length, 'waiter(s)',
       '(' + this.lastScreenChange.regions + ' region(s), ' + this.lastScreenChange.cells + ' cells)');
+    this._lastScreenWakeAt = Date.now();
     for (const waiter of [...this.waiters]) {
       this._resolveWaiter(waiter, 'screen');
     }

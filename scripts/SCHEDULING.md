@@ -151,6 +151,43 @@ cries wolf gets ignored, and an ignored preflight is worse than none — the fir
 draft of this one flagged the EC2 box as DOWN for being `stopped`, which would have
 fired every single night.
 
+## Pre-test check (19:00, separate agent)
+
+`scripts/pre-test-check.mjs`, installed as `com.vibeconferencing.pre-test.plist`.
+Catches the conditions that make the 03:00 run **wrong or skipped** rather than
+merely red — each of them silent at 03:00, and a one-minute fix at 19:00:
+
+| Check | Why it blocks the night |
+|---|---|
+| Branch is not `main` | the suite tests the **working tree**, so a stray branch tests stale code and still reports green |
+| Uncommitted / behind origin | advisory — you may mean it, but it should be a choice |
+| App instance left running | teardown pkills `test-meet-guest` / `test-slack` **only**; anything else runs all night, holds fleet ports and can ghost into the test room |
+| Fleet port occupied | spawn fails with no obvious cause |
+| A previous run still going | one wedged run silently ate four consecutive nightlies (2026-07-21) |
+| Host load | timeout-shaped failures across unrelated lanes are usually the HOST, not the diff |
+| Test bot has no identity / `ttsProvider != macos-say` | boots as "Unnamed bot", and with the provider unset bills a whole night of scripted speech to ElevenLabs |
+| LaunchAgent not loaded | the quietest failure of all: nothing runs, so there is no red night to notice |
+| Everything `ecosystem-preflight.mjs` covers | session expiry, disk, redis, telegram, the Linux box, Claude auth — reused, not reimplemented, so the two cannot disagree |
+
+**Alert-only.** A clean host sends nothing; a daily "all good" is the message
+people stop reading. Blocking findings buzz the phone, advisory ones arrive
+silently. **Read-only** — it kills nothing and changes no preference, it hands
+you the command; an unattended job should not decide to quit a bot you are using.
+Always exits 0, so nothing can mistake the check for a broken night.
+
+```bash
+node scripts/pre-test-check.mjs            # report to stdout
+node scripts/pre-test-check.mjs --json     # machine-readable
+VIBECONF_NOTIFY_CHAT=<id> node scripts/pre-test-check.mjs --always   # force a post
+```
+
+Install:
+
+```bash
+cp scripts/com.vibeconferencing.pre-test.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.vibeconferencing.pre-test.plist
+```
+
 ## Morning backlog survey (04:30, separate agent)
 
 The last rung of the nightly ladder — 03:00 meet-test suite → 04:00 TTS guardrail →

@@ -48,6 +48,11 @@ const SCRIPTS = {
     await bot.shareWhiteboard();
     await sleep(2000);
     await bot.speak('Diagram is on the board. Changing my background.');
+    // Borrowed, not taken. setPref writes the bot's REAL config, so before this
+    // the suite permanently replaced Alice's background with the test SVG on
+    // every run — her seeded preset survived exactly until the first nightly,
+    // and the stored caption went on naming a picture that was no longer there.
+    const priorBackground = await bot.getPref('avatarBackgroundSvg');
     await bot.setBackground(COLORADO_SVG);
     await bot.setAvatarEmoji('😎');
     await sleep(2000);
@@ -56,6 +61,10 @@ const SCRIPTS = {
     // both bots are confirmed in-call — interleaving it here spread the two
     // sends ~40s apart and read at the wrong moments (false misses).
     await bot.stopSharing();
+    // Put the background back before leaving. Restored even though the assertion
+    // above has already passed: the point of the check is that a change TAKES
+    // EFFECT, not that it sticks forever.
+    if (priorBackground !== undefined) await bot.setBackground(priorBackground);
     await bot.speak('Stopping the share. Test complete on my end.');
     // leave() happens centrally in main() after the chat-wake phase.
   },

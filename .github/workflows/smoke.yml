@@ -38,10 +38,27 @@ jobs:
             fi
           done
 
+      # One step, not two, because the lock is owned by a PID: acquire and release
+      # have to happen in the SAME shell, and every `run:` block is a fresh one.
+      #
+      # `concurrency:` above stops this workflow overlapping ITSELF; it cannot see
+      # the 03:00 nightly, which is a launchd job on this same mini reaching for
+      # the same test-meet-guest-1 profile on the same port 7901 (#720). Overlap
+      # would rewrite that profile's prefs and reset its CLAUDE.md mid-nightly.
+      #
+      # If the nightly holds the lock we WAIT, then skip green rather than fail:
+      # a red X on someone's push because an unrelated nightly was running trains
+      # people to ignore red, and this smoke will run again on the next push. The
+      # nightly is the one that must not be displaced.
       - name: App-health smoke (Google-free)
-        timeout-minutes: 4   # the smoke itself is ~1-2 min; fail fast if it wedges (don't burn the job timeout)
+        timeout-minutes: 25   # 15 min of possible lock wait + the ~1-2 min smoke
         run: |
           set -o pipefail
+          if ! node scripts/fleet-lock.mjs acquire ci-smoke --pid $$ --wait 900; then
+            echo "::notice::skipped — the nightly holds the fleet lock; this smoke will run on the next push"
+            exit 0
+          fi
+          trap 'node scripts/fleet-lock.mjs release ci-smoke --pid $$' EXIT
           pnpm smoke:health:ci 2>&1 | tee /tmp/app-health-smoke.log
 
       # The red check is the primary signal, but a Telegram ping matches where the

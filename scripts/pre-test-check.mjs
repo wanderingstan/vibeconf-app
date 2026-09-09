@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// pre-test-check.mjs — 19:00 readiness check for the 03:00 nightly (#719).
+// pre-test-check.mjs — 19:00 readiness check for the 03:00 nightly.
 //
 // The nightly is unattended and reports at 03:00, which is exactly when nobody
 // is awake to fix it. Everything checked here is a condition that makes the run

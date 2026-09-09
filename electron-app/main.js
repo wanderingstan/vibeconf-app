@@ -3910,14 +3910,35 @@ let screenSettleWatcher = null;
 // caller. When it cannot tell, the sample falls back to the whole view, which
 // is what shipped before cropping existed.
 let lastPresentationRect = null;   // what the most recent sample cropped to
+let lastPresentationKey = null;    // so the crop verdict is logged on change, not every 2s
 
 async function measurePresentationRect() {
   if (!meetView || meetView.webContents.isDestroyed()) return null;
   try {
     const m = await meetView.webContents.executeJavaScript(recordRegion.MEASURE_SCRIPT, true);
-    lastPresentationRect = presentationRect.pickPresentationRect(m);
+    const next = presentationRect.pickPresentationRect(m);
+    // SAY WHICH WAY IT WENT, once per change. Whether the crop found the share
+    // is the difference between a working detector and a useless one, and until
+    // now nothing reported it: a live test on 2026-09-09 ran 75 samples with 0
+    // settles, and the only way to find out why was to reason about it from the
+    // source. That is the same failure the verdict logging was added to fix,
+    // one layer down.
+    const key = next ? `${next.x},${next.y},${next.w},${next.h}` : 'none';
+    if (key !== lastPresentationKey) {
+      lastPresentationKey = key;
+      console.log('[screen-settle] crop → ' + (next
+        ? `the shared tile at ${next.w}x${next.h}`
+        : 'COULD NOT FIND THE SHARE — the picker refused, so there is nothing safe to watch'));
+    }
+    lastPresentationRect = next;
     return lastPresentationRect;
-  } catch { lastPresentationRect = null; return null; }
+  } catch (err) {
+    if (lastPresentationKey !== 'error') {
+      lastPresentationKey = 'error';
+      console.log('[screen-settle] crop → measurement failed: ' + (err && err.message));
+    }
+    lastPresentationRect = null; return null;
+  }
 }
 
 async function captureMeetViewGrid() {
@@ -3933,8 +3954,19 @@ async function captureMeetViewGrid() {
   // capture's own scale, which is not necessarily CSS pixels on a HiDPI
   // display, so the measured CSS rect is scaled by the ratio between them
   // rather than used directly.
+  // NO CROP, NO SAMPLE. Watching the whole Meet view does not degrade the
+  // detector, it defeats it: the view contains live camera tiles, and a moving
+  // face changes a DIFFERENT set of cells every frame, so the churn map — which
+  // only excludes cells that change in the same place, like a cursor or a
+  // clock — never learns to ignore it. Measured live on 2026-09-09: 75 samples,
+  // every one "moving", zero settles, because the picture never goes quiet.
+  //
+  // So a failed crop returns nothing and the sample is skipped, which the
+  // watcher already handles. Better to watch nothing and say so than to run
+  // forever and never fire.
   let target = image;
   const rect = await measurePresentationRect();
+  if (!rect) return { skip: 'the shared tile could not be located, and the full Meet view contains faces the detector can never settle on' };
   if (rect) {
     try {
       const size = image.getSize();
@@ -4024,6 +4056,7 @@ function reconcileScreenSettleWatcher() {
         : 'nobody is presenting';
       console.log('[electron] Shared-screen watch OFF (' + why + ') —',
         screenSettleWatcher.stats.samples, 'samples,', screenSettleWatcher.stats.settles, 'settle(s),',
+        screenSettleWatcher.stats.skipped, 'skipped (no crop),',
         screenSettleWatcher.stats.failures, 'capture failure(s),',
         // Many samples, no settles and many re-baselines is the signature of an
         // unstable crop rect — the failure that ran silently on 2026-09-09.

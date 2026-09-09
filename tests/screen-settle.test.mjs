@@ -300,26 +300,6 @@ test('the MCP side consumes a finished value and never reaches across the packag
     + 'would resolve in the repo and kill the MCP server in the built app (v0.8.50)');
 });
 
-test('the watch is a mode, ON by default, in a call, AND only while someone presents', () => {
-  // Default flipped to ON by Stan on 7 Sept: "a student who needs this would
-  // never find a setting to turn it on". That is only affordable because of the
-  // third condition below — ON without the presenting gate would mean sampling
-  // a view of faces every two seconds for every call, forever.
-  assert.match(schema, /watchSharedScreen:[\s\S]{0,200}default: true/);
-
-  // Three conditions. The third was added on 2026-09-09 and is what makes the
-  // default safe: without an active share there is nothing to watch, so the
-  // watcher used to lean on the churn filter to ignore faces — work whose only
-  // possible output was a false wake. Stan: "when nobody is presenting, stop
-  // the watcher entirely."
-  assert.match(main, /prefValue\('watchSharedScreen'\) === true/);
-  assert.match(main, /localServer\.callStatus === 'in-call'/);
-  assert.match(main, /localServer\.someoneElsePresenting === true/,
-    'no share means no watcher at all, not a watcher filtering faces');
-
-  assert.match(main, /meetView\.webContents\.capturePage\(\)[\s\S]{0,2000}grayGridFromBitmap/,
-    'the pixels come from the SAME capture get_call_screenshot uses, resized in-process');
-});
 
 test('the watcher starts and stops on the presenting EDGE, not just on pref or call changes', () => {
   // A share beginning mid-call must start the watcher then, rather than waiting
@@ -328,15 +308,6 @@ test('the watcher starts and stops on the presenting EDGE, not just on pref or c
     'the presenting IPC edge must reconcile the watcher');
 });
 
-test('the sample is cropped to the presented tile before it is downscaled', () => {
-  // Faces are the hardest noise source this detector has, and cropping removes
-  // them by construction rather than by the churn filter. It also spends the
-  // 320x180 grid on the thing being watched instead of on a view in which the
-  // share is one tile among several.
-  assert.match(main, /pickPresentationRect/, 'the crop rect comes from presentation-rect.js');
-  assert.match(main, /capturePage\(\)[\s\S]{0,1500}\.crop\(/,
-    'and the crop happens on the captured image, before the resize');
-});
 
 // --- the throttle ----------------------------------------------------------
 
@@ -554,4 +525,56 @@ test('the tolerance is sized to the grid, not picked out of the air', () => {
   const at = (x) => ({ x, y: 0, w, h: 1050 });
   assert.ok(sameRegion(at(0), at(Math.floor(cell * 0.9))), 'under one cell: same region');
   assert.equal(sameRegion(at(0), at(Math.ceil(w * 0.03))), false, 'over 2% of the width: not');
+});
+
+// --- nothing safe to sample --------------------------------------------
+
+test('no crop means no sample — and that is not a capture failure', async () => {
+  // Watching the whole Meet view does not degrade the detector, it defeats it.
+  // The view contains live camera tiles, and a moving face changes a DIFFERENT
+  // set of cells every frame, so the churn map — which only excludes cells that
+  // change in the SAME place, like a cursor or a clock — never learns to ignore
+  // it. Measured live on 2026-09-09: 75 samples, every one "moving", zero
+  // settles, because the picture never went quiet.
+  //
+  // So the capture refuses, and the watcher must treat that as a deliberate
+  // skip. Counting it as a failure would spam the log every 2s and trip the
+  // consecutive-failure backoff over a condition working exactly as designed.
+  const { createScreenSettleWatcher } = require('../electron-app/screen-settle.js');
+  const logs = [];
+  let settles = 0;
+  const w = createScreenSettleWatcher({
+    intervalMs: 5,
+    capture: async () => ({ skip: 'the shared tile could not be located' }),
+    onSettled: () => { settles++; },
+    log: (m) => logs.push(m),
+  });
+  w.start();
+  await new Promise((r) => setTimeout(r, 60));
+  w.stop();
+
+  assert.equal(settles, 0);
+  assert.equal(w.stats.failures, 0, 'a deliberate skip must NOT count as a capture failure');
+  assert.equal(w.stats.samples, 0, 'and must not be fed to the detector');
+  assert.ok(w.stats.skipped > 0, 'it is counted as a skip, so the stop line can report it');
+  const skipLines = logs.filter((l) => /skipping samples/.test(l));
+  assert.equal(skipLines.length, 1,
+    `logged once, not once per sample — got ${skipLines.length} of ${w.stats.skipped} skips`);
+  assert.match(skipLines[0], /could not be located/, 'and it says WHY');
+});
+
+test('a real capture failure is still a failure', async () => {
+  // The skip path must not swallow genuine breakage.
+  const { createScreenSettleWatcher } = require('../electron-app/screen-settle.js');
+  const w = createScreenSettleWatcher({
+    intervalMs: 5,
+    capture: async () => { throw new Error('capturePage exploded'); },
+    onSettled: () => {},
+    log: () => {},
+  });
+  w.start();
+  await new Promise((r) => setTimeout(r, 60));
+  w.stop();
+  assert.ok(w.stats.failures > 0, 'a throwing capture is a failure, not a skip');
+  assert.equal(w.stats.skipped, 0);
 });

@@ -334,8 +334,9 @@ function createScreenSettleWatcher({
 } = {}) {
   let timer = null;
   let busy = false;              // a capture is in flight; never overlap them
-  const stats = { samples: 0, settles: 0, failures: 0, consecutiveFailures: 0, rebaselines: 0, stoppedReason: null };
+  const stats = { samples: 0, settles: 0, failures: 0, consecutiveFailures: 0, rebaselines: 0, skipped: 0, stoppedReason: null };
   let lastReason = null;   // log the verdict on CHANGE, so it says why without spamming
+  let lastSkip = null;     // same, for the 'nothing safe to sample' case
 
   async function step() {
     if (busy) return;            // the previous capture is still going: skip, don't queue
@@ -345,6 +346,23 @@ function createScreenSettleWatcher({
       // the region it is a picture of. The second form lets the detector notice
       // it is now looking somewhere else — see push().
       const got = await capture();
+
+      // A DELIBERATE SKIP IS NOT A FAILURE. capture() returns { skip: reason }
+      // when there is nothing safe to sample — today that means the shared tile
+      // could not be located, and watching the whole Meet view instead would
+      // feed the detector live faces it can never settle on. Counting that as a
+      // capture failure would spam the log every 2s and trip the
+      // consecutive-failure backoff over a condition that is working as designed.
+      if (got && got.skip) {
+        if (lastSkip !== got.skip) {
+          lastSkip = got.skip;
+          log('skipping samples — ' + got.skip);
+        }
+        stats.skipped++;
+        return;
+      }
+      lastSkip = null;
+
       const grid = got && got.grid ? got.grid : got;
       const source = got && got.grid ? got.source : null;
       if (!grid) throw new Error('capture returned nothing');

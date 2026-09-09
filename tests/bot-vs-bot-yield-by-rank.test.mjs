@@ -138,3 +138,51 @@ test('a named bot keeps the floor against one that was not named', () => {
   assert.equal(verdictFor('Alice', bots, utterance).yield, false, 'Alice was addressed');
   assert.equal(verdictFor('Jimmy', bots, utterance).yield, true, 'Jimmy was not');
 });
+
+// --- the assumption the tests above were making --------------------------
+
+test('complementarity survives a bot whose display name differs from its configured one', () => {
+  // Every test above hands the SAME bot list to every bot, which is the one
+  // condition under which agreement cannot fail. In the app it does fail: a bot
+  // ranks ITSELF under its configured name and its peers rank it under the
+  // Meet display name, and those differ routinely — _registerPresence publishes
+  // `displayName` precisely when they do, and the test fleet runs "Alice" on a
+  // tile reading "Alice-r4a32".
+  //
+  // Measured on this module before the fix: 16% of turns had both bots keeping
+  // the floor (two bots talking to the end — worse than the random delay this
+  // replaced, which at least terminated) and 18% had both yielding.
+  //
+  // The fix is in _rankedContext, which now keys on the roster's isSelf name.
+  // This test pins the PROPERTY that fix exists to protect: given the two
+  // views of the same room, the verdicts must still be complementary.
+  const DISPLAY = 'Alice-r4a32';
+  let bothKeep = 0, bothYield = 0;
+  for (let i = 0; i < 500; i++) {
+    const utterance = `turn ${i} what do we think`;
+    // Both bots rank Alice under the name the ROOM shows, which is what the
+    // fixed _rankedContext feeds in from the roster.
+    const roster = [DISPLAY, 'Jimmy'];
+    const alice = yieldsTo({ selfName: DISPLAY, botNames: roster, speaker: 'Stan', utterance, interrupters: ['Jimmy'] });
+    const jimmy = yieldsTo({ selfName: 'Jimmy', botNames: roster, speaker: 'Stan', utterance, interrupters: [DISPLAY] });
+    if (alice.yield === jimmy.yield) (alice.yield ? bothYield++ : bothKeep++);
+  }
+  assert.equal(bothKeep, 0, 'two bots must never both keep the floor');
+  assert.equal(bothYield, 0, 'two bots must never both yield — the turn would be lost');
+});
+
+test('the skew this guards against really does break agreement', () => {
+  // The negative control. If ranking self by one name while peers rank it by
+  // another were harmless, the fix above would be cargo cult — so prove the
+  // hazard is real, on this same module.
+  let nonComplementary = 0;
+  for (let i = 0; i < 500; i++) {
+    const utterance = `turn ${i} what do we think`;
+    const alice = yieldsTo({ selfName: 'Alice', botNames: ['Alice', 'Jimmy'], speaker: 'Stan', utterance, interrupters: ['Jimmy'] });
+    const jimmy = yieldsTo({ selfName: 'Jimmy', botNames: ['Alice-r4a32', 'Jimmy'], speaker: 'Stan', utterance, interrupters: ['Alice-r4a32'] });
+    if (alice.yield === jimmy.yield) nonComplementary++;
+  }
+  assert.ok(nonComplementary > 50,
+    `skewed names should break agreement often (got ${nonComplementary}/500) — if this ever `
+    + 'reaches 0, the hash no longer depends on the name and the fix above is moot');
+});

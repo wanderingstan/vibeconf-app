@@ -180,7 +180,7 @@ test('the ranked path reads the MERGED transcript, not this.transcripts', () => 
   const { fileURLToPath } = require('node:url');
   const src = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '..', 'electron-app', 'local-server.js'), 'utf8');
-  const at = src.indexOf('_rankedContext() {');
+  const at = src.search(/_rankedContext\([^)]*\) \{/);   // signature-agnostic: it takes args now
   assert.ok(at > 0, '_rankedContext must exist — it is where the ranked seed is built');
   const fn = src.slice(at);
   // Comments only, stripped — the explanation of the bug naturally NAMES the

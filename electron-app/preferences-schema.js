@@ -1260,18 +1260,28 @@ const PREFERENCES = {
 
   botSpeakReplayRankGapMs: {
     type: 'number',
-    default: 200,
+    default: 500,
     min: 0,
     max: 5000,
     description:
-      'The same spacing as botSpeakRankGapMs, but for a HELD reply being '
-      + 'replayed into an opening (#442). Deliberately shorter: a stash has '
-      + 'already waited out somebody else\'s turn, and charging it a full gap '
-      + 'per rank can push it past the opening it was waiting for. The rank '
-      + 'still decides the order — only the spacing shrinks. Two bots that '
-      + 'stashed during the same busy floor would otherwise wake on the same '
-      + 'opening with nothing between them, which #442 called the most likely '
-      + 'way a room with two bots still hears them talk over each other.',
+      'The spacing between ranks for a HELD reply being replayed into an '
+      + 'opening (#442). Two bots that stashed during the same busy floor '
+      + 'otherwise wake on the same opening with nothing between them, which '
+      + '#442 called the most likely way a room with two bots still hears them '
+      + 'talk over each other. '
+      + 'Separate from botSpeakRankGapMs so a replay CAN be tuned tighter — '
+      + '#442 warned that a full gap per rank may push a held reply past the '
+      + 'opening it was waiting for. But it defaults to the same 500ms, '
+      + 'because that argument does not survive the constraint on the sibling '
+      + 'setting: the gap must EXCEED the time a bot needs to SEE another bot '
+      + 'start, or the loser\'s delay expires before it has noticed the winner '
+      + 'and both talk anyway. Shipped at 200ms first, which is below the '
+      + '360-460ms p90 of the mutation counter and level with the meter\'s '
+      + '180ms — i.e. it bought collisions, not latency. Lower it toward ~250 '
+      + 'only with speakingDetectionMode="meter". And the saving is small where '
+      + 'it matters: the extra 300ms is paid only when the higher-ranked bot '
+      + 'ABSTAINS, since otherwise the floor is busy and the reply waits for '
+      + 'the next opening regardless.',
   },
 
   botSpeakJitterMaxMs: {

@@ -42,7 +42,7 @@ function makeServer(botName, prefs = {}) {
     getPref: (k) => ({
       botSpeakOrdering: 'ranked',
       botSpeakRankGapMs: 500,
-      botSpeakReplayRankGapMs: 200,
+      botSpeakReplayRankGapMs: 200,   // explicit: the DEFAULT is 500, see the schema note
       botSpeakJitterMaxMs: 0,
       bargeInStashMaxAgeMs: 45000,
       bargeInStashRedeliverMaxNewWords: 60,
@@ -129,4 +129,75 @@ test('with ordering off, a replay behaves exactly as it did before', async () =>
   stashOne(s, 'unordered reply');
   const out = s._maybeReplayBargeInStash();
   assert.deepEqual(out, ['unordered reply'], 'replayed synchronously, as before');
+});
+
+// --- what the caller is told, which is not the same as what was said -------
+
+test('a deferred replay still tells the agent its held reply went out', async () => {
+  // The synchronous callers do `const replayed = _maybeReplayBargeInStash();
+  // if (replayed) this._lastReplayedStash = replayed`, and _buildResponse hands
+  // that to the agent so it "learns its queued thought went out and builds on
+  // it instead of repeating it".
+  //
+  // A ranked hold returns null — there is nothing to inspect yet — so without
+  // setting the marker from inside the timer the reply is SPOKEN and the agent
+  // is never told. It then answers the same question again a few seconds later.
+  // That is every rank>=1 bot: half the replays in a two-bot room.
+  const s = makeServer(SECOND);
+  stashOne(s, 'the held reply');
+  assert.equal(s._maybeReplayBargeInStash(), null, 'held for its rank');
+  await settle(400);
+  assert.deepEqual(s.spoken, ['the held reply'], 'it was spoken');
+  assert.deepEqual(s._lastReplayedStash, ['the held reply'],
+    'and the agent is told, exactly as the synchronous path tells it');
+});
+
+test('a reply superseded during the hold is not spoken', async () => {
+  // #519: if the agent has submitted a newer thought, the held one is no longer
+  // its latest word. That guard runs before the hold; the hold gives it time to
+  // become true, so it has to run again after.
+  const s = makeServer(SECOND);
+  stashOne(s, 'superseded reply');
+  s.bargeInStash.seqAtStash = 0;
+  s._maybeReplayBargeInStash();
+  s._agentUtteranceSeq = 1;              // the agent moved on while we waited
+  await settle(400);
+  assert.deepEqual(s.spoken, [], 'the stale reply must not go out');
+});
+
+test('going silent during the hold cancels the replay', async () => {
+  // "Act but never speak". _maybeReplayStashOnOpening checks this before it
+  // ever calls the replay; the hold reopens the window.
+  const s = makeServer(SECOND);
+  stashOne(s, 'should stay unsaid');
+  s._maybeReplayBargeInStash();
+  s.mode = 'silent';
+  await settle(400);
+  assert.deepEqual(s.spoken, []);
+});
+
+test('leaving the call during the hold cancels the replay', async () => {
+  const s = makeServer(SECOND);
+  stashOne(s, 'should stay unsaid');
+  s._maybeReplayBargeInStash();
+  s.callStatus = 'left';
+  await settle(400);
+  assert.deepEqual(s.spoken, [], 'nothing is emitted into a call that ended');
+});
+
+test('two callers landing on one opening still speak exactly once', async () => {
+  // The opening timer and the waiter's silence resolve are scheduled from the
+  // same speech-stop edge, so both call this within milliseconds.
+  //
+  // What protects against double speech is the stash-identity check in the
+  // timer, not the clearTimeout beside it — this test passes without the
+  // clearTimeout, and that is worth stating rather than implying coverage the
+  // test does not have. The clearTimeout stops a HANDLE leaking, which nothing
+  // here can observe.
+  const s = makeServer(SECOND);
+  stashOne(s, 'said once');
+  s._maybeReplayBargeInStash();
+  s._maybeReplayBargeInStash();
+  await settle(400);
+  assert.deepEqual(s.spoken, ['said once'], 'exactly once, not twice');
 });

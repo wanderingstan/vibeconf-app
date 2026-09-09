@@ -395,7 +395,12 @@ for i in $(seq 1 $N); do
     echo "  ⚠️  voice \"$voice\" not installed — $name keeps the system default"
     voice=""
   fi
-  node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";const v=process.argv[2]||"";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}let d=false;if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";d=true;}if(c.onboardingComplete!==true){c.onboardingComplete=true;d=true;}if(v&&c.macosVoice!==v){c.macosVoice=v;d=true;}if(d)fs.writeFileSync(p,JSON.stringify(c,null,2));' "$PROFDIR" "$voice"
+  # Writes go through profile-pref.mjs, which targets <profile>/agent/config.json
+  # — the store the app actually loads since #305. This used to write the loose
+  # <profile>/config.json directly, which the app stopped reading once its agent
+  # config existed: the voice pinning below looked applied on disk and did
+  # nothing at all in the running bot.
+  node "$REPO/scripts/profile-pref.mjs" "$PROFDIR" ttsProvider=macos-say onboardingComplete=true ${voice:+macosVoice="$voice"}
   # VIBECONF_REQUIRE_TOKEN=0: #201 made the local-server control API require a
   # Bearer token by default. The agent-less harness drives that API directly and
   # has no token, so with auth on every call returns {"error":"unauthorized"} and

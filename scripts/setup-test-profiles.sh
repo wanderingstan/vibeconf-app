@@ -91,9 +91,12 @@ SLACK_SETUP_URL="${SLACK_SETUP_URL:-https://app.slack.com/}"
 # so we write them directly (creating the profile dir if needed). Runs
 # regardless of the --google/--slack flags.
 PROFILE_ROOT="$HOME/Library/Application Support/Vibeconferencing/profiles"
-set_pref() {  # <profile-name> <key> <value> — 'true'/'false' are written as JSON booleans
-  local dir="$PROFILE_ROOT/$1"
-  node -e 'const fs=require("fs"),p=process.argv[1],k=process.argv[2],raw=process.argv[3];const v=raw==="true"?true:raw==="false"?false:raw;let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{};c[k]=v;fs.writeFileSync(p,JSON.stringify(c,null,2)+"\n")' "$dir/config.json" "$2" "$3"
+# Writes land in <profile>/agent/config.json — the store the app has loaded
+# since #305, NOT the loose <profile>/config.json this used to write. A write to
+# the loose path is silently inert once the agent config exists: it persists, it
+# reads back correctly, and the app never sees it.
+set_pref() {  # <profile-name> <key> <value> — 'true'/'false' become JSON booleans
+  node "$REPO/scripts/profile-pref.mjs" "$PROFILE_ROOT/$1" "$2=$3" >/dev/null
   echo "  • $1 → $2=$3"
 }
 echo "▶ Profile identity: Alice(-1)=fluent3d, Bob(-2)=noto, Charlie(guest-3)=twemoji (+ skip onboarding wizard)"

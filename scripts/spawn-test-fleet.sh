@@ -60,8 +60,14 @@ NAMES=(Alice Bob Charlie Dizzy)           # display names by index (Alice=-1, Bo
 # Chosen for CONTRAST first, not realism: Alice/Bob are the two-bot pair that
 # nearly every lane uses, so they get different genders AND different accents
 # (en_US vs en_GB) — distinguishable even through Meet's compression and even to
-# someone skimming at 2x.
-VOICES=(Samantha Daniel Karen "Ava (Premium)")
+# someone skimming at 2x. Charlie's Fred is the most distinctive of the lot,
+# which suits a bot that only appears as the third participant in the roster
+# tests. Dizzy keeps Karen (en_AU) now that Ava has moved to index 1.
+#
+# The name must match what `say -v '?'` prints EXACTLY, parenthetical and all —
+# "Ava" alone is not installed, and the guard below silently leaves the pref
+# alone for a voice it cannot find, which surfaces as the bot going mute mid-run.
+VOICES=("Ava (Premium)" Daniel Fred Karen)
 # Base local-server port for the fleet (bots use BASE_PORT, BASE_PORT+1, …).
 # Override with VIBECONF_BASE_PORT to run a fleet that WON'T collide with the
 # on-push CI smoke or the nightly (both use the 7901 default) — e.g. the long

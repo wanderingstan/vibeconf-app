@@ -149,14 +149,28 @@ const DEFAULT_INTERVAL_MS = 2000;
 // the baseline was adopted every time, and NOTHING EVER SETTLED — silently,
 // with no error. Reproduced offline: a 1px jitter took 2 settles to 0.
 //
-// The tolerance is sized to the grid rather than picked. Every sample is
-// downscaled to GRID_W across, so on a 1900px-wide share one cell covers ~6px
-// and a shift smaller than that is invisible in the compared data. Below the
-// floor it cannot matter; above 2% the region has genuinely moved.
+// The tolerance is ONE GRID CELL, and nothing else.
+//
+// Every sample is downscaled to GRID_W across, so on a 1900px share one cell
+// covers ~6px: a shift smaller than that cannot appear in the data being
+// compared, and a shift larger than that moves content into neighbouring cells,
+// which is precisely what "not comparable" means.
+//
+// The first version took max(cell, 2% of the dimension) and the 2% term
+// dominated: 38px on a 1900px share, or 6.4 cells of content movement treated
+// as "the same region". Caught live on 2026-09-09 — a wake reporting 539
+// changed cells across 15 tiles with no visible change to the screen at all,
+// because the crop had slid a few pixels and every cell duly read as different.
+// The comment claimed the bound was the grid while the code used a bound six
+// times larger.
+//
+// The small absolute floor keeps the original jitter fix working on a tiny
+// share, where one cell can be a single pixel and exact comparison would
+// re-baseline forever.
 function sameRegion(a, b, gridW = GRID_W) {
   if (!a && !b) return true;
   if (!a || !b) return false;
-  const tol = (dim) => Math.max(dim / gridW, dim * 0.02);
+  const tol = (dim) => Math.max(2, dim / gridW);
   return Math.abs(a.x - b.x) <= tol(a.w) && Math.abs(a.w - b.w) <= tol(a.w)
       && Math.abs(a.y - b.y) <= tol(a.h) && Math.abs(a.h - b.h) <= tol(a.h);
 }

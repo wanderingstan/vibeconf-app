@@ -517,14 +517,31 @@ test('a rect that genuinely moves DOES re-baseline', () => {
   assert.equal(sameRegion(null, at(0, 1900)), false, 'gaining a crop is not');
 });
 
-test('the tolerance is sized to the grid, not picked out of the air', () => {
-  // One cell of the 320-wide grid covers ~6px of a 1900px share, so a shift
-  // smaller than a cell cannot show up in the data being compared.
+test('the tolerance is ONE GRID CELL — not a percentage of the dimension', () => {
+  // The bound has to be the cell, because that is the resolution of the data
+  // being compared: under a cell a shift cannot appear at all, over a cell it
+  // moves content into neighbouring cells and the frames are not comparable.
+  //
+  // The first version took max(cell, 2% of the dimension) and the 2% term
+  // dominated — 38px on a 1900px share, 6.4 cells of movement called "the same
+  // region". Live on 2026-09-09 that produced a wake reporting 539 changed
+  // cells with no visible change on screen, because the crop had slid and every
+  // cell duly read as different. This pins the bound so the percentage cannot
+  // creep back.
   const { sameRegion, GRID_W } = require('../electron-app/screen-settle.js');
   const w = 1900, cell = w / GRID_W;
   const at = (x) => ({ x, y: 0, w, h: 1050 });
-  assert.ok(sameRegion(at(0), at(Math.floor(cell * 0.9))), 'under one cell: same region');
-  assert.equal(sameRegion(at(0), at(Math.ceil(w * 0.03))), false, 'over 2% of the width: not');
+
+  assert.ok(sameRegion(at(0), at(Math.floor(cell * 0.8))), 'under one cell: same region');
+  assert.equal(sameRegion(at(0), at(Math.ceil(cell * 2))), false, 'two cells: not comparable');
+  assert.equal(sameRegion(at(0), at(Math.round(w * 0.02))), false,
+    'a 2% shift is SIX cells of movement and must not be tolerated');
+
+  // ...and the floor still protects a tiny share, where one cell is ~1px and
+  // exact comparison would re-baseline forever (the bug this file's other test
+  // covers).
+  const tiny = (x) => ({ x, y: 0, w: 320, h: 180 });
+  assert.ok(sameRegion(tiny(0), tiny(1)), 'a 1px jitter on a small share is still tolerated');
 });
 
 // --- nothing safe to sample --------------------------------------------

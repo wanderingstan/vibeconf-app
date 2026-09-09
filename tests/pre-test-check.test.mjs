@@ -1,4 +1,4 @@
-// pre-test-check.test.mjs — the 19:00 readiness check (#719).
+// pre-test-check.test.mjs — the 19:00 readiness check.
 //
 // Guards the two things that were wrong in its first draft, both of which are
 // silent failures: reading the preflight's `status` field (an earlier version

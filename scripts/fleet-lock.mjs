@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// fleet-lock.mjs — one holder at a time for the shared test fleet (#720).
+// fleet-lock.mjs — one holder at a time for the shared test fleet (#719).
 //
 // The test profiles and their ports are a SINGLE machine-wide resource. Two
 // things reach for them independently: the 03:00 nightly, and the app-health

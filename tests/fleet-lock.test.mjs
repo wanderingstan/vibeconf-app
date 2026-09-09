@@ -1,4 +1,4 @@
-// fleet-lock.test.mjs — one holder at a time for the shared test fleet (#720).
+// fleet-lock.test.mjs — one holder at a time for the shared test fleet (#719).
 //
 // The nightly and the CI app-health smoke both spawn test-meet-guest-1 on port
 // 7901; GitHub's `concurrency:` cannot see a launchd job, so the mutual

@@ -204,7 +204,7 @@ prune_profile_recordings() {
 # reaps the trap's notify child), so it sends its own digest before killing, below.
 trap 'exit 143' TERM INT
 
-# --- Fleet lock (#720) -------------------------------------------------------
+# --- Fleet lock (#719) -------------------------------------------------------
 # The test profiles and their ports are ONE machine-wide resource, and the
 # app-health smoke on the self-hosted runner reaches for the same
 # test-meet-guest-1 on the same port 7901 on every push to main. Overlapping does

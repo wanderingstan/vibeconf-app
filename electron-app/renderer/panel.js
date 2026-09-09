@@ -1095,7 +1095,12 @@ let _brainRendered = [];
 //
 // Built from nodes for the same reason brainLineNode is: the message is the
 // agent's own prompt text, verbatim, and innerHTML would render it as markup.
-function renderBrainNotification(s) {
+//
+// Deliberately NOT named with the renderBrain prefix: tests/brain-pane.test.mjs
+// locates that function by a plain indexOf on its declaration, so a longer name
+// sharing the prefix and sitting above it silently hands those tests the wrong
+// body. (This comment avoids spelling the declaration out for the same reason.)
+function renderAgentNotification(s) {
   const el = document.getElementById('brainNotification');
   if (!el) return;
   const n = s && s.agentNotification;
@@ -1113,7 +1118,7 @@ function renderBrainNotification(s) {
 }
 
 function renderBrain(s) {
-  renderBrainNotification(s);
+  renderAgentNotification(s);
   const feed = document.getElementById('brainFeed');
   const status = document.getElementById('brainStatus');
   if (!feed) return;

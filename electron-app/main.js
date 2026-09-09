@@ -25,7 +25,7 @@ const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 // than throwing.
 let adoptSessionAsBot = null;
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
-const { MEASURE_SCRIPT: BOARD_FIT_SCRIPT } = require('./board-fit.js');
+const { readFitScriptFor: boardFitReaderFor, FIT_VERSION_SCRIPT: BOARD_FIT_VERSION_SCRIPT } = require('./board-fit.js');
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
 const recordRegion = require('./record-region.js');
@@ -2612,15 +2612,28 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] eval_share →', result.ok ? 'ok' : `error: ${result.error}`);
     return result;
   },
-  // Measure how much of the board fits on the shared surface (#644). Returns
-  // null rather than an error when there is nothing to measure: this rides on
-  // every whiteboard write, and a board write must not fail because the bot
-  // happens not to be presenting yet.
-  onMeasureBoardFit: async () => {
+  // Read how much of the board fits from the measurement the RENDERER publishes
+  // about itself (#644, vibeconferencing#540). Returns null rather than an error
+  // when there is nothing to read: this rides on every whiteboard write, and a
+  // board write must not fail because the bot happens not to be presenting yet,
+  // or because the website build in front of us predates the publisher.
+  onMeasureBoardFit: async ({ previousVersion } = {}) => {
     const wc = shareWebContents();
     if (!wc) return null;
     try {
-      const result = await evalInShare(wc, BOARD_FIT_SCRIPT);
+      const result = await evalInShare(wc, boardFitReaderFor(previousVersion ?? null));
+      return result?.ok ? (result.result ?? null) : null;
+    } catch {
+      return null;
+    }
+  },
+  // The version stamp of the measurement currently on the board, read BEFORE a
+  // write so the read afterwards can tell the new board from the old one (#644).
+  onBoardFitVersion: async () => {
+    const wc = shareWebContents();
+    if (!wc) return null;
+    try {
+      const result = await evalInShare(wc, BOARD_FIT_VERSION_SCRIPT);
       return result?.ok ? (result.result ?? null) : null;
     } catch {
       return null;
@@ -10694,6 +10707,32 @@ function attachMeetViewForState() {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.addBrowserView(meetView);
 }
 
+// #498: the platform sign-in buttons in Preferences → Identity drive the bot's
+// own browser view, which is 'hidden' by default. Nothing about a login can be
+// done blind, so those buttons pop the view out into its own window first —
+// the same state the 👀 button gives you. Already popped: leave it alone.
+function revealBotViewForSignIn() {
+  try {
+    if (botViewState === 'popped') {
+      // Already popped, but the caller may have just REPLACED meetView
+      // (activateSlackProvider builds a fresh one and parks it in the main
+      // window), which would leave the popout showing nothing. Re-attach the
+      // current view to whichever window this state owns.
+      if (meetView && !meetView.webContents.isDestroyed()
+          && mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.removeBrowserView(meetView); } catch { /* not attached */ }
+      }
+      attachMeetViewForState();
+      layoutViews();
+    } else {
+      setBotViewState('popped');
+    }
+    if (meetPopoutWindow && !meetPopoutWindow.isDestroyed()) meetPopoutWindow.show();
+  } catch (err) {
+    console.warn('[electron] could not reveal the bot view for sign-in:', err.message);
+  }
+}
+
 function setBotViewState(state) {
   if (!botViewLayout.STATES.includes(state)) state = restingBotViewState();
   botViewState = state;
@@ -13413,6 +13452,11 @@ function setupIPC() {
   ipcMain.handle('meet-sign-in-as-bot', () => {
     const url = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmeet.google.com%2F';
     navigateMeetView(url);
+    // #498: the bot view is hidden by default, so without this the sign-in page
+    // loads somewhere nobody can see and the button looks broken. You cannot
+    // type a Google password into a window that isn't on screen — pop the view
+    // out (the 👀 state) so the login is where the click implied it would be.
+    revealBotViewForSignIn();
     return { ok: true, mode: 'account' };
   });
 
@@ -13533,6 +13577,10 @@ function setupIPC() {
   // workspace.
   ipcMain.handle('slack-sign-in', () => {
     activateSlackProvider('https://app.slack.com/', { autojoin: false });
+    // #498, same reason as the Google button above: Slack's login has to be
+    // visible to be completed. Pop the view AFTER activateSlackProvider, which
+    // rebuilds meetView and parks it in the main window.
+    revealBotViewForSignIn();
     return { ok: true };
   });
 
@@ -13556,6 +13604,9 @@ function setupIPC() {
       console.warn('[electron] slack-sign-out failed:', err.message);
     }
     activateSlackProvider('https://app.slack.com/', { autojoin: false });
+    // Signing out drops you on Slack's login page, and the usual reason to sign
+    // out is to sign back in as someone else — so show the view here too.
+    revealBotViewForSignIn();
     return { ok: true };
   });
 

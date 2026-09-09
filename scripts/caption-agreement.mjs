@@ -17,7 +17,7 @@
 //      it — so bots can disagree on the exact text and still agree on the key.
 //
 // Run (bots must be in a call):
-//   node scripts/caption-agreement.mjs --bots Alice:7901,Jimmy:7902,Cosmo:7903
+//   node scripts/caption-agreement.mjs --bots Alice:7901,Bob:7902,Charlie:7903
 
 import { createRequire } from 'node:module';
 import { resolveTarget } from './meet-targets.mjs';
@@ -29,7 +29,7 @@ const argv = process.argv.slice(2);
 const flag = (n, d) => { const i = argv.indexOf('--' + n); return i !== -1 && argv[i + 1] ? argv[i + 1] : d; };
 const ROOM = flag('room', resolveTarget(flag('target', 'default')).room);
 const SHOW = Number(flag('show', '5'));
-const BOTS = flag('bots', 'Alice:7901,Jimmy:7902,Cosmo:7903').split(',').map((s) => {
+const BOTS = flag('bots', 'Alice:7901,Bob:7902,Charlie:7903').split(',').map((s) => {
   const [name, port] = s.split(':');
   return { name, port: Number(port) };
 });

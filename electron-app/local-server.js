@@ -121,7 +121,7 @@ function namesDiffer(a, b) {
 const { formatFitReport, formatBudget } = require('./board-fit.js');
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onBoardFitVersion, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -186,6 +186,7 @@ class LocalServer {
     // than throwing: a host that has not wired it up must still be able to
     // write to the whiteboard.
     this.onMeasureBoardFit = onMeasureBoardFit || (async () => null);
+    this.onBoardFitVersion = onBoardFitVersion || (async () => null);
     this.onFindShareElement = onFindShareElement || (async () => ({ ok: false, error: 'not implemented' }));
     this.onReadShareConsole = onReadShareConsole || (async () => ({ ok: false, error: 'not implemented' }));
     this.onReadShareNetwork = onReadShareNetwork || (async () => ({ ok: false, error: 'not implemented' }));
@@ -556,6 +557,11 @@ class LocalServer {
     // match what these used to be hardcoded as. See preferences-schema.js.
     this._bargeInTimer = null;
     this._bargeInClearTimer = null;
+    // #442: a replay waiting out its rank gap. Held separately from
+    // _bargeInTimer because it means the opposite thing — that timer is the bot
+    // deciding whether to STOP, this one is a held reply waiting its turn to
+    // START — and clearing one must not cancel the other.
+    this._replayRankTimer = null;
     // #392: when the current monitor was armed. The analyser's quiet verdict
     // at grace evaluation is only trusted if the analyser produced an OFF edge
     // AFTER this — proof it actually tracked the interruption to its end. An
@@ -1127,7 +1133,7 @@ class LocalServer {
     //
     // Falls through to jitter whenever the peer set is unknown or this bot is
     // not in it — so the worst case is exactly today's behaviour.
-    const ranked = this._rankedSpeakDelay(t);
+    const ranked = this._rankedSpeakDelay();
     if (ranked) return ranked;
 
     const lead = Number(this._pref('botSpeakUrgencyLeadMs')) || 0;
@@ -1153,19 +1159,58 @@ class LocalServer {
   // indistinguishable from the feature being off, which cost an afternoon:
   // preferences were set, the code was live, and the only visible symptom was
   // that the collision rate did not improve.
-  _rankedSkip(why) {
-    if (this._lastRankSkip !== why) {
-      this._lastRankSkip = why;
-      console.log(ts(), `🎲 [bot-order] ranked ordering unavailable (${why}) — using jitter`);
+  // `fallback` names what happens INSTEAD, because that now differs by caller:
+  // the start path falls back to jitter, the yield path to the random back-off,
+  // and the replay path to speaking immediately. One hardcoded "using jitter"
+  // was true for one of the three and misleading for the others — and this
+  // function exists because a fallback nobody can identify from the log cost an
+  // afternoon once already.
+  _rankedSkip(why, fallback = 'using jitter') {
+    const line = `${why} — ${fallback}`;
+    if (this._lastRankSkip !== line) {
+      this._lastRankSkip = line;
+      console.log(ts(), `🎲 [bot-order] ranked ordering unavailable (${line})`);
     }
     return null;
   }
 
-  _rankedSpeakDelay(t) {
+  // The shared inputs the ordering is computed from: who the bots are, and
+  // which human turn everyone is keying on. Extracted because TWO decisions
+  // need the identical seed — who starts (_rankedSpeakDelay) and who stops
+  // (_evaluateBargeIn's bot-vs-bot branch, #573). Computing it twice from two
+  // copies of this logic is how the two halves would drift apart, and a yield
+  // rule that disagrees with the start order is worse than no yield rule: both
+  // bots would think they won.
+  //
+  // Returns null (having logged why, once) when it cannot be computed.
+  _rankedContext(fallback) {
     const mode = this._pref('botSpeakOrdering');
-    if (mode !== 'ranked') return this._rankedSkip(`botSpeakOrdering=${JSON.stringify(mode)}`);
-    const self = this.getEffectiveBotName();
-    if (!self) return this._rankedSkip('this bot has no name yet');
+    if (mode !== 'ranked') return this._rankedSkip(`botSpeakOrdering=${JSON.stringify(mode)}`, fallback);
+    // RANK SELF UNDER THE NAME EVERYONE ELSE SEES.
+    //
+    // The configured name and the Meet display name are routinely different —
+    // _registerPresence one screen down publishes `displayName` precisely when
+    // `self.name !== name`, and the test fleet runs "Alice" on a tile reading
+    // "Alice-r4a32". Ranking self by the CONFIGURED name while every peer ranks
+    // it by the ROSTER name means the two sides hash different strings for the
+    // same bot and compute different orders.
+    //
+    // namesMatch is prefix-based and lenient, so discovery still succeeds
+    // across the difference: peers are found, ordering reports itself working,
+    // and the agreement it rests on is silently gone. Simulated on this code
+    // with the two names skewed, 2000 turns: 16% both keep the floor (two bots
+    // talking to the end — worse than the dice, which at least terminated) and
+    // 18% both yield (turn lost, then both replay into the same opening with
+    // the same skewed orders). With the names matched: 2000/2000 complementary.
+    //
+    // The roster's own isSelf entry is what the other bots see, so it is the
+    // only correct key. The configured name remains the fallback for the window
+    // before Meet's people pane has named our tile.
+    const rosterSelf = (this.participants || []).find(
+      (p) => p && p.isSelf && p.name && p.name !== 'You');
+    const configuredName = this.getEffectiveBotName();
+    const self = (rosterSelf && rosterSelf.name) || configuredName;
+    if (!self) return this._rankedSkip('this bot has no name yet', fallback);
     // Peers come from the website's room presence, where every bot registers
     // itself with role='bot' (verified live 2026-08-17). peerBotNames is the
     // manual override for when presence is unreachable or a peer predates it.
@@ -1210,14 +1255,14 @@ class LocalServer {
     const source = configured.length ? configured : discovered;
     if (!source.length) {
       return this._rankedSkip('no peer bots known — presence has not named any yet, '
-        + 'and peerBotNames is empty');
+        + 'and peerBotNames is empty', fallback);
     }
     const known = new Set(source.map((n) => n.toLowerCase()));
     const peers = roster.filter((n) => known.has(n.toLowerCase())
       || source.some((s) => namesMatch(n, s)));
     if (!peers.length) {
       return this._rankedSkip(`none of the ${source.length} known bot name(s) are in the `
-        + `roster (${roster.length} listed)`);
+        + `roster (${roster.length} listed)`, fallback);
     }
 
     // The utterance being answered: the last thing said by a HUMAN — anyone
@@ -1242,24 +1287,66 @@ class LocalServer {
     // sync API shows a human utterance that this.transcripts never contains.
     // Reading the wrong collection made this report "no human utterance to key
     // on yet" for hours while the speaker was plainly in the API's transcript.
-    const speakers = new Set([self.toLowerCase(), ...peers.map((p) => p.toLowerCase())]);
+    // Both of our names, not just the one we rank under: the transcript may
+    // carry either, and our own speech must never be mistaken for the human
+    // turn the whole order keys on.
+    const speakers = new Set([
+      self.toLowerCase(),
+      ...(configuredName ? [configuredName.toLowerCase()] : []),
+      ...peers.map((p) => p.toLowerCase()),
+    ]);
     const all = this._entriesSince(null, null) || [];
     const last = [...all].reverse()
       .find((e) => e && e.text && e.participantName && !speakers.has(e.participantName.toLowerCase()));
-    if (!last) return this._rankedSkip(`no human utterance yet (${all.length} entries, excluding ${[...speakers].join('/')})`);
+    if (!last) return this._rankedSkip(`no human utterance yet (${all.length} entries, excluding ${[...speakers].join('/')})`, fallback);
 
+    // THE SEED (see clockKey in speak-order.js). Anchored to lastSpeechStoppedAt
+    // — the silence edge that opened this turn — and NOT to Date.now(): the two
+    // decisions that consume this run at different moments (speak submission vs
+    // grace expiry, up to 1.5s apart and different per bot), while the edge
+    // itself is one physical event all bots observe within the detection spread.
+    //
+    // Falls back to the utterance key when there is no edge yet, which is the
+    // first turn of a call: the content seed is what shipped, so the fallback is
+    // the old behaviour rather than no ordering at all.
+    let seed;
+    if (this._pref('botSpeakSeed') !== 'utterance') {
+      const edge = this.lastSpeechStoppedAt;
+      if (edge) {
+        const { clockKey } = require('./speak-order.js');
+        seed = clockKey(edge, Number(this._pref('botSpeakClockBucketMs')) || 6000);
+      }
+    }
+    return {
+      selfName: self,
+      botNames: [...new Set([...peers, self])],
+      speaker: last.participantName,
+      utterance: last.text,
+      seed,
+    };
+  }
+
+  // What THIS bot should wait before starting, when the order can be computed.
+  // Returns null to mean "fall back to jitter" — the caller's contract since
+  // #426, so an uncomputable order degrades to exactly the old behaviour.
+  //
+  // `gapMs` is overridable because a REPLAY must not pay the same base as fresh
+  // speech: a held reply has already waited out somebody else's turn, and
+  // charging it a full gap per rank can push it past the opening it was waiting
+  // for (#442 warned about exactly this double-delay). The RANK still orders
+  // the bots; only the spacing shrinks.
+  _rankedSpeakDelay({ gapMs, fallback } = {}) {
+    const ctx = this._rankedContext(fallback);
+    if (!ctx) return null;
     let ranked;
     try {
       const { speakDelay } = require('./speak-order.js');
       ranked = speakDelay({
-        selfName: self,
-        botNames: [...new Set([...peers, self])],
-        speaker: last.participantName,
-        utterance: last.text,
-        gapMs: Number(this._pref('botSpeakRankGapMs')) || 500,
+        ...ctx,
+        gapMs: Number.isFinite(gapMs) ? gapMs : (Number(this._pref('botSpeakRankGapMs')) || 500),
       });
-    } catch (err) { return this._rankedSkip(`speak-order threw: ${err.message}`); }
-    if (!ranked) return this._rankedSkip(`this bot ("${self}") is not in the peer set`);
+    } catch (err) { return this._rankedSkip(`speak-order threw: ${err.message}`, fallback); }
+    if (!ranked) return this._rankedSkip(`this bot ("${ctx.selfName}") is not in the peer set`, fallback);
 
     // Urgency deliberately absent: a bot cannot know the others' urgency, so
     // folding its own in would give each bot a different order and undo the
@@ -3688,6 +3775,26 @@ class LocalServer {
   // Grace period elapsed. Decide whether to back off based on who's
   // interrupting. Caller guarantees the timer slot is clear so we can
   // re-arm with the random bot-vs-bot delay if needed.
+  // Should this bot stop, given who is talking over it? (#573)
+  //
+  // Uses _rankedContext so the seed is IDENTICAL to the one that decided who
+  // started — a yield rule computed from a different turn key would let both
+  // bots believe they outrank the other.
+  //
+  // Returns null when the order cannot be computed, which is the caller's
+  // signal to fall back to the random delay rather than guess.
+  _rankedYield(interrupterNames) {
+    const ctx = this._rankedContext('using the random back-off');
+    if (!ctx) return null;
+    try {
+      const { yieldsTo } = require('./speak-order.js');
+      return yieldsTo({ ...ctx, interrupters: interrupterNames });
+    } catch (err) {
+      console.warn(ts(), '[bot-order] yield rule threw:', err.message);
+      return null;
+    }
+  }
+
   _evaluateBargeIn() {
     if (this.botState !== 'speaking' || !this.floorBusy) {
       // Bot already stopped, or interrupter shut up during the grace
@@ -3746,9 +3853,66 @@ class LocalServer {
       return;
     }
 
-    // All interrupters are bots. Wait an additional random delay; if still
-    // being interrupted at the end of it, back off. Whichever bot's random
-    // timer fires first will yield first, breaking the tie.
+    // All interrupters are bots. ASK THE ORDER WE ALREADY COMPUTED (#573).
+    //
+    // speak-order.js has stated the rule since it was written — "they detect
+    // each other within ~180ms and the yield rule is already common knowledge:
+    // higher rank stops" — and nothing implemented it. This branch drew a
+    // SECOND random delay instead, so the collision the ordering exists to
+    // resolve was handed straight back to the coin flip. The cost is not
+    // theoretical: 1500ms grace + up to 3000ms random is up to 4.5s of two bots
+    // talking BY DESIGN, and the overlaps measured on 2026-08-26 were 4.5s and
+    // 3.4s — the budget being spent.
+    //
+    // Both sides compute the same order from the same seed, so the answers are
+    // complementary by construction: the lower rank keeps the floor and the
+    // higher rank stops NOW rather than after a random wait. No exchange, no
+    // timer, and — unlike the dice — no outcome where both yield and the turn
+    // is lost, or neither does and they talk to the end.
+    const yielding = this._rankedYield(interrupters.map((p) => p.name));
+    if (yielding) {
+      if (yielding.yield) {
+        console.log(ts(), '🛡️  [barge-in] bot-vs-bot — yielding by rank: ' + yielding.why
+          + ' (' + this._analyserStateForLog() + ')');
+        this._performBackOff('bot-interrupt-ranked');
+      } else {
+        // Keeping the floor is a DECISION and needs a trace, for the same
+        // reason winning the start order did (#444): silent success and never
+        // running look identical from outside.
+        console.log(ts(), '🛡️  [barge-in] bot-vs-bot — keeping the floor by rank: ' + yielding.why);
+        // SAFETY NET. "Complementary by construction" holds only while both
+        // bots compute the same order, and the ways that can fail are real:
+        // names that differ between presence and the roster, a peer set that
+        // has not converged after a join, a caption landing between the two
+        // bots' grace expiries. When it does fail both sides conclude "keep"
+        // and — unlike the random delay this replaced, which always terminated
+        // within bargeInBotRandomMaxMs — nothing ends the overlap. It runs to
+        // the end of the utterance, which is WORSE than the 4.5s worst case.
+        //
+        // So the rank decides, and this bounds the cost of the rank being
+        // wrong. Re-checked once, against the same window the dice used: still
+        // colliding means the other bot did not accept its loss, and the tie
+        // has to break somehow.
+        const max = Number(this._pref('bargeInBotRandomMaxMs')) || 3000;
+        clearTimeout(this._bargeInTimer);
+        this._bargeInTimer = setTimeout(() => {
+          this._bargeInTimer = null;
+          if (this.botState !== 'speaking' || !this.floorBusy) return;
+          if (this._floorQuietPerAnalyser()) return;
+          const still = this.participants.filter((p) => p.speaking && !p.isSelf && p.name !== 'You');
+          if (!still.length) return;
+          console.log(ts(), '🛡️  [barge-in] bot-vs-bot — still colliding '
+            + max + 'ms after winning the rank; the order is not agreed, backing off ('
+            + this._analyserStateForLog() + ')');
+          this._performBackOff('bot-interrupt-rank-disagreed');
+        }, max);
+      }
+      return;
+    }
+
+    // Order unavailable (jitter mode, no peers discovered, an interrupter we
+    // cannot place). Fall back to the dice, which is what shipped before — a
+    // worse resolution than ranking, but a resolution.
     const min = this._pref('bargeInBotRandomMinMs');
     const max = this._pref('bargeInBotRandomMaxMs');
     const delay = Math.floor(min + Math.random() * (max - min));
@@ -3990,7 +4154,14 @@ class LocalServer {
   // to the slow model. Returns the array of texts that were played (or
   // null if nothing). The bot speaks via the existing onBotSpeech path,
   // so TTS playback / transcript registration follow the normal route.
-  _maybeReplayBargeInStash() {
+  // `orderingPaid` marks the second pass, after a ranked hold has elapsed. The
+  // timer RE-ENTERS this function rather than jumping straight to the flush, so
+  // every guard above is evaluated again against the state as it is NOW: the
+  // supersede check (#519), staleness, and the floor. Skipping them was the
+  // first version's bug — the agent could submit a newer reply, or the user
+  // could leave or go silent, during the hold, and the stale reply went out
+  // anyway because only the stash identity and the floor were re-read.
+  _maybeReplayBargeInStash({ orderingPaid = false } = {}) {
     if (!this.bargeInStash) return null;
     // Supersede guard (#519), checked before the tuned ones because it is exact
     // rather than heuristic and costs nothing. If the agent has submitted a
@@ -4067,7 +4238,64 @@ class LocalServer {
       return null;                       // the stash survives for the next opening
     }
 
-    const entries = this.bargeInStash.entries;
+    // #442's remaining gap: ORDER THE REPLAY BETWEEN BOTS.
+    //
+    // The floor check above stops a replay landing on top of speech already in
+    // progress. It does nothing about the case the issue called "the most
+    // likely way a room with two bots still hears them talk over each other":
+    // two bots that stashed during the SAME busy floor both wake on the SAME
+    // opening, and with no ordering between them they start together — the
+    // exact collision ranked ordering removes for fresh speech.
+    //
+    // The rank orders them; the SPACING is deliberately tighter than fresh
+    // speech. #442: "a stash has already waited; adding a full ranked delay on
+    // top may push it past the opening it was waiting for." So the gap shrinks
+    // to botSpeakReplayRankGapMs, and when the order cannot be computed the
+    // replay goes NOW rather than falling back to jitter — a mean ~1000ms coin
+    // flip is precisely the delay a held reply cannot afford, and it would
+    // reintroduce the latency the stash already paid once.
+    const gapPref = Number(this._pref('botSpeakReplayRankGapMs'));
+    const replayRank = orderingPaid ? null : this._rankedSpeakDelay({
+      gapMs: Number.isFinite(gapPref) ? gapPref : 500,   // 0 is a legal "no spacing"
+      fallback: 'replaying immediately',
+    });
+    if (replayRank && replayRank.delayMs > 0) {
+      console.log(ts(), `🎲 [bot-order] holding replay ${replayRank.delayMs}ms (${replayRank.why})`);
+      const stash = this.bargeInStash;
+      // Both callers — the opening timer and the waiter's silence resolve —
+      // are scheduled from the same speech-stop edge, so they land here within
+      // milliseconds and the second overwrites the first handle. Double SPEECH
+      // is already prevented by the stash-identity check below; this only stops
+      // the first handle leaking.
+      clearTimeout(this._replayRankTimer);
+      this._replayRankTimer = setTimeout(() => {
+        this._replayRankTimer = null;
+        if (this.bargeInStash !== stash) return;      // replayed or cleared meanwhile
+        // The same two conditions _maybeReplayStashOnOpening checks before it
+        // ever calls us, re-read because the hold gave them time to change: the
+        // call can end and the user can ask for silence inside the window.
+        if (this.callStatus !== 'in-call') return;
+        if (this.mode === 'silent') return;
+        // Second pass. Every other guard — supersede, staleness, the floor —
+        // is re-evaluated inside, against the state as it is now.
+        const texts = this._maybeReplayBargeInStash({ orderingPaid: true });
+        // AND TELL THE AGENT IT WENT OUT. The synchronous callers do this from
+        // the return value; a deferred replay has no return value to inspect,
+        // so without this the reply is spoken and the agent never learns it —
+        // it then composes a fresh answer to the same question and says that
+        // too. For every rank>=1 bot, which is half the replays in a two-bot
+        // room.
+        if (texts) this._lastReplayedStash = texts;
+      }, replayRank.delayMs);
+      return null;                                    // spoken later, or held again
+    }
+    if (replayRank) console.log(ts(), `🎲 [bot-order] replaying first (${replayRank.why})`);
+    return this._flushStashNow(this.bargeInStash, ageMs);
+  }
+
+  // The replay itself, once the floor and the order both say go.
+  _flushStashNow(stash, ageMs) {
+    const entries = stash.entries;
     console.log(ts(), '🛡️  [barge-in] replaying stash — ' + entries.length + ' entries, ' + ageMs + 'ms old');
     this.bargeInStash = null;
     const texts = [];
@@ -5775,6 +6003,18 @@ class LocalServer {
 
     // Handle whiteboard update
     if (data.whiteboard && typeof data.whiteboard.content === 'string') {
+      // Note the version stamp of the measurement already on the board, BEFORE
+      // overwriting it. The renderer publishes its own fit stamped with the
+      // board version it describes (#644, vibeconferencing#540), so this is what
+      // lets the read afterwards tell "this is the board I just wrote" from
+      // "this is the one before it" — instead of guessing with a timeout.
+      // Skipped when the content is unchanged: nothing will re-render, so there
+      // is no newer measurement coming and the current one is already correct.
+      const contentChanged = this.whiteboard.content !== data.whiteboard.content;
+      let fitVersionBefore = null;
+      if (contentChanged) {
+        try { fitVersionBefore = await this.onBoardFitVersion(); } catch { /* best effort */ }
+      }
       this.whiteboard.content = data.whiteboard.content;
       this.whiteboard.version++;
       this.whiteboard.lastModified = now;
@@ -5797,14 +6037,18 @@ class LocalServer {
       // it — the two failures are independent and the bot needs to tell them
       // apart ("it didn't save" vs "it saved and nobody can see it").
       const readable = this.boardReadHealthy !== false;
-      // How much of it actually fit (#644). Measured in the share surface AFTER
-      // the write has rendered, so the author learns on the same round trip
-      // whether the room can see what it just wrote — no extra call, and a
-      // running sense of the budget accumulates over a call for free.
+      // How much of it actually fit (#644). The RENDERER measures itself and
+      // publishes the answer stamped with the board version it describes
+      // (vibeconferencing#540); we read that back and accept it only when the
+      // stamp is newer than the one we noted before the write. So the author
+      // learns on the same round trip whether the room can see what it just
+      // wrote — no extra call, no polling, and no timeout standing in for an
+      // answer — and a running sense of the budget accumulates for free.
       //
-      // Best-effort by design: nothing is being shared, the surface is busy, or
-      // the measurement throws — none of those should turn a successful board
-      // write into a failure. A missing measurement is silence, not a lie.
+      // Best-effort by design: nothing is being shared, the surface is busy, the
+      // website build in front of us is older than the publisher, or the read
+      // throws — none of those should turn a successful board write into a
+      // failure. A missing measurement is silence, not a lie.
       // NOTE: the note is FORMATTED here, on the Electron side, and shipped as a
       // finished string. mcp-server/ is copied into the package as extraResources
       // and cannot reach into electron-app/ — importing board-fit.js from there
@@ -5816,7 +6060,7 @@ class LocalServer {
       let fitNote = '';
       if (delivered !== false) {
         try {
-          fit = await this.onMeasureBoardFit();
+          fit = await this.onMeasureBoardFit({ previousVersion: fitVersionBefore });
           if (fit) {
             fitNote = formatFitReport(fit) + (fit.fits ? '' : formatBudget(fit));
           }

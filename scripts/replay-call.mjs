@@ -21,8 +21,8 @@
 //   2. speakingEventCapture=true on each instance (this script sets it).
 //
 // Run:
-//   node scripts/replay-call.mjs --media call.mov --bots Alice:7901,Jimmy:7902
-//   node scripts/replay-call.mjs --media a.wav,b.wav --bots Alice:7901,Jimmy:7902
+//   node scripts/replay-call.mjs --media call.mov --bots Alice:7901,Bob:7902
+//   node scripts/replay-call.mjs --media a.wav,b.wav --bots Alice:7901,Bob:7902
 //   node scripts/replay-call.mjs --media call.mov --start 300 --duration 300
 //
 // Writes a manifest next to the extracted audio recording which bot played
@@ -62,13 +62,13 @@ const RATE = flag('rate', '48000');
 // the whole premise of pooling them.
 const NORMALISE = process.argv.includes('--no-normalise')
   ? [] : ['-af', 'loudnorm=I=-18:TP=-2:LRA=11'];
-const BOTS = flag('bots', 'Alice:7901,Jimmy:7902').split(',').map((s) => {
+const BOTS = flag('bots', 'Alice:7901,Bob:7902').split(',').map((s) => {
   const [name, port] = s.split(':');
   return new Bot(name, Number(port), ROOM);
 });
 
 if (!MEDIA.length) {
-  console.error('usage: replay-call.mjs --media <file[,file2]> --bots Alice:7901,Jimmy:7902 [--start s] [--duration s]');
+  console.error('usage: replay-call.mjs --media <file[,file2]> --bots Alice:7901,Bob:7902 [--start s] [--duration s]');
   process.exit(2);
 }
 

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent: 19:00 readiness check for the 03:00 nightly (Stan's Mac mini).
+  Install: see scripts/SCHEDULING.md, "Pre-test check".
+
+  WHY 19:00 AND NOT 02:00: the point is to reach a human while one is awake. The
+  conditions this catches (wrong branch checked out, an app left running, a
+  profile with no identity) are all silent at 03:00 and take a minute to fix at
+  19:00 — but only if someone is told in time to fix them. An alarm that fires
+  while everyone is asleep is a log entry, not an alarm.
+
+  ALERT-ONLY. A clean host sends nothing at all. A nightly "all good" is the
+  message people stop reading, and this has to still be legible on the one night
+  it matters. Blocking findings buzz the phone; advisory ones arrive silently.
+
+  READ-ONLY, and always exits 0. It quits nothing, kills nothing and changes no
+  preference — it reports and hands you the command. Deciding to kill a bot the
+  operator is actively using is not a decision an unattended 19:00 job should
+  make; every finding carries its own fix line instead.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vibeconferencing.pre-test</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- Stan's DM — the same VERIFIED-delivering chat_id the nightly digest and
+         the issue-triage agent use. Unset would make the check write its report
+         and skip the post; it never falls back to a default chat (the shared
+         group is emphatically NOT the place for a "your box is misconfigured"
+         nudge). -->
+    <key>VIBECONF_NOTIFY_CHAT</key>
+    <string>6785998012</string>
+
+    <!-- The branch the nightly is supposed to run. The suite tests the WORKING
+         TREE, so whatever is checked out at 03:00 is what gets tested — a stray
+         feature branch tests stale code and still reports green. Lives here, not
+         in the script, for the same reason as VIBECONF_TEST_INSTANCE in the
+         meet-test plist: it is a property of THIS SCHEDULE, not of the machine. -->
+    <key>VIBECONF_EXPECT_BRANCH</key>
+    <string>main</string>
+  </dict>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>cd /Users/wanderingstan/Developer/vibeconf-app &amp;&amp; node scripts/pre-test-check.mjs</string>
+  </array>
+
+  <!-- 19:00. Eight hours of slack before the 03:00 run, and early enough in the
+       evening that a fix does not have to happen at bedtime. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict>
+      <key>Hour</key><integer>19</integer>
+      <key>Minute</key><integer>0</integer>
+    </dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>/Users/wanderingstan/vibeconf-test-results/pre-test.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/wanderingstan/vibeconf-test-results/pre-test.log</string>
+
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

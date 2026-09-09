@@ -36,7 +36,7 @@ import { join } from 'node:path';
 const arg = (n, d) => { const i = process.argv.indexOf('--' + n); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : d; };
 
 const PROFILE = arg('profile', 'test-meet-guest-2');       // the VOICE
-const NAME = arg('name', 'Jimmy');
+const NAME = arg('name', 'Bob');
 const ROOM = arg('room', 'paz-sqoa-npe');
 const SITE = (process.env.VIBECONF_WEBSITE_URL || 'https://vibeconferencing.com').replace(/\/$/, '');
 

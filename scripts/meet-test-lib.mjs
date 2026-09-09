@@ -336,6 +336,16 @@ export class Bot {
     return data;
   }
 
+  // Read one preference. Exists so a scenario can RESTORE what it changes:
+  // setPref writes the bot's real config, so anything a test sets it keeps —
+  // there is no sandbox around a live bot's prefs.
+  async getPref(key) {
+    const resp = await fetch(`${this.base}/api/preferences`, { headers: this._auth() });
+    if (!resp.ok) return undefined;
+    const data = await resp.json().catch(() => null);
+    return (data?.preferences || []).find((p) => p.key === key)?.value;
+  }
+
   async setPref(key, value) {
     const { data, ms, status } = await this._post('/api/preferences', JSON.stringify({ key, value }));
     log(this.name, `setPref:${key}`, { ms, ok: status === 200 && data?.success !== false, note: data?.error || '' });

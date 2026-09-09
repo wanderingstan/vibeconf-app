@@ -38,7 +38,7 @@
 //   scripts/spawn-test-fleet.sh 3
 //
 // Run:
-//   node scripts/roster-churn-test.mjs --bots Alice:7901,Jimmy:7902,Cosmo:7903
+//   node scripts/roster-churn-test.mjs --bots Alice:7901,Bob:7902,Charlie:7903
 //   node scripts/roster-churn-test.mjs --cycles 3
 //
 // Exit code is non-zero if any check failed.
@@ -54,7 +54,7 @@ const arg = (name, def) => {
 const TARGET = resolveTarget(arg('target', 'default'));
 const ROOM = arg('room', TARGET.room);
 const CYCLES = Number(arg('cycles', '2'));
-const BOTS = arg('bots', 'Alice:7901,Jimmy:7902,Cosmo:7903')
+const BOTS = arg('bots', 'Alice:7901,Bob:7902,Charlie:7903')
   .split(',')
   .map((s) => {
     const [name, port] = s.split(':');

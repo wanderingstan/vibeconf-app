@@ -1178,7 +1178,15 @@ const PREFERENCES = {
 
   botSpeakOrdering: {
     type: 'string',
-    default: 'jitter',
+    // Ranked by default since 2026-09-09. It shipped in #426 (17 Aug) and was
+    // made usable without configuration in #430/#443 (19 Aug) — and then sat
+    // behind a 'jitter' default for three weeks, so no call ever ordered. Every
+    // [bot-order] line in the logs from that period reads the same way:
+    //     ranked ordering unavailable (botSpeakOrdering="jitter") — using jitter
+    // The fallback makes this safe to flip: when the order cannot be computed
+    // (no peers discovered, an unnamed roster) _rankedSpeakDelay returns null
+    // and the caller uses jitter, so the worst case is exactly the old default.
+    default: 'ranked',
     enum: ['jitter', 'ranked'],
     enumLabels: {
       jitter: 'Random jitter (each bot waits a random delay)',
@@ -1249,6 +1257,44 @@ const PREFERENCES = {
       + 'boundary — on 2026-08-17 two agents on two machines found no value '
       + 'this would accept, which left #426 unreachable in production (#430).',
   },
+  botSpeakSeed: {
+    type: 'string',
+    default: 'clock',
+    enum: ['clock', 'utterance'],
+    enumLabels: {
+      clock: 'Wall clock (portable; needs no agreement about caption text)',
+      utterance: 'The utterance being answered (the original; content must match)',
+    },
+    description:
+      'What the bots key their shared ordering on. Both are computed locally '
+      + 'with nothing exchanged; the question is only which shared fact they '
+      + 'use. "utterance" hashes the speaker plus the first 8 words of what was '
+      + 'said — content, which has to MATCH across machines, and which each '
+      + 'platform revises differently as its speech recognition settles. '
+      + '"clock" buckets the moment the speaker stopped (see '
+      + 'botSpeakClockBucketMs), which needs no agreement about text at all and '
+      + 'behaves the same on Meet, Zoom or Teams. Being addressed by name still '
+      + 'reads the utterance under both settings — that is content worth the '
+      + 'risk, and a whole-word name match is far more robust than a hash over '
+      + 'a text prefix.',
+  },
+
+  botSpeakClockBucketMs: {
+    type: 'number',
+    default: 6000,
+    min: 500,
+    max: 60000,
+    description:
+      'With botSpeakSeed="clock", the width of the time bucket the ordering is '
+      + 'keyed on. It sets one trade directly: two bots disagree only when a '
+      + 'bucket boundary falls between their observations of the same silence '
+      + 'edge, with probability (observation spread / this), so at the measured '
+      + '~180ms p90 spread a 6s bucket disagrees about 3% of the time and a 12s '
+      + 'bucket about 1.5%. The cost of a wider bucket is a slower rotation: the '
+      + 'order is constant WITHIN a bucket, so in a rapid exchange the same bot '
+      + 'can win several turns in a row before the winner changes.',
+  },
+
   botSpeakRankGapMs: {
     type: 'number',
     default: 500,
@@ -1264,6 +1310,32 @@ const PREFERENCES = {
       + 'default and could fall to ~250ms once speakingDetectionMode is "meter". '
       + 'It is also what a silent winner costs: the next bot in line waits this '
       + 'long before filling the gap.',
+  },
+
+  botSpeakReplayRankGapMs: {
+    type: 'number',
+    default: 500,
+    min: 0,
+    max: 5000,
+    description:
+      'The spacing between ranks for a HELD reply being replayed into an '
+      + 'opening (#442). Two bots that stashed during the same busy floor '
+      + 'otherwise wake on the same opening with nothing between them, which '
+      + '#442 called the most likely way a room with two bots still hears them '
+      + 'talk over each other. '
+      + 'Separate from botSpeakRankGapMs so a replay CAN be tuned tighter — '
+      + '#442 warned that a full gap per rank may push a held reply past the '
+      + 'opening it was waiting for. But it defaults to the same 500ms, '
+      + 'because that argument does not survive the constraint on the sibling '
+      + 'setting: the gap must EXCEED the time a bot needs to SEE another bot '
+      + 'start, or the loser\'s delay expires before it has noticed the winner '
+      + 'and both talk anyway. Shipped at 200ms first, which is below the '
+      + '360-460ms p90 of the mutation counter and level with the meter\'s '
+      + '180ms — i.e. it bought collisions, not latency. Lower it toward ~250 '
+      + 'only with speakingDetectionMode="meter". And the saving is small where '
+      + 'it matters: the extra 300ms is paid only when the higher-ranked bot '
+      + 'ABSTAINS, since otherwise the floor is busy and the reply waits for '
+      + 'the next opening regardless.',
   },
 
   botSpeakJitterMaxMs: {

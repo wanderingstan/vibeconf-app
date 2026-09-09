@@ -43,8 +43,8 @@
 //   scripts/spawn-test-fleet.sh 2
 //
 // Run:
-//   node scripts/screen-reading-test.mjs --bots Alice:7901,Jimmy:7902
-//   node scripts/screen-reading-test.mjs --bots Alice:7901,Jimmy:7902 --only staleness
+//   node scripts/screen-reading-test.mjs --bots Alice:7901,Bob:7902
+//   node scripts/screen-reading-test.mjs --bots Alice:7901,Bob:7902 --only staleness
 
 import { readFileSync } from 'fs';
 import { execFile } from 'child_process';
@@ -58,7 +58,7 @@ const FIXTURES = join(HERE, 'fixtures', 'screen-reading');
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
 const ROOM = arg('room', 'paz-sqoa-npe');
 const ONLY = arg('only', 'both'); // both | legibility | staleness
-const BOTS = arg('bots', 'Alice:7901,Jimmy:7902').split(',').map((s) => {
+const BOTS = arg('bots', 'Alice:7901,Bob:7902').split(',').map((s) => {
   const [name, port] = s.split(':');
   return new Bot(name, Number(port), ROOM);
 });

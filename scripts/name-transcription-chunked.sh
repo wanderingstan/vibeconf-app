@@ -55,7 +55,7 @@ for b in $(seq 1 "$BATCHES"); do
   VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2
 
   set +e
-  node scripts/name-transcription-test.mjs --bots "Alice:$P1,Jimmy:$P2" \
+  node scripts/name-transcription-test.mjs --bots "Alice:$P1,Bob:$P2" \
     --category "$CATEGORY" --skip-done --limit "$CHUNK" ${VOICE:+--voice "$VOICE"}
   code=$?
   set -e

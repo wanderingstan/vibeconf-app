@@ -18,7 +18,7 @@
 //
 // Usage:
 //   node scripts/score-speaking.mjs --events speaking-events.jsonl --labels labels.json
-//   node scripts/score-speaking.mjs ... --map speaker1=Alice,speaker2=Jimmy
+//   node scripts/score-speaking.mjs ... --map speaker1=Alice,speaker2=Bob
 //   node scripts/score-speaking.mjs ... --sweep window=400,600,800,1200
 //   node scripts/score-speaking.mjs ... --sweep hold=150,250,400,600 --signal indicator
 //   node scripts/score-speaking.mjs ... --check          # replay at live constants

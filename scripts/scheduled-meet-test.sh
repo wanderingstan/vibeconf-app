@@ -204,6 +204,30 @@ prune_profile_recordings() {
 # reaps the trap's notify child), so it sends its own digest before killing, below.
 trap 'exit 143' TERM INT
 
+# --- Fleet lock (#720) -------------------------------------------------------
+# The test profiles and their ports are ONE machine-wide resource, and the
+# app-health smoke on the self-hosted runner reaches for the same
+# test-meet-guest-1 on the same port 7901 on every push to main. Overlapping does
+# not just contend for a port: the other run's spawn rewrites that profile's
+# prefs and resets its CLAUDE.md underneath this one.
+#
+# Wait, but not forever. Ten minutes covers a CI smoke several times over; past
+# that something is genuinely wrong, and this run BAILS rather than sharing the
+# fleet. A night that is skipped and SAYS SO is worth more than a night whose
+# results are quietly wrong — the same reasoning as the lane ledger below. The
+# EXIT trap still fires, so the digest goes out with every lane reported missing.
+release_fleet_lock() { node "$REPO/scripts/fleet-lock.mjs" release nightly --pid $$ 2>&1 | tee -a "$LOG" >/dev/null; }
+# NOT `if ! node … | tee`: a pipeline's status in zsh is the LAST command's, so
+# that form tests tee (always 0) and the gate never fires — it let a locked-out
+# run proceed straight into the suite. Capture the status directly instead.
+_lock_out="$(node "$REPO/scripts/fleet-lock.mjs" acquire nightly --pid $$ --wait "${VIBECONF_FLEET_LOCK_WAIT:-600}" 2>&1)"
+_lock_rc=$?
+[[ -n "$_lock_out" ]] && print -r -- "$_lock_out" >> "$LOG"
+if (( _lock_rc != 0 )); then
+  echo "=== 🔴 ABORTED: could not get the fleet lock — another run (probably the CI app-health smoke) still holds it. No lanes ran. ===" | tee -a "$LOG"
+  exit 75
+fi
+
 # --- Hard global watchdog — a stuck lane must NEVER wedge the schedule again. On
 # 2026-07-21 a run hung indefinitely (the join loop waits forever for an admission
 # that never comes in the unattended 2-guest meet); because launchd won't start an
@@ -260,10 +284,10 @@ if [[ "${VIBECONF_NO_WATCHDOG:-0}" != "1" ]]; then
   _watchdog_pid=$!
   # On any normal exit, stand the watchdog down and sweep any lingering test fleets (a
   # wedged lane skips its own teardown; this guarantees no zombie fleet survives a run).
-  trap 'send_digest; send_call_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null; close_chrome_meet_tabs' EXIT
+  trap 'send_digest; send_call_digest; kill "$_watchdog_pid" 2>/dev/null; pkill -f "profile=test-meet-guest" 2>/dev/null; pkill -f "profile=test-slack" 2>/dev/null; close_chrome_meet_tabs; release_fleet_lock' EXIT
 else
   # No watchdog, but the digest still must fire on any exit.
-  trap 'send_digest; send_call_digest; close_chrome_meet_tabs' EXIT
+  trap 'send_digest; send_call_digest; close_chrome_meet_tabs; release_fleet_lock' EXIT
 fi
 
 # --- optional screen recording of each live-call lane. OFF by default; set

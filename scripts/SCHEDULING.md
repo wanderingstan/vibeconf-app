@@ -151,6 +151,39 @@ cries wolf gets ignored, and an ignored preflight is worse than none — the fir
 draft of this one flagged the EC2 box as DOWN for being `stopped`, which would have
 fired every single night.
 
+## Fleet lock
+
+`scripts/fleet-lock.mjs`. The test profiles and their ports are ONE machine-wide
+resource, and two things reach for them independently: the 03:00 nightly, and the
+app-health smoke the self-hosted runner starts **on every push to main**. Both run
+`spawn-test-fleet.sh` — same `test-meet-guest-1`, same port 7901 — so an overlap
+does not merely contend for a port, it rewrites that profile's prefs and resets
+its CLAUDE.md mid-run. GitHub's `concurrency:` cannot see a launchd job.
+
+| Holder | Waits | On timeout |
+|---|---|---|
+| nightly (`scheduled-meet-test.sh`) | 10 min (`VIBECONF_FLEET_LOCK_WAIT`) | **aborts, exit 75** — the EXIT trap still fires, so the digest reports every lane as never-run |
+| CI (`smoke.yml`) | 15 min | skips green — a red X because an unrelated nightly was running teaches people to ignore red |
+
+Two staleness rules, because a lock nobody releases would cancel every future
+night — worse than the collision it prevents. A holder whose **pid is gone** is
+stale immediately (the watchdog SIGKILLs wedged runs; the runner cancels steps),
+and **any** holder older than `VIBECONF_FLEET_LOCK_MAX_AGE_MS` (2h) is stale
+regardless of pid, which covers pid reuse and a genuinely hung holder.
+
+The lock lives at a fixed `/tmp/vibeconf-fleet.lock`, never `$TMPDIR` — macOS
+gives each process a private per-user temp dir, so a launchd job and the runner
+would take two different "shared" locks and never meet.
+
+```bash
+node scripts/fleet-lock.mjs status                       # who holds it
+node scripts/fleet-lock.mjs acquire <owner> --pid $$ --wait 600
+node scripts/fleet-lock.mjs release <owner> --pid $$     # same shell as acquire
+```
+
+Acquire and release must happen in the **same shell**: the lock is owned by a
+PID, and that PID is what stale detection checks.
+
 ## Pre-test check (19:00, separate agent)
 
 `scripts/pre-test-check.mjs`, installed as `com.vibeconferencing.pre-test.plist`.

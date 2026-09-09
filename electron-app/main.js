@@ -25,7 +25,7 @@ const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 // than throwing.
 let adoptSessionAsBot = null;
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
-const { MEASURE_SCRIPT: BOARD_FIT_SCRIPT } = require('./board-fit.js');
+const { measureScriptFor: boardFitScriptFor, SIGNATURE_SCRIPT: BOARD_SIG_SCRIPT } = require('./board-fit.js');
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
 const recordRegion = require('./record-region.js');
@@ -2616,11 +2616,23 @@ const localServer = new globalThis.LocalServer({
   // null rather than an error when there is nothing to measure: this rides on
   // every whiteboard write, and a board write must not fail because the bot
   // happens not to be presenting yet.
-  onMeasureBoardFit: async () => {
+  onMeasureBoardFit: async ({ previousSignature } = {}) => {
     const wc = shareWebContents();
     if (!wc) return null;
     try {
-      const result = await evalInShare(wc, BOARD_FIT_SCRIPT);
+      const result = await evalInShare(wc, boardFitScriptFor(previousSignature ?? null));
+      return result?.ok ? (result.result ?? null) : null;
+    } catch {
+      return null;
+    }
+  },
+  // Fingerprint the board BEFORE a write, so the measurement afterwards can tell
+  // the new content from the old content sitting there stable (#644).
+  onBoardSignature: async () => {
+    const wc = shareWebContents();
+    if (!wc) return null;
+    try {
+      const result = await evalInShare(wc, BOARD_SIG_SCRIPT);
       return result?.ok ? (result.result ?? null) : null;
     } catch {
       return null;

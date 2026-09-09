@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { MEASURE_SCRIPT, formatFitReport, formatBudget } = require('../electron-app/board-fit.js');
+const { MEASURE_SCRIPT, measureScriptFor, formatFitReport, formatBudget } = require('../electron-app/board-fit.js');
 
 // ── A DOM stub shaped like the whiteboard ────────────────────────────────────
 // Only what MEASURE_SCRIPT touches. Real numbers from the 2026-09-06 board.
@@ -238,4 +238,65 @@ test('an unsettled measurement is flagged, not presented as fact', () => {
 
   // And a settled one carries no such hedge.
   assert.doesNotMatch(formatFitReport({ ...unsettled, settled: true }), /may describe the previous/);
+});
+
+// ── TRAP 2b: a STABLE OLD board answers instantly ────────────────────────────
+// The first attempt at trap 2 waited for the height to stop changing. That is
+// not enough: before the re-render begins, the PREVIOUS board is sitting there
+// perfectly stable, so the test passes on the first reading and measures the old
+// layout. Live on 2026-09-06 a 3.11-screenful board reported 1.04 — the size of
+// the board it had just replaced — with the fix already in.
+//
+// So the measurement is given the board's signature from BEFORE the write, and
+// waits for the signature to change before it trusts anything it sees.
+
+function makeLateRenderDom({ oldHeight = 836, newHeight = 2487, rendersAfter = 3 } = {}) {
+  let polls = 0;
+  const block = {
+    tagName: 'P', textContent: 'x'.repeat(400), scrollHeight: 100, clientHeight: 100,
+    scrollTop: 0, parentElement: { closest: () => null },
+    getBoundingClientRect: () => ({ top: 0, height: 100 }), querySelectorAll: () => [],
+    getAttribute: () => (polls > rendersAfter ? 'sig-NEW' : 'sig-OLD'),
+    attributes: [],
+  };
+  const slide = {
+    tagName: 'DIV', className: 'wb-slide', clientHeight: 800, scrollTop: 0,
+    // Rock steady at the OLD height until the re-render lands.
+    get scrollHeight() { return polls > rendersAfter ? newHeight : oldHeight; },
+    getBoundingClientRect: () => ({ top: 0, height: 800 }),
+    querySelectorAll: () => [block],
+  };
+  return {
+    querySelectorAll: (sel) => {
+      if (sel === '[data-sig]') { polls += 1; return [block]; }
+      return sel === '*' ? [slide, block] : [block];
+    },
+    querySelector: (sel) => (sel === '.wb-slide' ? slide : null),
+    documentElement: { clientHeight: 800, scrollHeight: 800 },
+    body: { querySelectorAll: () => [block], getBoundingClientRect: () => ({ top: 0 }), scrollTop: 0 },
+  };
+}
+
+async function measureWithPrev(dom, prevSig) {
+  // eslint-disable-next-line no-new-func
+  return new Function('document', 'requestAnimationFrame', 'setTimeout',
+    `return ${measureScriptFor(prevSig)}`)(dom, (cb) => cb(), (cb) => cb());
+}
+
+test('a stable OLD board does not count as settled — waits for the content to change', async () => {
+  const m = await measureWithPrev(makeLateRenderDom(), 'sig-OLD');
+
+  // The old board is 836px and never wobbles, so "stopped changing" is true
+  // immediately and would answer 1.04 screenfuls. Only waiting for the signature
+  // to move gets the real, new board.
+  assert.equal(m.contentPx, 2487, 'must measure the NEW board, not the stable old one');
+  assert.equal(m.screenfuls, 3.11);
+  assert.equal(m.settled, true);
+});
+
+test('with no prior signature it still works, just without the staleness guard', async () => {
+  // Back-compat path: a caller that cannot capture a signature gets the old
+  // behaviour rather than an error.
+  const m = await measureWithPrev(makeLateRenderDom(), null);
+  assert.ok(m && typeof m.screenfuls === 'number');
 });

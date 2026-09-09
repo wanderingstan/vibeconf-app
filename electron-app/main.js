@@ -11412,7 +11412,7 @@ function createMainWindow() {
           },
         },
         {
-          // The pair to Copy Chat Command below: PRESSES the panel's Call
+          // The pair to Copy Terminal Command below: PRESSES the panel's Call
           // button as if Option were held, rather than reimplementing the
           // terminal launch here — same reasoning as Call Now above it. Useful
           // from the app-wide accelerator, or when the panel doesn't have
@@ -11441,7 +11441,7 @@ function createMainWindow() {
           // It also closes a real gap. The renderer's ⌥⌘C only fires when the
           // panel has keyboard focus, and the panel usually does not (see the
           // Option-label lag fix). A menu accelerator works app-wide.
-          label: 'Copy Chat Command',
+          label: 'Copy Terminal Command',
           accelerator: 'Alt+CmdOrCtrl+C',
           click: () => {
             try {

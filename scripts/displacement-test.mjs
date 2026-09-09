@@ -35,7 +35,7 @@
 //      the refusal is about the mismatch and not about the name.
 //
 // Usage:
-//   node scripts/displacement-test.mjs --bots Alice:7901,Jimmy:7902
+//   node scripts/displacement-test.mjs --bots Alice:7901,Bob:7902
 //
 // Expects two fleet instances already running (spawn-test-fleet.sh 2). They do
 // not need to be in a call.
@@ -53,12 +53,12 @@ for (let i = 0, argv = process.argv.slice(2); i < argv.length; i++) {
   else args[argv[i].slice(2)] = true;
 }
 
-const bots = String(args.bots || 'Alice:7901,Jimmy:7902').split(',').map((pair) => {
+const bots = String(args.bots || 'Alice:7901,Bob:7902').split(',').map((pair) => {
   const [name, port] = pair.split(':');
   return { name, port: Number(port), base: `http://127.0.0.1:${Number(port)}` };
 });
 if (bots.length < 2) {
-  console.error('displacement-test: need two bots, e.g. --bots Alice:7901,Jimmy:7902');
+  console.error('displacement-test: need two bots, e.g. --bots Alice:7901,Bob:7902');
   process.exit(1);
 }
 const [A, B] = bots;

@@ -12,7 +12,7 @@
 //   (or 1 bot + your own human account in the huddle)
 //
 // Run:
-//   node scripts/slack-test.mjs --bots Alice:7901,Jimmy:7902
+//   node scripts/slack-test.mjs --bots Alice:7901,Bob:7902
 //   node scripts/slack-test.mjs --bots Alice:7901              # single-bot smoke
 //
 // Exit code is non-zero if any step failed — so it can gate CI later.
@@ -149,7 +149,7 @@ async function run() {
 
   // 4) Listen — a hears the other (captions). Only meaningful with a 2nd talker.
   if (b) {
-    await b.speak('Got it — Jimmy here, replying.');
+    await b.speak('Got it — Bob here, replying.');
     await a.waitForSpeech({ wait: 12, silence: 2 });
   }
 

@@ -7,14 +7,16 @@
 // Claude agents → deterministic, repeatable, zero tokens.
 //
 // PREREQ: the bot apps must already be running on their ports, signed in, e.g.
-//   scripts/launch-test-call.command        (boots Alice:7865 + Jimmy:7866)
+//   scripts/spawn-test-fleet.sh 2           (boots Alice:7901 + Bob:7902)
+// (launch-test-call.command boots the REAL Jimmy:7865 + Samantha:7866 pair instead —
+//  drive those with an explicit --bots, they have no named scenario here.)
 // or manually: pnpm dev  /  pnpm dev -- --profile=bot2 --local-port=7866
 // You (the human) can also be in the meet to observe.
 //
 // Run:
 //   node scripts/meet-test.mjs                                  # defaults (--target default)
 //   node scripts/meet-test.mjs --target workspace               # the history-on / contenteditable-chat meet
-//   node scripts/meet-test.mjs --room paz-sqoa-npe --bots Alice:7865,Jimmy:7866
+//   node scripts/meet-test.mjs --room paz-sqoa-npe --bots Alice:7901,Bob:7902
 //
 // --target <name> picks a fixture from meet-targets.mjs (default | workspace).
 // --room overrides the resolved room for ad-hoc runs.
@@ -29,13 +31,13 @@ import { resolveTarget } from './meet-targets.mjs';
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
 const TARGET = resolveTarget(arg('target', 'default'));
 const ROOM = arg('room', TARGET.room); // --room overrides the target's room
-const BOTS = arg('bots', 'Alice:7865,Jimmy:7866').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
+const BOTS = arg('bots', 'Alice:7901,Bob:7902').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
 
 const COLORADO_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#e8855b"/><path d="M0 70 L30 40 L50 60 L70 35 L100 65 L100 100 L0 100Z" fill="#33406b"/></svg>';
 
 // Per-bot scripts. Each is an async fn given its Bot. They run concurrently, so
 // timing/overlap between bots is exercised the way a real call would. Bots are
-// Alice (-1) and Jimmy (-2), matching the fleet's naming.
+// Alice (-1) and Bob (-2), matching the fleet's naming.
 const SCRIPTS = {
   // Alice: the "presenter" — whiteboard share + background, plus chat send/read.
   Alice: async (bot) => {
@@ -49,7 +51,7 @@ const SCRIPTS = {
     await bot.setBackground(COLORADO_SVG);
     await bot.setAvatarEmoji('😎');
     await sleep(2000);
-    await bot.waitForSpeech({ wait: 10, silence: 2 }); // listen for Jimmy
+    await bot.waitForSpeech({ wait: 10, silence: 2 }); // listen for Bob
     // Chat send/read is exercised in chatHandshakeTest() AFTER scenarios, when
     // both bots are confirmed in-call — interleaving it here spread the two
     // sends ~40s apart and read at the wrong moments (false misses).
@@ -58,11 +60,11 @@ const SCRIPTS = {
     // leave() happens centrally in main() after the chat-wake phase.
   },
 
-  // Jimmy: the "responder" — speaks, listens, plus chat send/read.
-  Jimmy: async (bot) => {
+  // Bob: the "responder" — speaks, listens, plus chat send/read.
+  Bob: async (bot) => {
     await bot.join();
     await bot.warmUp(); // wait until captions are live before talking (real-call caption cold-start)
-    await bot.speak('Jimmy here too, listening for Alice.');
+    await bot.speak('Bob here too, listening for Alice.');
     const r1 = await bot.waitForSpeech({ wait: 12, silence: 2 });
     if (r1.spoke) await bot.speak('Got it, Alice — I can hear you.');
     await bot.waitForSpeech({ wait: 10, silence: 2 });
@@ -338,8 +340,8 @@ async function main() {
   const started = Date.now();
   await Promise.all(BOTS.map((b) => {
     // Resolve the scenario by BASE name: spawn-test-fleet appends a per-run suffix
-    // (e.g. Jimmy-r4af) to dodge ghost-name collisions, so strip back to the role
-    // before the last '-'. Plain names (Jimmy) resolve directly.
+    // (e.g. Bob-r4af) to dodge ghost-name collisions, so strip back to the role
+    // before the last '-'. Plain names (Bob) resolve directly.
     const role = SCRIPTS[b.name] ? b.name : b.name.replace(/-[^-]+$/, '');
     const script = SCRIPTS[role] || DEFAULT_SCRIPT;
     if (!SCRIPTS[role]) console.log(`(no named script for ${b.name} — using default join/speak/listen)`);

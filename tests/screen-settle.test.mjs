@@ -300,14 +300,18 @@ test('the MCP side consumes a finished value and never reaches across the packag
     + 'would resolve in the repo and kill the MCP server in the built app (v0.8.50)');
 });
 
-test('the watch is a mode, off by default, in a call, AND only while someone presents', () => {
-  assert.match(schema, /watchSharedScreen:[\s\S]{0,200}default: false/);
+test('the watch is a mode, ON by default, in a call, AND only while someone presents', () => {
+  // Default flipped to ON by Stan on 7 Sept: "a student who needs this would
+  // never find a setting to turn it on". That is only affordable because of the
+  // third condition below — ON without the presenting gate would mean sampling
+  // a view of faces every two seconds for every call, forever.
+  assert.match(schema, /watchSharedScreen:[\s\S]{0,200}default: true/);
 
-  // Three conditions. The third was added on 2026-09-09 and is the one that
-  // matters most: without an active share there is nothing to watch, so the
-  // watcher used to sample a view of faces every two seconds and lean on the
-  // churn filter to ignore them — work whose only possible output was a false
-  // wake. Stan: "when nobody is presenting, stop the watcher entirely."
+  // Three conditions. The third was added on 2026-09-09 and is what makes the
+  // default safe: without an active share there is nothing to watch, so the
+  // watcher used to lean on the churn filter to ignore faces — work whose only
+  // possible output was a false wake. Stan: "when nobody is presenting, stop
+  // the watcher entirely."
   assert.match(main, /prefValue\('watchSharedScreen'\) === true/);
   assert.match(main, /localServer\.callStatus === 'in-call'/);
   assert.match(main, /localServer\.someoneElsePresenting === true/,

@@ -2128,6 +2128,45 @@ function paintCalendarUpcoming(events, error) {
     lineSpan.style.textDecoration = 'line-through';
     calendarUpcomingText.appendChild(document.createTextNode(' ⚠️ (not yet accepted)'));
   }
+  // Say when there ARE others, without spending the room to list them. One
+  // line is the right size for "what is the bot about to do", but silence
+  // about the rest reads as "your other meeting is missing" — which is
+  // exactly how the 2026-08-24 two-at-noon confusion started, from the far
+  // side (the accepted meeting was the hidden one).
+  //
+  // Counted over TODAY, not over the list. The list is a 24h lookahead, so at
+  // 11am it runs to 11am tomorrow and a bare "+3 more" cannot be read: three
+  // more today, or three more between now and tomorrow morning? Counting the
+  // local calendar day makes the number mean exactly what the word says. A
+  // meeting tomorrow morning is then neither counted nor claimed.
+  const startOfTomorrow = new Date(next.start);
+  startOfTomorrow.setHours(24, 0, 0, 0);
+  const rest = (Array.isArray(events) ? events : [])
+    .slice(1)
+    .filter((e) => {
+      const t = new Date(e.start).getTime();
+      return Number.isFinite(t) && t < startOfTomorrow.getTime();
+    });
+  if (rest.length > 0) {
+    const moreSpan = document.createElement('span');
+    moreSpan.style.opacity = '0.75';
+    moreSpan.textContent = ` +${rest.length} more today`;
+    // Hover to see WHICH — a stopgap until there's a real upcoming-meetings
+    // view. A bare count answers "is anything else there?" but not "is the one
+    // I care about there?", which is the question that started this: the
+    // meeting Stan had accepted was present all along and simply not shown.
+    //
+    // Lists exactly what the count counts, so the tooltip and the word "today"
+    // can never disagree. Set as `title`, so it is plain text the browser
+    // escapes for us — these strings are calendar-sourced, and the line above
+    // deliberately builds DOM nodes rather than innerHTML for the same reason.
+    moreSpan.title = rest.map((e) => {
+      const when = new Date(e.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const name = e.summary || 'Untitled event';
+      return `${when} — ${name}${e.ownerConfirmed === false ? '  (not yet accepted)' : ''}`;
+    }).join('\n');
+    calendarUpcomingText.appendChild(moreSpan);
+  }
   calendarUpcomingBanner.style.display = 'flex';
 }
 api.on('calendar-upcoming', ({ events, error }) => paintCalendarUpcoming(events, error));

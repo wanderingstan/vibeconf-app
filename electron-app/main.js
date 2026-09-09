@@ -3180,7 +3180,13 @@ const localServer = new globalThis.LocalServer({
   // cropRect (CSS pixels, from presentation-rect.js) narrows the capture to the
   // presented tile. Used by the screen-settle wake (#673), which wants the SHARE
   // rather than a view of the room in which the share is one tile.
+  // Returns { path, cropped } — `cropped` says whether the picture is actually
+  // the share or the whole Meet view. The caller PHRASES from it: telling the
+  // agent a full view of faces is "the shared screen" is a confident wrong
+  // statement about evidence it is about to reason from, which is the failure
+  // this codebase keeps paying for.
   onCaptureScreenshot: async ({ roomId, cropRect } = {}) => {
+    let cropped = false;
     if (!meetView || meetView.webContents.isDestroyed()) {
       return { error: 'No active Meet view to capture' };
     }
@@ -3222,16 +3228,29 @@ const localServer = new globalThis.LocalServer({
       // necessarily CSS pixels on a HiDPI display, so the measured CSS rect is
       // converted by the ratio between them.
       if (cropRect) {
-        try {
-          const size = image.getSize();
-          const cssW = await meetView.webContents.executeJavaScript('window.innerWidth', true);
-          const scale = (cssW > 0) ? size.width / cssW : 1;
-          const cropped = image.crop({
+        // REFUSE rather than guess the scale. capturePage returns pixels in the
+        // capture's own scale and cropRect is in CSS pixels, so the conversion
+        // needs the view's CSS width. Falling back to scale 1 when that read
+        // fails looks harmless and is not: on a Retina host the capture is 2x,
+        // so a CSS-space rect crops the TOP-LEFT QUARTER of the share — and the
+        // result is a valid non-empty image, so nothing downstream notices.
+        const cssW = await meetViewCssWidth();
+        const scale = cssW > 0 ? image.getSize().width / cssW : 0;
+        if (scale > 0) {
+          const c = image.crop({
             x: Math.round(cropRect.x * scale), y: Math.round(cropRect.y * scale),
             width: Math.round(cropRect.w * scale), height: Math.round(cropRect.h * scale),
           });
-          if (cropped && !cropped.isEmpty()) image = cropped;
-        } catch { /* out of bounds mid-relayout — keep the full frame */ }
+          // Electron's crop CLAMPS to the image rather than throwing, so an
+          // out-of-bounds rect yields a shifted partial crop that passes
+          // isEmpty(). Check the size we asked for actually came back.
+          const want = { w: Math.round(cropRect.w * scale), h: Math.round(cropRect.h * scale) };
+          const got = c && !c.isEmpty() ? c.getSize() : null;
+          if (got && Math.abs(got.width - want.w) <= 2 && Math.abs(got.height - want.h) <= 2) {
+            image = c;
+            cropped = true;
+          }
+        }
       }
 
       const buf = image.toPNG();
@@ -3252,8 +3271,9 @@ const localServer = new globalThis.LocalServer({
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const filePath = path.join(dir, `${prefix}${stamp}.png`);
       await fs.promises.writeFile(filePath, buf);
-      console.log('[electron] Screenshot saved:', filePath, '(' + buf.length + ' bytes)');
-      return { path: filePath };
+      console.log('[electron] Screenshot saved:', filePath, '(' + buf.length + ' bytes)'
+        + (cropRect ? (cropped ? ' cropped to the share' : ' NOT cropped — full view') : ''));
+      return { path: filePath, cropped };
     } catch (err) {
       console.error('[electron] Screenshot capture failed:', err);
       return { error: err.message };
@@ -3928,7 +3948,13 @@ async function captureMeetViewGrid() {
   }
 
   const small = target.resize({ width: screenSettle.GRID_W, height: screenSettle.GRID_H, quality: 'good' });
-  return screenSettle.grayGridFromBitmap(small.toBitmap(), screenSettle.GRID_W, screenSettle.GRID_H);
+  // The rect travels WITH the grid: every sample is resized to the same 320x180
+  // whatever region it came from, so the grid alone cannot tell the detector
+  // that it is now looking at a different part of the screen.
+  return {
+    grid: screenSettle.grayGridFromBitmap(small.toBitmap(), screenSettle.GRID_W, screenSettle.GRID_H),
+    source: rect || null,
+  };
 }
 
 // The view's width in CSS pixels, for converting a measured rect into capture
@@ -3956,7 +3982,9 @@ async function onCaptureScreenshotForWake() {
       roomId: localServer.roomId,
       cropRect: lastPresentationRect,
     });
-    return (r && !r.error && r.path) ? r.path : null;
+    // { path, cropped } or null. `cropped` travels with the picture so the MCP
+    // layer can describe it truthfully instead of assuming.
+    return (r && !r.error && r.path) ? { path: r.path, cropped: !!r.cropped } : null;
   } catch { return null; }
 }
 

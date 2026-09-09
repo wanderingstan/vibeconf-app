@@ -219,6 +219,7 @@ function createSettleDetector(opts = {}) {
     ...opts,
   };
   let prev = null;      // the previous sample
+  let prevSource = '';  // the region it was a picture OF (see push)
   let baseline = null;  // the last state we reported (or the first we ever saw)
   let dirty = false;    // something moved since the baseline
   const history = [];   // recent per-cell masks, for the churn map
@@ -234,17 +235,32 @@ function createSettleDetector(opts = {}) {
     return live;
   }
 
-  function reset() { prev = null; baseline = null; dirty = false; history.length = 0; }
+  function reset() { prev = null; baseline = null; dirty = false; history.length = 0; prevSource = ''; }
 
-  function push(grid) {
+  // `source` identifies WHAT was sampled — the crop rect the frame came from.
+  // Two frames are only comparable if they are pictures of the same thing.
+  //
+  // The length check below cannot catch this on its own, because the caller
+  // always resizes to the same grid whatever region it cropped: a Meet relayout
+  // (someone joins, a tile is pinned, the share moves) produces a grid of
+  // IDENTICAL length showing a different region, which reads as a large diff and
+  // then a quiet frame — indistinguishable from a settle. The guard was dead in
+  // the shipping wiring and this is what revives it.
+  function push(grid, source = null) {
     const none = { settled: false, moving: false, tiles: [], cells: 0, reason: '' };
     if (!grid || !grid.length) return { ...none, reason: 'no-frame' };
-    if (!prev || prev.length !== grid.length) {
-      // First frame, or the capture size changed (view resized, layout swap).
-      // Not comparable — adopt it as the new baseline rather than calling it a
-      // change, which would fire on every resize.
+    const sourceKey = source
+      ? `${Math.round(source.x)},${Math.round(source.y)},${Math.round(source.w)},${Math.round(source.h)}`
+      : '';
+    if (!prev || prev.length !== grid.length || sourceKey !== prevSource) {
+      // First frame, or not comparable with the last one — the capture size
+      // changed, or we are now looking at a DIFFERENT REGION of the screen.
+      // Adopt it as the new baseline rather than calling it a change, which
+      // would fire on every relayout.
+      const had = !!prev;
       prev = grid; baseline = grid; dirty = false; history.length = 0;
-      return { ...none, reason: prev ? 'resized' : 'first-frame' };
+      prevSource = sourceKey;
+      return { ...none, reason: had ? 'resized' : 'first-frame' };
     }
 
     const frameMask = changedCellMask(prev, grid, cfg.cellDelta);
@@ -305,11 +321,16 @@ function createScreenSettleWatcher({
     if (busy) return;            // the previous capture is still going: skip, don't queue
     busy = true;
     try {
-      const grid = await capture();
+      // capture() may return the grid alone, or { grid, source } where source is
+      // the region it is a picture of. The second form lets the detector notice
+      // it is now looking somewhere else — see push().
+      const got = await capture();
+      const grid = got && got.grid ? got.grid : got;
+      const source = got && got.grid ? got.source : null;
       if (!grid) throw new Error('capture returned nothing');
       stats.consecutiveFailures = 0;
       stats.samples++;
-      const verdict = detector.push(grid);
+      const verdict = detector.push(grid, source);
       if (verdict && verdict.settled) {
         stats.settles++;
         try { onSettled(verdict); } catch (err) { log('onSettled threw: ' + (err && err.message)); }

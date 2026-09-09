@@ -351,13 +351,6 @@ test('a screen wake is throttled, and the throttle is a knob', () => {
   assert.match(server, /throttled \(/, 'and say so, so a missing wake is explainable from the log');
 });
 
-test('the throttle is measured from the last WAKE, not the last settle', () => {
-  // The cost being limited is the agent's turn, not the detector's sample. A
-  // throttle keyed on samples would let a burst of settles through whenever the
-  // agent happened to be slow.
-  assert.match(server, /_lastScreenWakeAt = Date\.now\(\)[\s\S]{0,1400}_resolveWaiter\(waiter, 'screen'\)/,
-    'the stamp is taken where the wake actually fires');
-});
 
 test('the existing back-pressure is kept, not replaced by the throttle', () => {
   // Between a wake and the agent parking again, nothing can fire at all. The
@@ -369,34 +362,7 @@ test('the existing back-pressure is kept, not replaced by the throttle', () => {
 
 // --- the picture that comes with the wake ----------------------------------
 
-test('the wake carries the picture, so the agent does not have to ask for it', () => {
-  // The agent is woken specifically to LOOK, so it will look — which makes the
-  // fetch unconditional, and an unconditional fetch belongs in the response.
-  // Making it ask costs two further round trips (emit the call, receive the
-  // file), each re-processing the whole call's context. Same argument as #726,
-  // applied where the need is known in advance rather than guessed.
-  assert.match(mcp, /screenshotBlocks\(data\.screenShot\)/,
-    'the wake response must splice in the image');
-  assert.match(mcp, /screenshotBlocks\(pathOnDisk\)[\s\S]{0,400}type: "image"/,
-    'and it must be a real image block, not a path in text');
-  assert.match(server, /response\.screenShot = this\.lastScreenShotPath/,
-    'the app must put the path on the wake payload');
-});
 
-test('the picture is taken ONLY when the wake actually fires', () => {
-  // Most settles are blocked — someone is speaking, no agent is waiting, the
-  // throttle is holding — and encoding a full PNG for each of those is work
-  // whose result is discarded. So the capture arrives as a function and is
-  // called after the gates, not before them.
-  assert.match(server, /noteScreenSettled\(info = \{\}, capture = null\)/,
-    'the capture is passed as a function, not a picture');
-  assert.match(main, /onSettled: \(v\) => localServer\.noteScreenSettled\(v,/,
-    'and the watcher hands one over');
-  const gateAt = server.indexOf("const blocked = this.anyoneSpeaking");
-  const captureAt = server.indexOf("this.lastScreenShotPath = await capture()");
-  assert.ok(gateAt > 0 && captureAt > gateAt,
-    'the capture must happen AFTER the blocked checks, or it is paid for on every settle');
-});
 
 test('the picture is cropped to the share, not the whole Meet view', () => {
   assert.match(main, /cropRect: lastPresentationRect/,
@@ -405,11 +371,134 @@ test('the picture is cropped to the share, not the whole Meet view', () => {
     'and the capture handler accepts one');
 });
 
-test('a missing picture degrades the wake, it does not cancel it', () => {
-  // A wake with no picture still beats no wake, and the agent can always call
-  // get_call_screenshot itself.
-  assert.match(mcp, /data\.screenShot\s*\?[\s\S]{0,400}Call get_call_screenshot to LOOK/,
-    'the wording must tell the agent to fetch one when none is attached');
-  assert.match(server, /catch \{ this\.lastScreenShotPath = null; \}/,
-    'a capture that throws must not stop the wake');
+
+// --- behaviour, not source text --------------------------------------------
+//
+// These replace four regex-over-the-source assertions that a review correctly
+// called theatre: they asserted that certain lines sat near each other, passed
+// while the code around them was wrong, and had to be widened twice when my own
+// edits moved lines apart. Widening a guard to accommodate yourself is the tell
+// that it is not guarding anything.
+//
+// The behaviour they claimed to pin — the capture happens only when the wake
+// fires, the throttle is not charged for a wake that never went out, and the
+// agent is told the truth about the picture — is checked here by running
+// noteScreenSettled against a real LocalServer instead.
+
+const { createRequire: _cr } = await import('node:module');
+const _require = _cr(import.meta.url);
+_require('../electron-app/local-server.js');
+const LocalServer = globalThis.LocalServer;
+
+function serverWithWaiter(prefs = {}) {
+  const captures = [];
+  const s = new LocalServer({
+    port: 0,
+    getPref: (k) => ({ screenWakeMinGapMs: 10000, ...prefs })[k],
+  });
+  s.setRoom('test-room');
+  s.callStatus = 'in-call';
+  s.someoneElsePresenting = true;
+  const resolved = [];
+  s.waiters = [{ resolved: false, since: null, resolve: (v) => resolved.push(v) }];
+  s._resolveWaiter = (w, reason) => { w.resolved = true; resolved.push(reason); };
+  s.captures = captures;
+  s.resolved = resolved;
+  return s;
+}
+
+test('the capture runs only when the wake will actually fire', async () => {
+  // Most settles are blocked. Encoding a PNG for each of those is work whose
+  // result is discarded, so the capture is a function called after the gates.
+  const s = serverWithWaiter();
+  let calls = 0;
+  const capture = async () => { calls++; return { path: '/tmp/x.png', cropped: true }; };
+
+  s.anyoneSpeaking = true;                       // the floor beats the screen
+  assert.equal(await s.noteScreenSettled({}, capture), false);
+  assert.equal(calls, 0, 'blocked by the floor — nothing should have been captured');
+
+  s.anyoneSpeaking = false;
+  s.waiters = [];                                // nobody waiting
+  assert.equal(await s.noteScreenSettled({}, capture), false);
+  assert.equal(calls, 0, 'no waiter — nothing to wake, nothing to capture');
+});
+
+test('a wake dropped during the capture does not charge the throttle', async () => {
+  // The capture is a page capture, a PNG encode and a disk write, and it can
+  // enter a self-heal loop. If the waiters resolve on their own meanwhile, the
+  // wake never goes out — and must not leave the throttle holding for 10s
+  // against a wake that never happened.
+  const s = serverWithWaiter();
+  const capture = async () => { s.waiters = []; return { path: '/tmp/x.png', cropped: true }; };
+
+  assert.equal(await s.noteScreenSettled({}, capture), false, 'no waiter left, so no wake');
+  assert.equal(s._lastScreenWakeAt, 0, 'the throttle must not be charged for it');
+
+  // ...and the very next settle is therefore free to wake.
+  const s2 = serverWithWaiter();
+  assert.equal(await s2.noteScreenSettled({}, async () => ({ path: '/tmp/y.png', cropped: true })), true);
+});
+
+test('speech starting during the capture wins — the floor beats the screen', async () => {
+  const s = serverWithWaiter();
+  const capture = async () => { s.anyoneSpeaking = true; return { path: '/tmp/x.png', cropped: true }; };
+  assert.equal(await s.noteScreenSettled({}, capture), false);
+  assert.deepEqual(s.resolved, [], 'no waiter resolved with a screen wake');
+});
+
+test('a share that stops during the capture cancels the wake', async () => {
+  // The rect the picture was cropped to describes a layout that no longer
+  // exists, so the picture is of whatever replaced the share.
+  const s = serverWithWaiter();
+  const capture = async () => { s.someoneElsePresenting = false; return { path: '/tmp/x.png', cropped: true }; };
+  assert.equal(await s.noteScreenSettled({}, capture), false);
+});
+
+test('the throttle holds a second wake, and the first one is remembered', async () => {
+  const s = serverWithWaiter({ screenWakeMinGapMs: 10000 });
+  assert.equal(await s.noteScreenSettled({}, async () => ({ path: '/a.png', cropped: true })), true);
+  assert.ok(s._lastScreenWakeAt > 0, 'a wake that fired IS charged');
+
+  s.waiters = [{ resolved: false, since: null }];
+  let calls = 0;
+  assert.equal(await s.noteScreenSettled({}, async () => { calls++; return null; }), false);
+  assert.equal(calls, 0, 'throttled before the capture, not after it');
+});
+
+test('whether the picture is CROPPED reaches the AGENT, and is not assumed', async () => {
+  // Telling the agent a full view of faces is "the shared screen" is a
+  // confident wrong statement about evidence it is about to reason from.
+  //
+  // Asserted on the RESPONSE the agent receives, not on an internal field: an
+  // earlier version of this test read the internal one and passed happily while
+  // the payload hardcoded cropped:true.
+  const responseFor = async (cropped) => {
+    const s = serverWithWaiter();
+    let payload = null;
+    // The REAL _resolveWaiter, so this exercises the response the agent gets.
+    // serverWithWaiter stubs it for the other tests, which only care whether a
+    // wake happened; here the payload is the whole point.
+    delete s._resolveWaiter;
+    s._buildResponse = () => ({});               // the transcript half is not what this tests
+    s.waiters = [{ resolved: false, since: null, startTime: Date.now(),
+                   resolve: (v) => { payload = v; } }];
+    await s.noteScreenSettled({}, async () => ({ path: '/a.png', cropped }));
+    return payload;
+  };
+
+  const uncropped = await responseFor(false);
+  assert.equal(uncropped.screenShot, '/a.png', 'the picture is attached either way');
+  assert.equal(uncropped.screenShotCropped, false,
+    'an uncropped capture must be reported as uncropped — the agent phrases from this');
+
+  const cropped = await responseFor(true);
+  assert.equal(cropped.screenShotCropped, true);
+});
+
+test('a capture that fails leaves the wake intact, without a picture', async () => {
+  const s = serverWithWaiter();
+  assert.equal(await s.noteScreenSettled({}, async () => { throw new Error('capture died'); }), true,
+    'the wake still fires — a wake without a picture beats no wake');
+  assert.equal(s.lastScreenShot, null);
 });

@@ -603,18 +603,36 @@ server.tool(
     // #673: the shared screen changed while the room was silent. The app noticed
     // it (electron-app/screen-settle.js) and handed us a finished verdict — this
     // side just phrases it. Nothing is computed across the packaging boundary.
-    const screenLine = data.screenWake
+    // `attached` is passed in, NOT inferred from data.screenShot: the picture is
+    // spliced into one branch only, and this line is appended to three. Keying
+    // the wording on the payload told the agent "the picture is attached" in
+    // branches that attach nothing.
+    //
+    // And when a picture IS attached, what it shows depends on whether the crop
+    // succeeded — reported by the app as screenShotCropped rather than assumed
+    // here. An uncropped capture is the whole Meet view, faces and Meet chrome
+    // included; describing that as "the shared screen itself" would have the
+    // agent reason from a false account of its own evidence.
+    const screenDescription = (attached) => {
+      if (!attached) {
+        return 'Call get_call_screenshot to LOOK before you say anything: somebody is showing '
+          + 'you something rather than telling you.';
+      }
+      return data.screenShotCropped
+        ? 'The picture is attached, cropped to the shared screen itself. LOOK at it before you '
+          + 'say anything — somebody is showing you something rather than telling you.'
+        : 'The picture is attached, but it is the WHOLE Meet view — the share could not be '
+          + 'located, so it is one tile among the participants rather than the screen itself. '
+          + 'LOOK before you say anything, and if you cannot read it, say so rather than guessing.';
+    };
+    const screenLineFor = (attached) => data.screenWake
       ? '\n[The SHARED SCREEN just changed and settled' + (data.screenChange?.regions
           ? ' (' + data.screenChange.regions + ' region(s) of it)' : '')
-        + ' — nobody spoke. '
-        + (data.screenShot
-            ? 'The picture is attached: it is cropped to the shared screen itself, not the '
-              + 'whole Meet view. LOOK at it before you say anything — somebody is showing '
-              + 'you something rather than telling you.'
-            : 'Call get_call_screenshot to LOOK before you say anything: somebody is showing '
-              + 'you something rather than telling you.')
+        + ' — nobody spoke. ' + screenDescription(attached)
         + ' If it does not need a comment, stay silent and wait again.]'
       : '';
+    // The branches that do NOT splice an image must not promise one.
+    const screenLine = screenLineFor(false);
     // Continuation: this window is the same speaker extending the utterance you
     // already answered. Stay quiet unless there's genuinely new content, to
     // avoid responding twice to one thought.
@@ -672,9 +690,10 @@ server.tool(
       if (data.screenWake) {
         // Image FIRST, then the words about it: the agent is being woken
         // specifically to look, so the thing to look at leads.
+        const shot = screenshotBlocks(data.screenShot);
         return { content: [
-          ...screenshotBlocks(data.screenShot),
-          { type: "text", text: `(The shared screen changed — the room was quiet, so you were woken to look.)${clockLine}${screenLine}${chatLine}${statusLine}${errorLines}` },
+          ...shot,
+          { type: "text", text: `(The shared screen changed — the room was quiet, so you were woken to look.)${clockLine}${screenLineFor(shot.length > 0)}${chatLine}${statusLine}${errorLines}` },
         ] };
       }
       // Deaf-bot hint: if Meet captions are off, the bot can't hear anything.

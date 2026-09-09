@@ -411,7 +411,7 @@ class LocalServer {
     this.screenShares = [];      // [{ name, id }] — every screen share in the people pane
     this.someoneElsePresenting = false;  // another participant is screen sharing
     this._lastScreenWakeAt = 0;          // #673 throttle: when a screen wake last fired
-    this.lastScreenShotPath = null;      // #673: the picture taken for the last screen wake
+    this.lastScreenShot = null;          // #673: { path, cropped } for the last screen wake
     this.presenterName = null;   // name of the person presenting (if any)
 
     // Real-time speaking state (from DOMSpeakerTracker, not captions)
@@ -1830,11 +1830,31 @@ class LocalServer {
     //
     // Best effort: a wake with no picture still beats no wake, and the agent can
     // always call get_call_screenshot itself.
+    this.lastScreenShot = null;
     if (capture) {
-      try { this.lastScreenShotPath = await capture(); }
-      catch { this.lastScreenShotPath = null; }
-    } else {
-      this.lastScreenShotPath = null;
+      try { this.lastScreenShot = await capture(); }
+      catch { this.lastScreenShot = null; }
+    }
+
+    // RE-CHECK THE GATES AFTER THE AWAIT. The capture is not instant — it is a
+    // page capture, a PNG encode and a disk write, and it can enter the
+    // 20x100ms self-heal loop — so the room can change underneath it. Three
+    // things can go stale:
+    //   • the waiters can resolve on their own (a timeout, a silence resolve, a
+    //     chat wake), leaving nothing to wake and a throttle stamp already spent
+    //     on a wake that never happened;
+    //   • someone can start speaking, and the floor beats the screen;
+    //   • the share can STOP, at which point the rect we cropped to describes a
+    //     layout that no longer exists and the picture is of whatever replaced it.
+    const stale = this.waiters.length === 0 ? 'the waiters resolved during the capture'
+      : this.anyoneSpeaking ? 'someone started speaking during the capture'
+      : this.someoneElsePresenting === false ? 'the share stopped during the capture'
+      : null;
+    if (stale) {
+      console.log(ts(), '🖥️ [screen-wake] not waking after all —', stale);
+      this._lastScreenWakeAt = 0;   // the throttle must not charge for a wake that never fired
+      this.lastScreenShot = null;
+      return false;
     }
 
     for (const waiter of [...this.waiters]) {
@@ -4694,7 +4714,13 @@ class LocalServer {
       response.screenChange = this.lastScreenChange || null;
       // The picture, already taken (see noteScreenSettled). The MCP layer inlines
       // it so the agent SEES the screen in the same turn it is told about it.
-      if (this.lastScreenShotPath) response.screenShot = this.lastScreenShotPath;
+      if (this.lastScreenShot?.path) {
+        response.screenShot = this.lastScreenShot.path;
+        // Whether it is actually the SHARE or the whole Meet view. The wording
+        // the agent sees depends on this; without it the agent is told a view
+        // of faces is the shared screen.
+        response.screenShotCropped = !!this.lastScreenShot.cropped;
+      }
     }
 
     // If there are actual transcript entries, the agent will now process them → thinking state.

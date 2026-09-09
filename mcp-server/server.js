@@ -600,6 +600,39 @@ server.tool(
     // chat without missing speech. The agent should call read_chat when it sees this.
     const chatLine = data.chatUnread
       ? '\n[Unread chat messages — call read_chat to see them, then respond.]' : '';
+    // #673: the shared screen changed while the room was silent. The app noticed
+    // it (electron-app/screen-settle.js) and handed us a finished verdict — this
+    // side just phrases it. Nothing is computed across the packaging boundary.
+    // `attached` is passed in, NOT inferred from data.screenShot: the picture is
+    // spliced into one branch only, and this line is appended to three. Keying
+    // the wording on the payload told the agent "the picture is attached" in
+    // branches that attach nothing.
+    //
+    // And when a picture IS attached, what it shows depends on whether the crop
+    // succeeded — reported by the app as screenShotCropped rather than assumed
+    // here. An uncropped capture is the whole Meet view, faces and Meet chrome
+    // included; describing that as "the shared screen itself" would have the
+    // agent reason from a false account of its own evidence.
+    const screenDescription = (attached) => {
+      if (!attached) {
+        return 'Call get_call_screenshot to LOOK before you say anything: somebody is showing '
+          + 'you something rather than telling you.';
+      }
+      return data.screenShotCropped
+        ? 'The picture is attached, cropped to the shared screen itself. LOOK at it before you '
+          + 'say anything — somebody is showing you something rather than telling you.'
+        : 'The picture is attached, but it is the WHOLE Meet view — the share could not be '
+          + 'located, so it is one tile among the participants rather than the screen itself. '
+          + 'LOOK before you say anything, and if you cannot read it, say so rather than guessing.';
+    };
+    const screenLineFor = (attached) => data.screenWake
+      ? '\n[The SHARED SCREEN just changed and settled' + (data.screenChange?.regions
+          ? ' (' + data.screenChange.regions + ' region(s) of it)' : '')
+        + ' — nobody spoke. ' + screenDescription(attached)
+        + ' If it does not need a comment, stay silent and wait again.]'
+      : '';
+    // The branches that do NOT splice an image must not promise one.
+    const screenLine = screenLineFor(false);
     // Continuation: this window is the same speaker extending the utterance you
     // already answered. Stay quiet unless there's genuinely new content, to
     // avoid responding twice to one thought.
@@ -652,13 +685,24 @@ server.tool(
       if (data.chatWake) {
         return { content: [{ type: "text", text: `(New chat message — the room was quiet, so you were woken to handle it.)${clockLine}${chatLine || '\n[Call read_chat to see it, then respond aloud and/or in chat.]'}${statusLine}${errorLines}` }] };
       }
+      // #673: same shape for a screen that changed in silence. Lead with it, for
+      // the same reason: "no one spoke / timed out" is true and useless here.
+      if (data.screenWake) {
+        // Image FIRST, then the words about it: the agent is being woken
+        // specifically to look, so the thing to look at leads.
+        const shot = screenshotBlocks(data.screenShot);
+        return { content: [
+          ...shot,
+          { type: "text", text: `(The shared screen changed — the room was quiet, so you were woken to look.)${clockLine}${screenLineFor(shot.length > 0)}${chatLine}${statusLine}${errorLines}` },
+        ] };
+      }
       // Deaf-bot hint: if Meet captions are off, the bot can't hear anything.
       // Distinguish that from "the room is silent" so the agent can ask humans
       // to re-enable captions instead of looping silent timeouts.
       const deafLine = status.captionsOn === false
         ? '\n[Captions are OFF in Meet — the bot hears via captions, so it is DEAF until they are re-enabled. The app is retrying automatically; if this persists, say or chat: "Could someone turn captions back on? (CC button in Meet\'s toolbar)"]'
         : '';
-      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${voiceLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}` }] };
+      return { content: [{ type: "text", text: `(No one spoke. Timed out after ${elapsed} seconds.)${clockLine}${statusLine}${errorLines}${chatLine}${voiceLine}${ackLine}${replayLine}${discardLine}${truncLine}${deafLine}${screenLine}` }] };
     }
 
     // Each entry is now one logical speaker turn (#178 snapshot model); no
@@ -689,7 +733,7 @@ server.tool(
     return {
       content: [{
         type: "text",
-        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${voiceLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}`,
+        text: `Speech detected (${deduped.length} speaker turn(s), ${elapsed}s elapsed):${clockLine}\n\n${transcriptText}${chatLine}${voiceLine}${continuationLine}${ackLine}${replayLine}${discardLine}${truncLine}${screenLine}`,
       }],
     };
   }
@@ -2656,6 +2700,22 @@ function screenshotResult(pathOnDisk, label) {
   } catch {
     return { content: [text] };
   }
+}
+
+// The picture that came with a screen wake, as a content block, or nothing.
+//
+// Same reasoning as screenshotResult above and the same file-reading rules, but
+// the wake response is mostly TEXT with an image attached rather than an image
+// with a path attached — so this returns an array to splice in rather than a
+// finished result. A missing or unreadable file yields [] and the wake still
+// goes out: a wake without a picture beats no wake.
+function screenshotBlocks(pathOnDisk) {
+  if (!pathOnDisk) return [];
+  try {
+    const buf = readFileSync(pathOnDisk);
+    if (!buf.length || buf.length > MAX_INLINE_BYTES) return [];
+    return [{ type: "image", data: buf.toString("base64"), mimeType: "image/png" }];
+  } catch { return []; }
 }
 
 // --- get_call_screenshot ---

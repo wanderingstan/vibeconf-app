@@ -230,6 +230,41 @@ const PREFERENCES = {
       'settled. The messy data needed to test utterance-completeness detection ' +
       '(#243). Verbose; turn ON only when collecting test data, OFF for normal use.',
   },
+  screenWakeMinGapMs: {
+    type: 'number',
+    default: 10000,
+    min: 0,
+    max: 600000,
+    description:
+      'With watchSharedScreen on, the minimum time between two screen wakes. '
+      + 'This is a THROTTLE, and it is not the same as the detector\'s settle, '
+      + 'which is a debounce: continuous typing never produces a settle at all, '
+      + 'because the frame never goes quiet. What this covers is discrete edits '
+      + 'with pauses — type a line, pause, type another — where every pause is a '
+      + 'genuine settle and would otherwise be a genuine wake. '
+      + 'Measured from the last WAKE, not the last settle, because the cost being '
+      + 'limited is the agent\'s turn rather than the detector\'s sample. '
+      + '0 disables it, leaving only the back-pressure of "no waiter, no wake".',
+  },
+
+  watchSharedScreen: {
+    type: 'boolean',
+    default: true,
+    label: 'Watch a shared screen for changes',
+    description:
+      'While in a call, sample the bot\'s Meet view every couple of seconds and '
+      + 'wake the bot when a shared screen CHANGES and then stops changing — so a '
+      + 'student who shares something in silence gets looked at instead of being '
+      + 'asked to share again (#673). The watching itself is arithmetic over a '
+      + '320x180 grid (electron-app/screen-settle.js): no vision model, no network, '
+      + 'no tokens. What it gates is the expensive look, which the agent takes only '
+      + 'when the picture actually moved. ON by default (Stan, 7 Sept): a student '
+      + 'who needs this would never find a setting to turn it on, so the failure it '
+      + 'prevents is silent while the cost of it being wrong is merely noise we can '
+      + 'hear and switch off. Turn it OFF for a meeting where someone presents slides '
+      + 'and nobody wants a remark on each one. Applies immediately, including mid-call.',
+    requiresRestart: false,
+  },
   recordCallAudio: {
     type: 'boolean',
     default: false,

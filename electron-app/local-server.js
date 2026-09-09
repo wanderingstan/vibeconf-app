@@ -410,6 +410,8 @@ class LocalServer {
     this.participants = [];      // [{ name, speaking, isPseudo }] from DOM speaker tracker
     this.screenShares = [];      // [{ name, id }] — every screen share in the people pane
     this.someoneElsePresenting = false;  // another participant is screen sharing
+    this._lastScreenWakeAt = 0;          // #673 throttle: when a screen wake last fired
+    this.lastScreenShot = null;          // #673: { path, cropped } for the last screen wake
     this.presenterName = null;   // name of the person presenting (if any)
 
     // Real-time speaking state (from DOMSpeakerTracker, not captions)
@@ -583,6 +585,8 @@ class LocalServer {
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
     this.lastWaitForSpeechAt = null; // ms timestamp of the most recent wait_for_speech call
+    this.lastScreenChangeAt = null;  // #673: when the watched share last settled
+    this.lastScreenChange = null;    // ...and how big that change was
     // Anything the AGENT did, not just wait_for_speech (#38). Every MCP tool
     // reaches the app over HTTP, so one stamp at the request door covers the
     // whole surface — including the long tool-work stretches where the loop is
@@ -1751,6 +1755,112 @@ class LocalServer {
 
   setSharing(sharing) {
     this.sharing = sharing;
+  }
+
+  // #673 — a participant's shared screen changed and has now stopped changing.
+  // Wake a parked wait_for_speech the same way a new chat message does.
+  //
+  // WHY THIS EXISTS AT ALL. Bethany, 2026-09-02: "I shared it like 10 seconds
+  // ago. Why aren't you seeing it?" A bot between turns is inside a long poll
+  // that only speech resolves, so a screen changing in silence is not slow to
+  // reach it — it cannot reach it. This is a new wake REASON, not new
+  // machinery: chat proved the shape (see setChatUnread).
+  //
+  // The gates are chat's, for chat's reasons:
+  //   - somebody speaking: the floor beats the screen. Nothing is lost — the
+  //     agent will look at the screen on the turn it is about to be handed.
+  //   - no waiter: nobody to wake; the next wait_for_speech sees it as part of
+  //     the normal snapshot.
+  // Plus one of its own: only in a call, because outside one there is no screen
+  // and no agent loop.
+  // `capture` is a FUNCTION returning a screenshot path, not a path — so it is
+  // called only once every gate has passed and the wake is definitely firing.
+  // Most settles are blocked (someone is speaking, no agent is waiting, the
+  // throttle is holding) and encoding a full PNG for each of those would be
+  // work whose result is thrown away.
+  //
+  // Async now. The only caller is the watcher callback, which does not await it.
+  async noteScreenSettled(info = {}, capture = null) {
+    if (this.callStatus !== 'in-call') return false;
+    this.lastScreenChangeAt = Date.now();
+    this.lastScreenChange = {
+      at: this.lastScreenChangeAt,
+      regions: Array.isArray(info.tiles) ? info.tiles.length : 0,
+      cells: info.cells || 0,
+    };
+    // THROTTLE, which is a different thing from the detector's debounce.
+    //
+    // "Settle" already debounces: continuous typing never produces one, because
+    // the frame never goes quiet. What it does not cover is discrete edits with
+    // pauses — type a line, pause, type another — where every pause is a real
+    // settle and every settle is a real wake. Stan, 2026-09-09: "we need some
+    // max rate at which these updates flow, one every 10 seconds?"
+    //
+    // The no-active-waiter gate below already provides back-pressure: between a
+    // wake and the agent parking again, nothing can fire. This covers the case
+    // that slips through — the agent decides there is nothing to say, parks
+    // again quickly, and is woken by the next keystroke pause.
+    //
+    // Measured from the last WAKE, not the last settle: the cost being limited
+    // is the agent's turn, not the detector's sample.
+    const minGapMs = Number(this._pref('screenWakeMinGapMs'));
+    const sinceWake = this._lastScreenWakeAt ? Date.now() - this._lastScreenWakeAt : Infinity;
+    const blocked = this.anyoneSpeaking ? 'someone-speaking'
+      : this.waiters.length === 0 ? 'no-active-waiter'
+      : (Number.isFinite(minGapMs) && minGapMs > 0 && sinceWake < minGapMs)
+        ? `throttled (${Math.round(sinceWake / 1000)}s since the last wake, min ${Math.round(minGapMs / 1000)}s)`
+      : null;
+    if (blocked) {
+      console.log(ts(), '🖥️ [screen-wake] shared screen settled but NOT waking —', blocked,
+        '(anyoneSpeaking=' + this.anyoneSpeaking + ' waiters=' + this.waiters.length + ')');
+      return false;
+    }
+    console.log(ts(), '🖥️ [screen-wake] shared screen settled in a quiet room — waking',
+      this.waiters.length, 'waiter(s)',
+      '(' + this.lastScreenChange.regions + ' region(s), ' + this.lastScreenChange.cells + ' cells)');
+    this._lastScreenWakeAt = Date.now();
+
+    // Take the picture BEFORE resolving. The agent is being woken because
+    // something is worth looking at, and it will look — so making it ask costs
+    // two more round trips (emit the call, receive the file) that re-process the
+    // whole call's context. Stan, 2026-09-09: "just *telling* the agent to take
+    // a screenshot is using the LLM to activate a screenshot toolcall and
+    // wasting tokens." Same argument as #726, applied where the need is known
+    // in advance rather than guessed.
+    //
+    // Best effort: a wake with no picture still beats no wake, and the agent can
+    // always call get_call_screenshot itself.
+    this.lastScreenShot = null;
+    if (capture) {
+      try { this.lastScreenShot = await capture(); }
+      catch { this.lastScreenShot = null; }
+    }
+
+    // RE-CHECK THE GATES AFTER THE AWAIT. The capture is not instant — it is a
+    // page capture, a PNG encode and a disk write, and it can enter the
+    // 20x100ms self-heal loop — so the room can change underneath it. Three
+    // things can go stale:
+    //   • the waiters can resolve on their own (a timeout, a silence resolve, a
+    //     chat wake), leaving nothing to wake and a throttle stamp already spent
+    //     on a wake that never happened;
+    //   • someone can start speaking, and the floor beats the screen;
+    //   • the share can STOP, at which point the rect we cropped to describes a
+    //     layout that no longer exists and the picture is of whatever replaced it.
+    const stale = this.waiters.length === 0 ? 'the waiters resolved during the capture'
+      : this.anyoneSpeaking ? 'someone started speaking during the capture'
+      : this.someoneElsePresenting === false ? 'the share stopped during the capture'
+      : null;
+    if (stale) {
+      console.log(ts(), '🖥️ [screen-wake] not waking after all —', stale);
+      this._lastScreenWakeAt = 0;   // the throttle must not charge for a wake that never fired
+      this.lastScreenShot = null;
+      return false;
+    }
+
+    for (const waiter of [...this.waiters]) {
+      this._resolveWaiter(waiter, 'screen');
+    }
+    return true;
   }
 
   setDetectedMeetUrls(urls) {
@@ -4597,6 +4707,21 @@ class LocalServer {
     // Tag a chat-triggered wake so the MCP layer can phrase it as "new chat"
     // rather than a misleading "no one spoke / timed out".
     if (reason === 'chat') response.chatWake = true;
+    // #673: same idea for a shared screen that changed and settled. Without the
+    // tag the agent gets "no one spoke, timed out" and has no reason to look.
+    if (reason === 'screen') {
+      response.screenWake = true;
+      response.screenChange = this.lastScreenChange || null;
+      // The picture, already taken (see noteScreenSettled). The MCP layer inlines
+      // it so the agent SEES the screen in the same turn it is told about it.
+      if (this.lastScreenShot?.path) {
+        response.screenShot = this.lastScreenShot.path;
+        // Whether it is actually the SHARE or the whole Meet view. The wording
+        // the agent sees depends on this; without it the agent is told a view
+        // of faces is the shared screen.
+        response.screenShotCropped = !!this.lastScreenShot.cropped;
+      }
+    }
 
     // If there are actual transcript entries, the agent will now process them → thinking state.
     // Captions arrive as multiple progressively-growing entries for one utterance

@@ -78,13 +78,33 @@ const MEASURE_SCRIPT = `(() => {
   for (const el of document.querySelectorAll('[data-participant-id]')) {
     if (inChrome(el)) continue;
     const b = rect(el);
-    if (onScreen(b)) tiles.push(b);
+    if (onScreen(b)) tiles.push({ ...b, id: el.getAttribute('data-participant-id') || null });
   }
   const videos = [];
   for (const el of document.querySelectorAll('video')) {
     if (inChrome(el)) continue;
     const b = rect(el);
-    if (onScreen(b)) videos.push(b);
+    // The id of the TILE this video sits in, so a caller can tell whose stream
+    // it is. Grid tiles carry no marker saying "this one is the presentation"
+    // (measured live 2026-09-03, #673) — the only route is to match this id
+    // against the sharer's, which the People pane does report.
+    if (onScreen(b)) {
+      const owner = el.closest('[data-participant-id]');
+      videos.push({ ...b, id: owner ? owner.getAttribute('data-participant-id') : null });
+    }
+  }
+
+  // WHO IS SHARING, from the People pane, which is the one place Meet says so.
+  // The pane marks a share with the literal word in the tile's status row; the
+  // class is a minified token that changes between builds, the word does not.
+  // Mirrors isPresentationTile() in google-meet-provider.js deliberately: this
+  // script is injected as a self-contained string and cannot import it.
+  const presenting = [];
+  for (const item of document.querySelectorAll('[role="listitem"]')) {
+    const id = item.getAttribute('data-participant-id');
+    if (!id) continue;
+    const row = item.querySelector('.d93U2d');
+    if (row && (row.textContent || '').toLowerCase().includes('presentation')) presenting.push(id);
   }
   const banner = document.getElementById('vibeconf-status-bar');
   const captions = document.querySelector('div[role="region"][aria-label="Captions"]');
@@ -92,7 +112,7 @@ const MEASURE_SCRIPT = `(() => {
     vw, vh,
     banner: banner ? rect(banner) : null,
     captions: captions ? rect(captions) : null,
-    tiles, videos,
+    tiles, videos, presenting,
   };
 })()`;
 

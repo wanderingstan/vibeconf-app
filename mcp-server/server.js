@@ -2622,10 +2622,46 @@ server.tool(
   }
 );
 
+
+// Return a captured screenshot as an IMAGE the agent can see, not a path it has
+// to go and fetch.
+//
+// The old shape returned only the path, so LOOKING at a screenshot cost two more
+// round trips: one turn to emit the read, another to receive it — each
+// re-processing the whole call's context, which in a long call costs far more
+// than the picture does. Stan, 2026-09-09: "just *telling* the agent to take a
+// screenshot is using the LLM to activate a screenshot toolcall and wasting
+// tokens, right?" It is.
+//
+// The PATH is still returned alongside, because some uses genuinely only want
+// the file: saving a screenshot into the call folder for after-call work, or
+// uploading it somewhere. Returning both costs nothing.
+//
+// Read here rather than sent by the app because this server runs on the same
+// machine (it talks to 127.0.0.1), so the file is simply local. If the read
+// fails for any reason the path alone still goes back — a screenshot the agent
+// cannot see is a degraded answer, not an error.
+const MAX_INLINE_BYTES = 12 * 1024 * 1024;
+function screenshotResult(pathOnDisk, label) {
+  const text = { type: "text", text: `${label} ${pathOnDisk}` };
+  try {
+    const buf = readFileSync(pathOnDisk);
+    if (!buf.length || buf.length > MAX_INLINE_BYTES) return { content: [text] };
+    return {
+      content: [
+        { type: "image", data: buf.toString("base64"), mimeType: "image/png" },
+        text,
+      ],
+    };
+  } catch {
+    return { content: [text] };
+  }
+}
+
 // --- get_call_screenshot ---
 server.tool(
   "get_call_screenshot",
-  "Capture a screenshot of the current Meet view as the bot sees it — participant tiles, names, mic icons, who's speaking, captions, ANOTHER participant's shared screen, and the surrounding Google Meet chrome — saved to a temporary file. Returns the absolute path to the PNG. Use this for visual context about what's happening in the call. IMPORTANT: this is the Meet view, so it does NOT show the bot's OWN screen share — Meet never shows you your own presentation. To see what YOU are presenting (your shared whiteboard), use get_shared_screenshot instead. After getting the path, read the file with your normal image-reading tool to look at it. "
+  "Capture a screenshot of the current Meet view as the bot sees it — participant tiles, names, mic icons, who's speaking, captions, ANOTHER participant's shared screen, and the surrounding Google Meet chrome — saved to a temporary file. Returns the absolute path to the PNG. Use this for visual context about what's happening in the call. IMPORTANT: this is the Meet view, so it does NOT show the bot's OWN screen share — Meet never shows you your own presentation. To see what YOU are presenting (your shared whiteboard), use get_shared_screenshot instead. The image comes back inline — you can see it immediately, no second call. The file path is returned too, for when you want to keep or upload the file. "
   + "IF A SHARED SCREEN IS TOO SMALL OR BLURRY TO READ: say so plainly instead of guessing — being wrong about someone's error message costs far more trust than admitting you can't see it. Then ask for ONE fix, not a list, most effective first: (1) share just the window rather than the whole screen; (2) increase the text size (Cmd/Ctrl and +); (3) make the shared window smaller. (3) sounds backwards, so give the reason if you use it: the screen is scaled down to fit your view, and a smaller window is scaled down less, so a bigger window makes the text smaller to you, not larger.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
@@ -2638,7 +2674,7 @@ server.tool(
     });
     const data = await resp.json();
     if (data?.success && data.path) {
-      return { content: [{ type: "text", text: `Saved screenshot to ${data.path}` }] };
+      return screenshotResult(data.path, "Screenshot of the Meet view, also saved to");
     }
     return { content: [{ type: "text", text: `Error capturing screenshot: ${data?.error || "unknown"}` }] };
   }
@@ -2647,7 +2683,7 @@ server.tool(
 // --- get_shared_screenshot ---
 server.tool(
   "get_shared_screenshot",
-  "Capture a screenshot of the bot's OWN shared screen — the whiteboard it's currently presenting into the call — and save it to a temporary file. Returns the absolute path to the PNG. Use this to see what participants are actually seeing on your shared screen (get_call_screenshot only shows the Meet view, which can't show you your own share). Fails if you're not currently sharing. After getting the path, read the file with your normal image-reading tool to look at it.",
+  "Capture a screenshot of the bot's OWN shared screen — the whiteboard it's currently presenting into the call — and save it to a temporary file. Returns the absolute path to the PNG. Use this to see what participants are actually seeing on your shared screen (get_call_screenshot only shows the Meet view, which can't show you your own share). Fails if you're not currently sharing. The image comes back inline — you can see it immediately, no second call. The file path is returned too, for when you want to keep or upload the file.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
@@ -2659,7 +2695,7 @@ server.tool(
     });
     const data = await resp.json();
     if (data?.success && data.path) {
-      return { content: [{ type: "text", text: `Saved shared-screen screenshot to ${data.path}` }] };
+      return screenshotResult(data.path, "Screenshot of your shared screen, also saved to");
     }
     return { content: [{ type: "text", text: `Error capturing shared screen: ${data?.error || "unknown"}` }] };
   }

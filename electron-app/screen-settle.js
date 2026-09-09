@@ -139,6 +139,28 @@ const DEFAULT_INTERVAL_MS = 2000;
  * the size claimed (a caller must never treat a wrong-sized frame as "changed"
  * or "unchanged"; it is not comparable at all).
  */
+
+// Are two samples pictures of the SAME region, near enough to compare?
+//
+// Not exact equality, which is what shipped first and broke the detector
+// outright: Meet re-lays out constantly and the measured rect moves by a pixel
+// or two between samples (a tile animating, the captions region appearing, a
+// subpixel reflow). With an exact test every sample read as "not comparable",
+// the baseline was adopted every time, and NOTHING EVER SETTLED — silently,
+// with no error. Reproduced offline: a 1px jitter took 2 settles to 0.
+//
+// The tolerance is sized to the grid rather than picked. Every sample is
+// downscaled to GRID_W across, so on a 1900px-wide share one cell covers ~6px
+// and a shift smaller than that is invisible in the compared data. Below the
+// floor it cannot matter; above 2% the region has genuinely moved.
+function sameRegion(a, b, gridW = GRID_W) {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const tol = (dim) => Math.max(dim / gridW, dim * 0.02);
+  return Math.abs(a.x - b.x) <= tol(a.w) && Math.abs(a.w - b.w) <= tol(a.w)
+      && Math.abs(a.y - b.y) <= tol(a.h) && Math.abs(a.h - b.h) <= tol(a.h);
+}
+
 function grayGridFromBitmap(bmp, width = GRID_W, height = GRID_H) {
   if (!bmp || typeof bmp.length !== 'number') return null;
   if (bmp.length < width * height * 4) return null;
@@ -219,7 +241,7 @@ function createSettleDetector(opts = {}) {
     ...opts,
   };
   let prev = null;      // the previous sample
-  let prevSource = '';  // the region it was a picture OF (see push)
+  let prevSource = null; // the region it was a picture OF (see sameRegion)
   let baseline = null;  // the last state we reported (or the first we ever saw)
   let dirty = false;    // something moved since the baseline
   const history = [];   // recent per-cell masks, for the churn map
@@ -235,7 +257,7 @@ function createSettleDetector(opts = {}) {
     return live;
   }
 
-  function reset() { prev = null; baseline = null; dirty = false; history.length = 0; prevSource = ''; }
+  function reset() { prev = null; baseline = null; dirty = false; history.length = 0; prevSource = null; }
 
   // `source` identifies WHAT was sampled — the crop rect the frame came from.
   // Two frames are only comparable if they are pictures of the same thing.
@@ -249,17 +271,14 @@ function createSettleDetector(opts = {}) {
   function push(grid, source = null) {
     const none = { settled: false, moving: false, tiles: [], cells: 0, reason: '' };
     if (!grid || !grid.length) return { ...none, reason: 'no-frame' };
-    const sourceKey = source
-      ? `${Math.round(source.x)},${Math.round(source.y)},${Math.round(source.w)},${Math.round(source.h)}`
-      : '';
-    if (!prev || prev.length !== grid.length || sourceKey !== prevSource) {
+    if (!prev || prev.length !== grid.length || !sameRegion(prevSource, source)) {
       // First frame, or not comparable with the last one — the capture size
       // changed, or we are now looking at a DIFFERENT REGION of the screen.
       // Adopt it as the new baseline rather than calling it a change, which
       // would fire on every relayout.
       const had = !!prev;
       prev = grid; baseline = grid; dirty = false; history.length = 0;
-      prevSource = sourceKey;
+      prevSource = source || null;
       return { ...none, reason: had ? 'resized' : 'first-frame' };
     }
 
@@ -315,7 +334,8 @@ function createScreenSettleWatcher({
 } = {}) {
   let timer = null;
   let busy = false;              // a capture is in flight; never overlap them
-  const stats = { samples: 0, settles: 0, failures: 0, consecutiveFailures: 0, stoppedReason: null };
+  const stats = { samples: 0, settles: 0, failures: 0, consecutiveFailures: 0, rebaselines: 0, stoppedReason: null };
+  let lastReason = null;   // log the verdict on CHANGE, so it says why without spamming
 
   async function step() {
     if (busy) return;            // the previous capture is still going: skip, don't queue
@@ -331,6 +351,24 @@ function createScreenSettleWatcher({
       stats.consecutiveFailures = 0;
       stats.samples++;
       const verdict = detector.push(grid, source);
+
+      // SAY WHY — once per run of the same reason, not every 2s.
+      //
+      // Every non-settle path returned silently, which is how the re-baseline
+      // bug survived to a live call: the detector ran for four minutes, never
+      // fired, and left a log with NOTHING in it. A watcher that is broken and
+      // a room that is simply quiet produced identical output, so the only way
+      // to tell them apart was to read the source. Same lesson as _rankedSkip
+      // in local-server.js, which exists for exactly this reason.
+      const reason = verdict && verdict.reason;
+      if (reason && reason !== lastReason) {
+        lastReason = reason;
+        log('verdict → ' + reason + (reason === 'resized'
+          ? ' (region changed, baseline restarted — repeating means the crop rect is unstable)'
+          : ''));
+      }
+      if (reason === 'resized') stats.rebaselines++;
+
       if (verdict && verdict.settled) {
         stats.settles++;
         try { onSettled(verdict); } catch (err) { log('onSettled threw: ' + (err && err.message)); }
@@ -367,6 +405,7 @@ function createScreenSettleWatcher({
 }
 
 module.exports = {
+  sameRegion,
   GRID_W, GRID_H, TILE_CELLS, CELL_DELTA, MIN_CELLS_PER_TILE,
   CHURN_WINDOW, CHURN_LIVE_FRAMES, DEFAULT_INTERVAL_MS,
   grayGridFromBitmap, changedCellMask, changedTiles,

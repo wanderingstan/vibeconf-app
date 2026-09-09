@@ -502,3 +502,56 @@ test('a capture that fails leaves the wake intact, without a picture', async () 
     'the wake still fires — a wake without a picture beats no wake');
   assert.equal(s.lastScreenShot, null);
 });
+
+// --- comparability across a moving layout ----------------------------------
+
+test('a rect that jitters by a pixel does NOT re-baseline the detector', () => {
+  // This is the bug that killed the detector outright in the first live test:
+  // the comparability check used exact rect equality, Meet's measured rect moves
+  // a pixel or two between samples, so EVERY frame read as "not comparable", the
+  // baseline was adopted every time, and nothing ever settled. No error, no log
+  // line — just a watcher that ran forever and never fired.
+  const { createSettleDetector } = require('../electron-app/screen-settle.js');
+  const W = 320, H = 180;
+  const flat = (v) => { const g = new Uint8Array(W * H); g.fill(v); return g; };
+  const still = flat(100);
+  const changed = flat(100);
+  for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) changed[y * W + x] = 250;
+  const seq = [still, still, still, still, still, still, changed, changed, still, still, still, still];
+
+  const settlesWith = (rectAt) => {
+    const d = createSettleDetector();
+    let n = 0;
+    seq.forEach((g, i) => { if (d.push(g, rectAt(i)).settled) n++; });
+    return n;
+  };
+
+  const stable = settlesWith(() => ({ x: 0, y: 0, w: 1900, h: 1050 }));
+  assert.ok(stable > 0, 'a stable rect must settle at all');
+  assert.equal(settlesWith((i) => ({ x: 0, y: 0, w: 1900 + (i % 2), h: 1050 })), stable,
+    'a 1px width jitter must behave exactly like a stable rect');
+  assert.equal(settlesWith((i) => ({ x: (i % 2) * 3, y: 0, w: 1900, h: 1050 })), stable,
+    'and a 3px position jitter likewise');
+});
+
+test('a rect that genuinely moves DOES re-baseline', () => {
+  // The guard still has to do its job: a relayout that puts a different region
+  // in front of the camera must not read as a large diff followed by a settle.
+  const { sameRegion } = require('../electron-app/screen-settle.js');
+  const at = (x, w) => ({ x, y: 0, w, h: 1050 });
+  assert.equal(sameRegion(at(0, 1900), at(2, 1900)), true, 'a couple of pixels is the same region');
+  assert.equal(sameRegion(at(0, 1900), at(400, 1900)), false, 'a tile-width move is not');
+  assert.equal(sameRegion(at(0, 1900), at(0, 900)), false, 'nor is halving the width');
+  assert.equal(sameRegion(null, null), true, 'no crop on either side is comparable');
+  assert.equal(sameRegion(null, at(0, 1900)), false, 'gaining a crop is not');
+});
+
+test('the tolerance is sized to the grid, not picked out of the air', () => {
+  // One cell of the 320-wide grid covers ~6px of a 1900px share, so a shift
+  // smaller than a cell cannot show up in the data being compared.
+  const { sameRegion, GRID_W } = require('../electron-app/screen-settle.js');
+  const w = 1900, cell = w / GRID_W;
+  const at = (x) => ({ x, y: 0, w, h: 1050 });
+  assert.ok(sameRegion(at(0), at(Math.floor(cell * 0.9))), 'under one cell: same region');
+  assert.equal(sameRegion(at(0), at(Math.ceil(w * 0.03))), false, 'over 2% of the width: not');
+});

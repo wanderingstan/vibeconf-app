@@ -4024,7 +4024,10 @@ function reconcileScreenSettleWatcher() {
         : 'nobody is presenting';
       console.log('[electron] Shared-screen watch OFF (' + why + ') —',
         screenSettleWatcher.stats.samples, 'samples,', screenSettleWatcher.stats.settles, 'settle(s),',
-        screenSettleWatcher.stats.failures, 'capture failure(s)');
+        screenSettleWatcher.stats.failures, 'capture failure(s),',
+        // Many samples, no settles and many re-baselines is the signature of an
+        // unstable crop rect — the failure that ran silently on 2026-09-09.
+        screenSettleWatcher.stats.rebaselines, 're-baseline(s)');
       screenSettleWatcher = null;
     }
   } catch (err) {

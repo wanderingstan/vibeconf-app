@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { speakOrder, speakDelay, turnKey, clockKey, nameMentioned, hash32 } =
+const { speakOrder, speakDelay, turnKey, clockKey, nameMentioned, mentionedBots, lastMentionIndex, hash32 } =
   require('../electron-app/speak-order.js');
 
 const BOTS = ['Alice', 'Jimmy', 'Cosmo'];
@@ -85,10 +85,28 @@ test('naming several bots orders those bots ahead of the rest, deterministically
 
 test('a sole mention outranks one-of-several', () => {
   // "Alice, what do you think?" is a direct address; "Alice and Jimmy" is not.
+  //
+  // Asserted as BEHAVIOUR rather than as the bonus magnitude. This test used to
+  // pin bonus === 2 and bonus === 1, which are implementation detail: the bonus
+  // is now derived from mention POSITION (see mentionedBots), so the numbers
+  // moved while the rule it was written to protect did not. A test that fails
+  // when the numbers change but the behaviour holds is a test that will get
+  // "fixed" by loosening it.
   const solo = speakOrder({ botNames: BOTS, speaker: 'Stan', utterance: 'Alice, what do you think?' });
   const pair = speakOrder({ botNames: BOTS, speaker: 'Stan', utterance: 'Alice and Jimmy, what do you think?' });
-  assert.equal(solo.find((e) => e.bot === 'Alice').bonus, 2);
-  assert.equal(pair.find((e) => e.bot === 'Alice').bonus, 1);
+
+  assert.equal(solo[0].bot, 'Alice', 'a direct address is answered by the bot addressed');
+  assert.ok(solo.find((e) => e.bot === 'Alice').bonus > solo.find((e) => e.bot === 'Jimmy').bonus,
+    'and outranks the bot who was not named at all');
+
+  // Named jointly, both outrank the unnamed third — which of the two leads is
+  // decided by position and is arbitrary here, since neither is being closed
+  // off. Someone has to go first; the other takes the floor if they abstain.
+  const cosmo = pair.find((e) => e.bot === 'Cosmo');
+  for (const named of ['Alice', 'Jimmy']) {
+    assert.ok(pair.find((e) => e.bot === named).bonus > cosmo.bonus,
+      `${named} was named and Cosmo was not`);
+  }
 });
 
 test('name matching is whole-word — "Ray" must not match "array"', () => {
@@ -257,4 +275,66 @@ test('being named still wins under the clock seed', () => {
     utterance: 'Alice, what do you think about the pricing?' });
   assert.equal(d.rank, 0, 'the addressed bot answers');
   assert.equal(d.delayMs, 0);
+});
+
+// --- who was named, and WHERE ----------------------------------------------
+
+test('the bot named LAST answers, not whichever the hash prefers', () => {
+  // Stan's case, 2026-09-09. Both bots are named, so under the old flat bonus
+  // both scored 1 and the hash decided: Jimmy — who had just been told to stop
+  // — answered 55% of the time. Position is information the sentence already
+  // carries and the ordering was discarding.
+  const bots = ['Jimmy', 'Alice'];
+  const text = "ok Jimmy that's enough about the PR. Alice, what were you saying?";
+  const winners = new Set();
+  for (let i = 0; i < 300; i++) {
+    winners.add(speakOrder({ botNames: bots, speaker: 'Stan', utterance: text, seed: `t${i}` })[0].bot);
+  }
+  assert.deepEqual([...winners], ['Alice'], 'Alice every time — the hash must not get a vote here');
+});
+
+test('a bot named twice is placed by its LAST mention', () => {
+  // "Alice, ... actually Jimmy, ... no, Alice" resolves to Alice: the speaker
+  // changed their mind, and the last word is the one that counts.
+  const bots = ['Alice', 'Jimmy'];
+  const text = 'Alice, can you — actually Jimmy, you take it. No, Alice, go ahead.';
+  assert.deepEqual(mentionedBots(text, bots), ['Alice', 'Jimmy']);
+  assert.equal(speakOrder({ botNames: bots, speaker: 'Stan', utterance: text, seed: 'x' })[0].bot, 'Alice');
+});
+
+test('a sole mention still wins outright', () => {
+  // The old rule ("sole mention outranks one-of-several") is now a consequence
+  // of the ordering rather than a separate case, so pin that it still holds.
+  const bots = ['Alice', 'Jimmy', 'Cosmo'];
+  const d = speakDelay({ selfName: 'Alice', botNames: bots, speaker: 'Stan',
+    utterance: 'Alice, what do you think?', seed: 'x' });
+  assert.equal(d.rank, 0);
+  assert.equal(d.delayMs, 0);
+  assert.match(d.why, /named alone/);
+});
+
+test('named bots outrank unnamed ones regardless of position', () => {
+  const bots = ['Alice', 'Jimmy', 'Cosmo'];
+  const text = 'Jimmy and Alice, either of you?';
+  const order = speakOrder({ botNames: bots, speaker: 'Stan', utterance: text, seed: 'x' });
+  assert.equal(order[2].bot, 'Cosmo', 'the unnamed bot ranks last');
+  assert.equal(order[0].bot, 'Alice', 'and of the two named, the later one leads');
+});
+
+test('the mention scan is whole-word, so a name inside another word does not count', () => {
+  // Same hazard nameMentioned guards: "array" must not mention a bot named Ray,
+  // now that it decides who answers rather than only waking one early.
+  assert.equal(lastMentionIndex('build the array first', 'Ray'), -1);
+  assert.ok(lastMentionIndex('Ray, build the array', 'Ray') >= 0);
+});
+
+test('every bot still computes the same mention-aware order', () => {
+  // The property from the top of the file, re-checked with the bonus in play:
+  // position is read from the same caption text everyone holds.
+  const bots = ['Alice', 'Jimmy', 'Cosmo'];
+  const text = 'Cosmo, hold on. Jimmy, go.';
+  const ranks = bots
+    .map((self) => speakDelay({ selfName: self, botNames: bots, speaker: 'Stan', utterance: text, seed: 'x' }).rank)
+    .sort();
+  assert.deepEqual(ranks, [0, 1, 2]);
 });

@@ -78,8 +78,45 @@ function nameMentioned(text, name) {
   return new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}([^\\p{L}\\p{N}]|$)`, 'iu').test(String(text || ''));
 }
 
+// Mentioned bots, ORDERED BY WHERE THEY WERE MENTIONED — latest first.
+//
+// This used to return them in roster order, which threw away the one piece of
+// information that decides the case it exists for. Stan, 2026-09-09:
+//
+//     "ok Jimmy that's enough about the PR. Alice, what were you saying?"
+//
+// Both bots are named, so both scored the same bonus and the hash broke the
+// tie: measured on this module, Jimmy — who had just been told to stop —
+// answered 55% of the time.
+//
+// A later mention supersedes an earlier one. That is how the sentence works:
+// the first name is usually being closed off ("thanks Jimmy", "Jimmy, hold on")
+// and the last is the one being handed the floor. Keyed on each bot's LAST
+// mention, so "Alice, ... actually Jimmy, ... no, Alice" resolves to Alice.
 function mentionedBots(text, botNames) {
-  return (botNames || []).filter((n) => nameMentioned(text, n));
+  const hay = String(text || '');
+  return (botNames || [])
+    .map((n) => ({ n, at: lastMentionIndex(hay, n) }))
+    .filter((e) => e.at >= 0)
+    .sort((a, b) => b.at - a.at)          // latest mention first
+    .map((e) => e.n);
+}
+
+// Index of the LAST whole-word occurrence of `name`, or -1. Whole-word for the
+// same reason nameMentioned is: a substring test fires on "array" for a bot
+// called Ray, which was tolerable when a mention only woke a bot slightly early
+// and is not now that it decides who answers.
+function lastMentionIndex(text, name) {
+  const n = String(name || '').trim();
+  if (!n) return -1;
+  const escaped = n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|[^\\p{L}\\p{N}])${escaped}([^\\p{L}\\p{N}]|$)`, 'giu');
+  let last = -1, m;
+  while ((m = re.exec(text)) !== null) {
+    last = m.index;
+    if (re.lastIndex <= m.index) re.lastIndex = m.index + 1;   // never stall
+  }
+  return last;
 }
 
 
@@ -121,14 +158,19 @@ function clockKey(atMs, bucketMs) {
 }
 
 // Being named gets you priority IN LINE WITH the hash, not instead of it: a
-// bonus, so several bots can be named at once and still order deterministically
-// among themselves.
+// bonus, so bots nobody named still order deterministically among themselves.
 //
-// Sole mention outranks one-of-several because it is an unambiguous direct
-// address — "Alice, what do you think?" should not be answered by Jimmy.
+// `mentioned` arrives latest-mention-first, so the bonus falls off with
+// position: the bot named LAST outranks one named earlier in the same sentence,
+// and both outrank anyone not named at all. A sole mention is trivially also
+// the last, so the old "unambiguous direct address wins" case is unchanged —
+// it is now a consequence of the ordering rather than a separate rule.
+//
+// The hash still breaks ties between equally-placed bots, which now means only
+// bots nobody named.
 function mentionBonus(bot, mentioned) {
-  if (!mentioned.length || !mentioned.includes(bot)) return 0;
-  return mentioned.length === 1 ? 2 : 1;
+  const i = (mentioned || []).indexOf(bot);
+  return i < 0 ? 0 : mentioned.length - i;
 }
 
 // The full ordering, computed identically by every bot.
@@ -167,7 +209,9 @@ function speakDelay({ selfName, botNames, speaker, utterance, seed, gapMs = 500 
     delayMs: mine.rank * gapMs,
     mentioned,
     why: `rank ${mine.rank + 1}/${order.length}`
-      + (mine.bonus === 2 ? ' (named alone)' : mine.bonus === 1 ? ' (named)' : '')
+      + (mine.bonus && mentioned.length === 1 ? ' (named alone)'
+        : mine.bonus === mentioned.length ? ' (named last)'
+        : mine.bonus ? ' (named, but not last)' : '')
       + (mentioned.length && !mine.bonus ? ` — ${mentioned.join(', ')} named` : ''),
   };
 }
@@ -225,4 +269,4 @@ function yieldsTo({ selfName, botNames, speaker, utterance, seed, interrupters }
     why: `rank ${mine + 1}/${order.length}, ahead of ${ranks.map((r) => `${r.name} (${r.rank + 1})`).join(', ')}` };
 }
 
-module.exports = { hash32, turnKey, clockKey, nameMentioned, mentionedBots, mentionBonus, speakOrder, speakDelay, yieldsTo };
+module.exports = { hash32, turnKey, clockKey, lastMentionIndex, nameMentioned, mentionedBots, mentionBonus, speakOrder, speakDelay, yieldsTo };

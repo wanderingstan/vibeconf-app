@@ -355,7 +355,7 @@ test('the throttle is measured from the last WAKE, not the last settle', () => {
   // The cost being limited is the agent's turn, not the detector's sample. A
   // throttle keyed on samples would let a burst of settles through whenever the
   // agent happened to be slow.
-  assert.match(server, /_lastScreenWakeAt = Date\.now\(\)[\s\S]{0,200}_resolveWaiter\(waiter, 'screen'\)/,
+  assert.match(server, /_lastScreenWakeAt = Date\.now\(\)[\s\S]{0,1400}_resolveWaiter\(waiter, 'screen'\)/,
     'the stamp is taken where the wake actually fires');
 });
 
@@ -365,4 +365,51 @@ test('the existing back-pressure is kept, not replaced by the throttle', () => {
   // nothing to say, parks quickly, and the next keystroke pause wakes it again.
   assert.match(server, /no-active-waiter/);
   assert.match(server, /someone-speaking/, 'the floor still beats the screen');
+});
+
+// --- the picture that comes with the wake ----------------------------------
+
+test('the wake carries the picture, so the agent does not have to ask for it', () => {
+  // The agent is woken specifically to LOOK, so it will look — which makes the
+  // fetch unconditional, and an unconditional fetch belongs in the response.
+  // Making it ask costs two further round trips (emit the call, receive the
+  // file), each re-processing the whole call's context. Same argument as #726,
+  // applied where the need is known in advance rather than guessed.
+  assert.match(mcp, /screenshotBlocks\(data\.screenShot\)/,
+    'the wake response must splice in the image');
+  assert.match(mcp, /screenshotBlocks\(pathOnDisk\)[\s\S]{0,400}type: "image"/,
+    'and it must be a real image block, not a path in text');
+  assert.match(server, /response\.screenShot = this\.lastScreenShotPath/,
+    'the app must put the path on the wake payload');
+});
+
+test('the picture is taken ONLY when the wake actually fires', () => {
+  // Most settles are blocked — someone is speaking, no agent is waiting, the
+  // throttle is holding — and encoding a full PNG for each of those is work
+  // whose result is discarded. So the capture arrives as a function and is
+  // called after the gates, not before them.
+  assert.match(server, /noteScreenSettled\(info = \{\}, capture = null\)/,
+    'the capture is passed as a function, not a picture');
+  assert.match(main, /onSettled: \(v\) => localServer\.noteScreenSettled\(v,/,
+    'and the watcher hands one over');
+  const gateAt = server.indexOf("const blocked = this.anyoneSpeaking");
+  const captureAt = server.indexOf("this.lastScreenShotPath = await capture()");
+  assert.ok(gateAt > 0 && captureAt > gateAt,
+    'the capture must happen AFTER the blocked checks, or it is paid for on every settle');
+});
+
+test('the picture is cropped to the share, not the whole Meet view', () => {
+  assert.match(main, /cropRect: lastPresentationRect/,
+    'the wake capture reuses the rect the sample already measured');
+  assert.match(main, /onCaptureScreenshot: async \(\{ roomId, cropRect \} = \{\}\)/,
+    'and the capture handler accepts one');
+});
+
+test('a missing picture degrades the wake, it does not cancel it', () => {
+  // A wake with no picture still beats no wake, and the agent can always call
+  // get_call_screenshot itself.
+  assert.match(mcp, /data\.screenShot\s*\?[\s\S]{0,400}Call get_call_screenshot to LOOK/,
+    'the wording must tell the agent to fetch one when none is attached');
+  assert.match(server, /catch \{ this\.lastScreenShotPath = null; \}/,
+    'a capture that throws must not stop the wake');
 });

@@ -606,9 +606,14 @@ server.tool(
     const screenLine = data.screenWake
       ? '\n[The SHARED SCREEN just changed and settled' + (data.screenChange?.regions
           ? ' (' + data.screenChange.regions + ' region(s) of it)' : '')
-        + ' — nobody spoke. Call get_call_screenshot to LOOK before you say anything: '
-        + 'somebody is showing you something rather than telling you. If it does not need '
-        + 'a comment, stay silent and wait again.]'
+        + ' — nobody spoke. '
+        + (data.screenShot
+            ? 'The picture is attached: it is cropped to the shared screen itself, not the '
+              + 'whole Meet view. LOOK at it before you say anything — somebody is showing '
+              + 'you something rather than telling you.'
+            : 'Call get_call_screenshot to LOOK before you say anything: somebody is showing '
+              + 'you something rather than telling you.')
+        + ' If it does not need a comment, stay silent and wait again.]'
       : '';
     // Continuation: this window is the same speaker extending the utterance you
     // already answered. Stay quiet unless there's genuinely new content, to
@@ -665,7 +670,12 @@ server.tool(
       // #673: same shape for a screen that changed in silence. Lead with it, for
       // the same reason: "no one spoke / timed out" is true and useless here.
       if (data.screenWake) {
-        return { content: [{ type: "text", text: `(The shared screen changed — the room was quiet, so you were woken to look.)${clockLine}${screenLine}${chatLine}${statusLine}${errorLines}` }] };
+        // Image FIRST, then the words about it: the agent is being woken
+        // specifically to look, so the thing to look at leads.
+        return { content: [
+          ...screenshotBlocks(data.screenShot),
+          { type: "text", text: `(The shared screen changed — the room was quiet, so you were woken to look.)${clockLine}${screenLine}${chatLine}${statusLine}${errorLines}` },
+        ] };
       }
       // Deaf-bot hint: if Meet captions are off, the bot can't hear anything.
       // Distinguish that from "the room is silent" so the agent can ask humans
@@ -2671,6 +2681,22 @@ function screenshotResult(pathOnDisk, label) {
   } catch {
     return { content: [text] };
   }
+}
+
+// The picture that came with a screen wake, as a content block, or nothing.
+//
+// Same reasoning as screenshotResult above and the same file-reading rules, but
+// the wake response is mostly TEXT with an image attached rather than an image
+// with a path attached — so this returns an array to splice in rather than a
+// finished result. A missing or unreadable file yields [] and the wake still
+// goes out: a wake without a picture beats no wake.
+function screenshotBlocks(pathOnDisk) {
+  if (!pathOnDisk) return [];
+  try {
+    const buf = readFileSync(pathOnDisk);
+    if (!buf.length || buf.length > MAX_INLINE_BYTES) return [];
+    return [{ type: "image", data: buf.toString("base64"), mimeType: "image/png" }];
+  } catch { return []; }
 }
 
 // --- get_call_screenshot ---

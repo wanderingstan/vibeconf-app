@@ -411,6 +411,7 @@ class LocalServer {
     this.screenShares = [];      // [{ name, id }] — every screen share in the people pane
     this.someoneElsePresenting = false;  // another participant is screen sharing
     this._lastScreenWakeAt = 0;          // #673 throttle: when a screen wake last fired
+    this.lastScreenShotPath = null;      // #673: the picture taken for the last screen wake
     this.presenterName = null;   // name of the person presenting (if any)
 
     // Real-time speaking state (from DOMSpeakerTracker, not captions)
@@ -1772,7 +1773,14 @@ class LocalServer {
   //     the normal snapshot.
   // Plus one of its own: only in a call, because outside one there is no screen
   // and no agent loop.
-  noteScreenSettled(info = {}) {
+  // `capture` is a FUNCTION returning a screenshot path, not a path — so it is
+  // called only once every gate has passed and the wake is definitely firing.
+  // Most settles are blocked (someone is speaking, no agent is waiting, the
+  // throttle is holding) and encoding a full PNG for each of those would be
+  // work whose result is thrown away.
+  //
+  // Async now. The only caller is the watcher callback, which does not await it.
+  async noteScreenSettled(info = {}, capture = null) {
     if (this.callStatus !== 'in-call') return false;
     this.lastScreenChangeAt = Date.now();
     this.lastScreenChange = {
@@ -1811,6 +1819,24 @@ class LocalServer {
       this.waiters.length, 'waiter(s)',
       '(' + this.lastScreenChange.regions + ' region(s), ' + this.lastScreenChange.cells + ' cells)');
     this._lastScreenWakeAt = Date.now();
+
+    // Take the picture BEFORE resolving. The agent is being woken because
+    // something is worth looking at, and it will look — so making it ask costs
+    // two more round trips (emit the call, receive the file) that re-process the
+    // whole call's context. Stan, 2026-09-09: "just *telling* the agent to take
+    // a screenshot is using the LLM to activate a screenshot toolcall and
+    // wasting tokens." Same argument as #726, applied where the need is known
+    // in advance rather than guessed.
+    //
+    // Best effort: a wake with no picture still beats no wake, and the agent can
+    // always call get_call_screenshot itself.
+    if (capture) {
+      try { this.lastScreenShotPath = await capture(); }
+      catch { this.lastScreenShotPath = null; }
+    } else {
+      this.lastScreenShotPath = null;
+    }
+
     for (const waiter of [...this.waiters]) {
       this._resolveWaiter(waiter, 'screen');
     }
@@ -4666,6 +4692,9 @@ class LocalServer {
     if (reason === 'screen') {
       response.screenWake = true;
       response.screenChange = this.lastScreenChange || null;
+      // The picture, already taken (see noteScreenSettled). The MCP layer inlines
+      // it so the agent SEES the screen in the same turn it is told about it.
+      if (this.lastScreenShotPath) response.screenShot = this.lastScreenShotPath;
     }
 
     // If there are actual transcript entries, the agent will now process them → thinking state.

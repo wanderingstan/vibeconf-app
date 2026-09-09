@@ -3177,7 +3177,10 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
-  onCaptureScreenshot: async ({ roomId }) => {
+  // cropRect (CSS pixels, from presentation-rect.js) narrows the capture to the
+  // presented tile. Used by the screen-settle wake (#673), which wants the SHARE
+  // rather than a view of the room in which the share is one tile.
+  onCaptureScreenshot: async ({ roomId, cropRect } = {}) => {
     if (!meetView || meetView.webContents.isDestroyed()) {
       return { error: 'No active Meet view to capture' };
     }
@@ -3212,6 +3215,23 @@ const localServer = new globalThis.LocalServer({
       // call looks like nothing" is worse than an error the agent can act on.
       if (!image || image.isEmpty()) {
         return { error: 'Capture came back empty — the bot view has no display surface yet. Retry in a moment; if it persists, set the botViewMode preference to "thumbnail".' };
+      }
+
+      // Crop before encoding, so the PNG on disk is the share and not the room.
+      // capturePage returns pixels in the capture's own scale, which is not
+      // necessarily CSS pixels on a HiDPI display, so the measured CSS rect is
+      // converted by the ratio between them.
+      if (cropRect) {
+        try {
+          const size = image.getSize();
+          const cssW = await meetView.webContents.executeJavaScript('window.innerWidth', true);
+          const scale = (cssW > 0) ? size.width / cssW : 1;
+          const cropped = image.crop({
+            x: Math.round(cropRect.x * scale), y: Math.round(cropRect.y * scale),
+            width: Math.round(cropRect.w * scale), height: Math.round(cropRect.h * scale),
+          });
+          if (cropped && !cropped.isEmpty()) image = cropped;
+        } catch { /* out of bounds mid-relayout — keep the full frame */ }
       }
 
       const buf = image.toPNG();
@@ -3869,12 +3889,15 @@ let screenSettleWatcher = null;
 // That second question is Meet's own presenting signal and is answered by the
 // caller. When it cannot tell, the sample falls back to the whole view, which
 // is what shipped before cropping existed.
+let lastPresentationRect = null;   // what the most recent sample cropped to
+
 async function measurePresentationRect() {
   if (!meetView || meetView.webContents.isDestroyed()) return null;
   try {
     const m = await meetView.webContents.executeJavaScript(recordRegion.MEASURE_SCRIPT, true);
-    return presentationRect.pickPresentationRect(m);
-  } catch { return null; }
+    lastPresentationRect = presentationRect.pickPresentationRect(m);
+    return lastPresentationRect;
+  } catch { lastPresentationRect = null; return null; }
 }
 
 async function captureMeetViewGrid() {
@@ -3920,6 +3943,23 @@ async function meetViewCssWidth() {
 // Start/stop to match (pref is on) AND (we are in a call). Called from both
 // edges — the pref changing and the call status changing — so neither has to
 // know about the other.
+// A cropped, full-resolution PNG of the share, for the agent to LOOK at when a
+// settle wakes it. Separate from the grid sample: that is 320x180 greyscale for
+// detection, this is the picture.
+//
+// Returns a path or null. Null simply means the wake carries no image and the
+// agent can still call get_call_screenshot — a wake without a picture is worse
+// than one with, and far better than no wake.
+async function onCaptureScreenshotForWake() {
+  try {
+    const r = await localServer.onCaptureScreenshot({
+      roomId: localServer.roomId,
+      cropRect: lastPresentationRect,
+    });
+    return (r && !r.error && r.path) ? r.path : null;
+  } catch { return null; }
+}
+
 function reconcileScreenSettleWatcher() {
   try {
     // Three conditions, not two. The third is the one that matters most:
@@ -3938,7 +3978,12 @@ function reconcileScreenSettleWatcher() {
     if (want && !screenSettleWatcher) {
       screenSettleWatcher = screenSettle.createScreenSettleWatcher({
         capture: captureMeetViewGrid,
-        onSettled: (v) => localServer.noteScreenSettled(v),
+        // The capture is passed as a FUNCTION, not a picture, so it runs only
+        // when the wake actually fires. Most settles are blocked — someone is
+        // speaking, no agent is waiting, the throttle is holding — and encoding
+        // a full PNG for each of those would be work whose output is discarded.
+        onSettled: (v) => localServer.noteScreenSettled(v, () =>
+          onCaptureScreenshotForWake()),
         log: (msg) => console.log('[screen-settle]', msg),
       });
       screenSettleWatcher.start();

@@ -171,12 +171,18 @@ test('the ranked path reads the MERGED transcript, not this.transcripts', () => 
   //
   // Asserted against the source because the alternative is standing up a whole
   // LocalServer, and the mistake is a one-word one: the wrong collection name.
+  //
+  // Scans _rankedContext, which is where the seed is now built: #573 needed the
+  // SAME seed for the yield rule, so the lookup moved out of _rankedSpeakDelay
+  // into a helper both callers share. The guard is unchanged — only its address.
   const { readFileSync } = require('node:fs');
   const { join, dirname } = require('node:path');
   const { fileURLToPath } = require('node:url');
   const src = readFileSync(
     join(dirname(fileURLToPath(import.meta.url)), '..', 'electron-app', 'local-server.js'), 'utf8');
-  const fn = src.slice(src.indexOf('_rankedSpeakDelay(t) {'));
+  const at = src.indexOf('_rankedContext() {');
+  assert.ok(at > 0, '_rankedContext must exist — it is where the ranked seed is built');
+  const fn = src.slice(at);
   // Comments only, stripped — the explanation of the bug naturally NAMES the
   // collection it warns against, which would fail the check below.
   const body = fn.slice(0, fn.indexOf('\n  }')).split('\n')

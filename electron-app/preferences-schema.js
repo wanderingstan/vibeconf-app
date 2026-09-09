@@ -1162,7 +1162,15 @@ const PREFERENCES = {
 
   botSpeakOrdering: {
     type: 'string',
-    default: 'jitter',
+    // Ranked by default since 2026-09-09. It shipped in #426 (17 Aug) and was
+    // made usable without configuration in #430/#443 (19 Aug) — and then sat
+    // behind a 'jitter' default for three weeks, so no call ever ordered. Every
+    // [bot-order] line in the logs from that period reads the same way:
+    //     ranked ordering unavailable (botSpeakOrdering="jitter") — using jitter
+    // The fallback makes this safe to flip: when the order cannot be computed
+    // (no peers discovered, an unnamed roster) _rankedSpeakDelay returns null
+    // and the caller uses jitter, so the worst case is exactly the old default.
+    default: 'ranked',
     enum: ['jitter', 'ranked'],
     enumLabels: {
       jitter: 'Random jitter (each bot waits a random delay)',
@@ -1248,6 +1256,22 @@ const PREFERENCES = {
       + 'default and could fall to ~250ms once speakingDetectionMode is "meter". '
       + 'It is also what a silent winner costs: the next bot in line waits this '
       + 'long before filling the gap.',
+  },
+
+  botSpeakReplayRankGapMs: {
+    type: 'number',
+    default: 200,
+    min: 0,
+    max: 5000,
+    description:
+      'The same spacing as botSpeakRankGapMs, but for a HELD reply being '
+      + 'replayed into an opening (#442). Deliberately shorter: a stash has '
+      + 'already waited out somebody else\'s turn, and charging it a full gap '
+      + 'per rank can push it past the opening it was waiting for. The rank '
+      + 'still decides the order — only the spacing shrinks. Two bots that '
+      + 'stashed during the same busy floor would otherwise wake on the same '
+      + 'opening with nothing between them, which #442 called the most likely '
+      + 'way a room with two bots still hears them talk over each other.',
   },
 
   botSpeakJitterMaxMs: {

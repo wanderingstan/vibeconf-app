@@ -128,4 +128,57 @@ function speakDelay({ selfName, botNames, speaker, utterance, gapMs = 500 }) {
   };
 }
 
-module.exports = { hash32, turnKey, nameMentioned, mentionedBots, mentionBonus, speakOrder, speakDelay };
+
+// WHO STOPS when two bots are already talking at once.
+//
+// The header above states the rule and then nothing implemented it: "they
+// detect each other within ~180ms and the yield rule is already common
+// knowledge: higher rank stops." In the app that branch instead drew a SECOND
+// random delay and backed off if the collision outlasted it (#573) — so a
+// collision the ordering could have resolved in one comparison was handed back
+// to the coin flip the ordering exists to replace, and the cost was measured:
+// 1500ms grace + up to 3000ms random is up to 4.5s of two bots talking BY
+// DESIGN, against observed overlaps of 4.5s and 3.4s on 2026-08-26.
+//
+// The comparison uses the same order every bot already computed for the same
+// turn, so both sides of a collision reach the complementary answer without
+// exchanging anything: the lower rank keeps the floor, the higher rank stops
+// immediately instead of after a random wait.
+//
+// Returns null when the question cannot be answered — self not in the set, or
+// no interrupter recognised — which is the caller's signal to keep today's
+// behaviour rather than guess.
+function yieldsTo({ selfName, botNames, speaker, utterance, interrupters }) {
+  const order = speakOrder({ botNames, speaker, utterance });
+  const rankOf = (name) => {
+    const e = order.find((x) => x.bot.toLowerCase() === String(name || '').trim().toLowerCase());
+    return e ? e.rank : null;
+  };
+  const mine = rankOf(selfName);
+  if (mine === null) return null;
+
+  const others = [...new Set((interrupters || []).filter(Boolean))];
+  if (!others.length) return null;
+
+  // An interrupter we cannot place is NOT evidence that we outrank it. The
+  // house rule everywhere else in barge-in is "unknown ⇒ treat as human ⇒
+  // yield", and the same caution applies here: claiming the floor against a
+  // participant whose rank we could not compute is exactly the case where both
+  // bots think they won.
+  const unplaced = others.filter((n) => rankOf(n) === null);
+  if (unplaced.length) {
+    return { yield: true, rank: mine, of: order.length, unplaced,
+      why: `cannot rank ${unplaced.join(', ')} — yielding rather than assuming` };
+  }
+
+  const ranks = others.map((n) => ({ name: n, rank: rankOf(n) }));
+  const ahead = ranks.filter((r) => r.rank < mine);
+  if (ahead.length) {
+    return { yield: true, rank: mine, of: order.length, ahead: ahead.map((r) => r.name),
+      why: `rank ${mine + 1}/${order.length}, behind ${ahead.map((r) => `${r.name} (${r.rank + 1})`).join(', ')}` };
+  }
+  return { yield: false, rank: mine, of: order.length,
+    why: `rank ${mine + 1}/${order.length}, ahead of ${ranks.map((r) => `${r.name} (${r.rank + 1})`).join(', ')}` };
+}
+
+module.exports = { hash32, turnKey, nameMentioned, mentionedBots, mentionBonus, speakOrder, speakDelay, yieldsTo };

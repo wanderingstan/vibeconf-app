@@ -556,6 +556,11 @@ class LocalServer {
     // match what these used to be hardcoded as. See preferences-schema.js.
     this._bargeInTimer = null;
     this._bargeInClearTimer = null;
+    // #442: a replay waiting out its rank gap. Held separately from
+    // _bargeInTimer because it means the opposite thing — that timer is the bot
+    // deciding whether to STOP, this one is a held reply waiting its turn to
+    // START — and clearing one must not cancel the other.
+    this._replayRankTimer = null;
     // #392: when the current monitor was armed. The analyser's quiet verdict
     // at grace evaluation is only trusted if the analyser produced an OFF edge
     // AFTER this — proof it actually tracked the interruption to its end. An
@@ -1159,7 +1164,16 @@ class LocalServer {
     return null;
   }
 
-  _rankedSpeakDelay(t) {
+  // The shared inputs the ordering is computed from: who the bots are, and
+  // which human turn everyone is keying on. Extracted because TWO decisions
+  // need the identical seed — who starts (_rankedSpeakDelay) and who stops
+  // (_evaluateBargeIn's bot-vs-bot branch, #573). Computing it twice from two
+  // copies of this logic is how the two halves would drift apart, and a yield
+  // rule that disagrees with the start order is worse than no yield rule: both
+  // bots would think they won.
+  //
+  // Returns null (having logged why, once) when it cannot be computed.
+  _rankedContext() {
     const mode = this._pref('botSpeakOrdering');
     if (mode !== 'ranked') return this._rankedSkip(`botSpeakOrdering=${JSON.stringify(mode)}`);
     const self = this.getEffectiveBotName();
@@ -1246,18 +1260,35 @@ class LocalServer {
       .find((e) => e && e.text && e.participantName && !speakers.has(e.participantName.toLowerCase()));
     if (!last) return this._rankedSkip(`no human utterance yet (${all.length} entries, excluding ${[...speakers].join('/')})`);
 
+    return {
+      selfName: self,
+      botNames: [...new Set([...peers, self])],
+      speaker: last.participantName,
+      utterance: last.text,
+    };
+  }
+
+  // What THIS bot should wait before starting, when the order can be computed.
+  // Returns null to mean "fall back to jitter" — the caller's contract since
+  // #426, so an uncomputable order degrades to exactly the old behaviour.
+  //
+  // `gapMs` is overridable because a REPLAY must not pay the same base as fresh
+  // speech: a held reply has already waited out somebody else's turn, and
+  // charging it a full gap per rank can push it past the opening it was waiting
+  // for (#442 warned about exactly this double-delay). The RANK still orders
+  // the bots; only the spacing shrinks.
+  _rankedSpeakDelay(t, { gapMs } = {}) {
+    const ctx = this._rankedContext();
+    if (!ctx) return null;
     let ranked;
     try {
       const { speakDelay } = require('./speak-order.js');
       ranked = speakDelay({
-        selfName: self,
-        botNames: [...new Set([...peers, self])],
-        speaker: last.participantName,
-        utterance: last.text,
-        gapMs: Number(this._pref('botSpeakRankGapMs')) || 500,
+        ...ctx,
+        gapMs: Number.isFinite(gapMs) ? gapMs : (Number(this._pref('botSpeakRankGapMs')) || 500),
       });
     } catch (err) { return this._rankedSkip(`speak-order threw: ${err.message}`); }
-    if (!ranked) return this._rankedSkip(`this bot ("${self}") is not in the peer set`);
+    if (!ranked) return this._rankedSkip(`this bot ("${ctx.selfName}") is not in the peer set`);
 
     // Urgency deliberately absent: a bot cannot know the others' urgency, so
     // folding its own in would give each bot a different order and undo the
@@ -3645,6 +3676,26 @@ class LocalServer {
   // Grace period elapsed. Decide whether to back off based on who's
   // interrupting. Caller guarantees the timer slot is clear so we can
   // re-arm with the random bot-vs-bot delay if needed.
+  // Should this bot stop, given who is talking over it? (#573)
+  //
+  // Uses _rankedContext so the seed is IDENTICAL to the one that decided who
+  // started — a yield rule computed from a different turn key would let both
+  // bots believe they outrank the other.
+  //
+  // Returns null when the order cannot be computed, which is the caller's
+  // signal to fall back to the random delay rather than guess.
+  _rankedYield(interrupterNames) {
+    const ctx = this._rankedContext();
+    if (!ctx) return null;
+    try {
+      const { yieldsTo } = require('./speak-order.js');
+      return yieldsTo({ ...ctx, interrupters: interrupterNames });
+    } catch (err) {
+      console.warn(ts(), '[bot-order] yield rule threw:', err.message);
+      return null;
+    }
+  }
+
   _evaluateBargeIn() {
     if (this.botState !== 'speaking' || !this.floorBusy) {
       // Bot already stopped, or interrupter shut up during the grace
@@ -3703,9 +3754,40 @@ class LocalServer {
       return;
     }
 
-    // All interrupters are bots. Wait an additional random delay; if still
-    // being interrupted at the end of it, back off. Whichever bot's random
-    // timer fires first will yield first, breaking the tie.
+    // All interrupters are bots. ASK THE ORDER WE ALREADY COMPUTED (#573).
+    //
+    // speak-order.js has stated the rule since it was written — "they detect
+    // each other within ~180ms and the yield rule is already common knowledge:
+    // higher rank stops" — and nothing implemented it. This branch drew a
+    // SECOND random delay instead, so the collision the ordering exists to
+    // resolve was handed straight back to the coin flip. The cost is not
+    // theoretical: 1500ms grace + up to 3000ms random is up to 4.5s of two bots
+    // talking BY DESIGN, and the overlaps measured on 2026-08-26 were 4.5s and
+    // 3.4s — the budget being spent.
+    //
+    // Both sides compute the same order from the same seed, so the answers are
+    // complementary by construction: the lower rank keeps the floor and the
+    // higher rank stops NOW rather than after a random wait. No exchange, no
+    // timer, and — unlike the dice — no outcome where both yield and the turn
+    // is lost, or neither does and they talk to the end.
+    const yielding = this._rankedYield(interrupters.map((p) => p.name));
+    if (yielding) {
+      if (yielding.yield) {
+        console.log(ts(), '🛡️  [barge-in] bot-vs-bot — yielding by rank: ' + yielding.why
+          + ' (' + this._analyserStateForLog() + ')');
+        this._performBackOff('bot-interrupt-ranked');
+      } else {
+        // Keeping the floor is a DECISION and needs a trace, for the same
+        // reason winning the start order did (#444): silent success and never
+        // running look identical from outside.
+        console.log(ts(), '🛡️  [barge-in] bot-vs-bot — keeping the floor by rank: ' + yielding.why);
+      }
+      return;
+    }
+
+    // Order unavailable (jitter mode, no peers discovered, an interrupter we
+    // cannot place). Fall back to the dice, which is what shipped before — a
+    // worse resolution than ranking, but a resolution.
     const min = this._pref('bargeInBotRandomMinMs');
     const max = this._pref('bargeInBotRandomMaxMs');
     const delay = Math.floor(min + Math.random() * (max - min));
@@ -4024,7 +4106,49 @@ class LocalServer {
       return null;                       // the stash survives for the next opening
     }
 
-    const entries = this.bargeInStash.entries;
+    // #442's remaining gap: ORDER THE REPLAY BETWEEN BOTS.
+    //
+    // The floor check above stops a replay landing on top of speech already in
+    // progress. It does nothing about the case the issue called "the most
+    // likely way a room with two bots still hears them talk over each other":
+    // two bots that stashed during the SAME busy floor both wake on the SAME
+    // opening, and with no ordering between them they start together — the
+    // exact collision ranked ordering removes for fresh speech.
+    //
+    // The rank orders them; the SPACING is deliberately tighter than fresh
+    // speech. #442: "a stash has already waited; adding a full ranked delay on
+    // top may push it past the opening it was waiting for." So the gap shrinks
+    // to botSpeakReplayRankGapMs, and when the order cannot be computed the
+    // replay goes NOW rather than falling back to jitter — a mean ~1000ms coin
+    // flip is precisely the delay a held reply cannot afford, and it would
+    // reintroduce the latency the stash already paid once.
+    const replayRank = this._rankedSpeakDelay(this._asUtterance(this.bargeInStash.entries[0], 'stash-replay'), {
+      gapMs: Number(this._pref('botSpeakReplayRankGapMs')) || 200,
+    });
+    if (replayRank && replayRank.delayMs > 0) {
+      console.log(ts(), `🎲 [bot-order] holding replay ${replayRank.delayMs}ms (${replayRank.why})`);
+      const stash = this.bargeInStash;
+      this._replayRankTimer = setTimeout(() => {
+        this._replayRankTimer = null;
+        // Re-read the floor at the instant audio would start (#67): the whole
+        // point of the delay is that a higher-ranked peer is expected to take
+        // the opening, and if it did, this reply stays held for the next one.
+        if (this.bargeInStash !== stash) return;      // replayed or cleared meanwhile
+        if (this.floorBusy || this.botState === 'speaking') {
+          console.log(ts(), '🛡️  [barge-in] not replaying — a higher-ranked bot took the opening; stash held');
+          return;
+        }
+        this._flushStashNow(stash, ageMs);
+      }, replayRank.delayMs);
+      return null;                                    // spoken later, or held again
+    }
+    if (replayRank) console.log(ts(), `🎲 [bot-order] replaying first (${replayRank.why})`);
+    return this._flushStashNow(this.bargeInStash, ageMs);
+  }
+
+  // The replay itself, once the floor and the order both say go.
+  _flushStashNow(stash, ageMs) {
+    const entries = stash.entries;
     console.log(ts(), '🛡️  [barge-in] replaying stash — ' + entries.length + ' entries, ' + ageMs + 'ms old');
     this.bargeInStash = null;
     const texts = [];

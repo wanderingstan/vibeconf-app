@@ -61,10 +61,10 @@ These spawn isolated, dedicated **profile** instances (`test-meet-guest-*` / `te
 | Command | What it does |
 |---|---|
 | `pnpm test:e2e` | **Provider-parity matrix** — the *same* scenario (speak, chat round-trip, listen, screen-share) run against each `CallProvider`, in `node:test` with fleet spawn/kill hooks. Meet runs by default; Slack runs if `VIBECONF_SLACK_TEST_URL` is set. The test that catches "works on Meet, broken on Slack." |
-| `pnpm test:meet:ci` | Meet scenario suite (Jimmy + Samantha): join, speak, chat, listen, whiteboard, share. Spawn → run → reap. |
+| `pnpm test:meet:ci` | Meet scenario suite (Alice + Bob): join, speak, chat, listen, whiteboard, share. Spawn → run → reap. |
 | `pnpm test:slack:ci` | Same against a Slack huddle. (Channel via `SLACK_TEST_URL`; defaults to `#testing`.) |
 | `pnpm test:meet:dmg` / `pnpm test:meet:built` | Meet suite against the **packaged** app (installed `/Applications` DMG, or the freshly-built `dist/`) — catches asar/build issues. |
-| `pnpm test:meet` / `pnpm test:slack` | The drivers alone, assuming a fleet is already up (see *Fleet management*). Pass `--bots Jimmy:7901,Samantha:7902`. |
+| `pnpm test:meet` / `pnpm test:slack` | The drivers alone, assuming a fleet is already up (see *Fleet management*). Pass `--bots Alice:7901,Bob:7902`. |
 
 ### Focused checks
 
@@ -78,12 +78,12 @@ These spawn isolated, dedicated **profile** instances (`test-meet-guest-*` / `te
 
 | Command | What it does |
 |---|---|
-| `scripts/spawn-test-fleet.sh 2` | Boot 2 Meet bots (Jimmy, Samantha) from source. `3`/`4` adds Cosmo/Dizzy. |
+| `scripts/spawn-test-fleet.sh 2` | Boot 2 Meet bots (Alice, Bob) from source. `3`/`4` adds Charlie/Dizzy. |
 | `scripts/spawn-test-fleet.sh 2 --slack --slack-url=…` | Boot 2 Slack bots (auto-join the huddle). |
 | `scripts/spawn-test-fleet.sh 2 [--slack] --kill` | Graceful-leave + reap a previously-spawned fleet. |
 | `scripts/spawn-test-fleet.sh 2 --dmg` / `--built` | Boot from the packaged app instead of source. |
 
-Then drive with `pnpm test:meet --bots Jimmy:7901,Samantha:7902` (or the printed hint).
+Then drive with `pnpm test:meet --bots Alice:7901,Bob:7902` (or the printed hint).
 
 ---
 

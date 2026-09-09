@@ -297,6 +297,21 @@ export class Bot {
     return data;
   }
 
+  // Swap what the SHARE window is showing, to an arbitrary URL (the load_url MCP
+  // tool's HTTP path). Called while already presenting, it changes the shared
+  // content live — which is what lets a test simulate a student's screen
+  // CHANGING under a bot that nobody is talking to (#673).
+  //
+  // A file:// URL works and is what the screen-reading fixtures use: no server to
+  // stand up, and the px sizes in the page are then exactly the px sizes a
+  // student's editor would have.
+  async loadUrl(url) {
+    const { data, ms } = await this._sync({ meta: { action: 'load-url', url } });
+    const ok = data?.results?.loadUrl?.ok !== false && data?.success !== false;
+    log(this.name, 'loadUrl', { ms, ok, note: String(url).slice(-52) });
+    return { ok };
+  }
+
   // Play arbitrary audio into the call via the bot's virtual mic — the exact
   // play-audio HTTP path the play_audio MCP tool uses (url / local path / inline
   // base64). The app treats it as speaking so it won't talk over it.
@@ -319,6 +334,16 @@ export class Bot {
     const { data, ms } = await this._sync({ meta: { action: 'set-avatar-emoji', idle: emoji } });
     log(this.name, 'setAvatarEmoji', { ms, ok: data?.success !== false, note: emoji });
     return data;
+  }
+
+  // Read one preference. Exists so a scenario can RESTORE what it changes:
+  // setPref writes the bot's real config, so anything a test sets it keeps —
+  // there is no sandbox around a live bot's prefs.
+  async getPref(key) {
+    const resp = await fetch(`${this.base}/api/preferences`, { headers: this._auth() });
+    if (!resp.ok) return undefined;
+    const data = await resp.json().catch(() => null);
+    return (data?.preferences || []).find((p) => p.key === key)?.value;
   }
 
   async setPref(key, value) {

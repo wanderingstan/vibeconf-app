@@ -40,7 +40,13 @@
 //   2. rclone (VIBECONF_RCLONE_REMOTE, default "Vibeconf Shared Files" — the
 //      remote the nightly test suite already uploads through on the mini):
 //      `rclone copy` straight to the archive path on that remote. Needs
-//      `brew install rclone` + `rclone config` once per machine.
+//      `brew install rclone` + `rclone config` once per machine. If the
+//      remote is rooted somewhere the archive isn't under (the mini's is
+//      rooted at the nightly-uploads folder), set
+//      VIBECONF_RCLONE_ROOT_FOLDER_ID to the archive folder's Drive id: it is
+//      passed as --drive-root-folder-id, which re-roots the remote at that
+//      folder for this command only, and the archive path is then "" (the
+//      root itself). No rclone reconfiguration needed.
 //   With neither configured it exits 2 and says so; it never silently does
 //   nothing.
 //
@@ -69,6 +75,7 @@
 //   node scripts/sync-calls-to-drive.mjs [--dry-run] [--status] [--verbose]
 //        [--profiles Default,dev | --all-profiles] [--min-age-min N]
 //        [--dest /path/to/synced/archive] [--remote "Name:path"] [--owner stan]
+//        [--root-folder-id <Drive folder id>]
 //   Config file: ~/.config/vibeconf/sync-calls.env (VIBECONF_* KEY=VALUE lines)
 //
 // Install the timer: see scripts/com.vibeconf.sync-calls.plist and
@@ -136,13 +143,46 @@ export function botFolderName(name) {
 
 // Where a call goes, relative to the archive root, or null for a folder whose
 // name isn't a call id (nothing to do with it; leave it alone).
-export function destinationFor(callId, botName, { tzOffsetMin, owner } = {}) {
+//
+// `suffix`: the same bot in the same room twice on one day (a rejoin, a
+// second session) would map both calls to ONE folder, and with copies that
+// never overwrite, the second call's call-recording.mp4 would silently never
+// be archived (seen on the mini: dcw-goqf-ypa on 2026-08-28 at 18:00 and
+// 19:11). The caller passes the later calls' local start time (HHMM) and
+// they land in "<bot>-<HHMM>" beside the first, which keeps the plain name.
+export function destinationFor(callId, botName, { tzOffsetMin, owner, suffix } = {}) {
   const p = parseCallId(callId);
   if (!p) return null;
   const date = localDateStamp(p.startedAt, tzOffsetMin);
-  const rel = `${p.room}-${date}/${botFolderName(botName)}`;
+  const bot = botFolderName(botName) + (suffix ? `-${suffix}` : '');
+  const rel = `${p.room}-${date}/${bot}`;
   const o = owner ? botFolderName(owner) : '';
   return o ? `${o}/${rel}` : rel;
+}
+
+// For a profile's call ids: which ones need a disambiguating suffix (see
+// destinationFor). The earliest call of a room-date keeps the bare bot
+// folder; every later one gets its local HHMM. Returns Map<callId, suffix>.
+export function collisionSuffixes(callIds, { tzOffsetMin } = {}) {
+  const groups = new Map();
+  for (const id of callIds) {
+    const p = parseCallId(id);
+    if (!p) continue;
+    const key = `${p.room}-${localDateStamp(p.startedAt, tzOffsetMin)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({ id, t: p.startedAt });
+  }
+  const out = new Map();
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => a.t - b.t);
+    for (const { id, t } of list.slice(1)) {
+      const off = tzOffsetMin === undefined ? t.getTimezoneOffset() : tzOffsetMin;
+      const local = new Date(t.getTime() - off * 60000);
+      out.set(id, local.toISOString().slice(11, 16).replace(':', ''));
+    }
+  }
+  return out;
 }
 
 // Newest mtime (ms) of any file under dir, walking subfolders. 0 for empty.
@@ -174,13 +214,19 @@ export function readMarker(callDir, markerFile = DEFAULTS.markerFile) {
   try { return JSON.parse(fs.readFileSync(path.join(callDir, markerFile), 'utf8')); } catch { return null; }
 }
 
-// Needs a (re)sync when never synced, or when something in the folder is newer
-// than what the last sync saw. The marker itself is excluded from the walk by
-// being written AFTER newestMtime is taken, and by the exclude on copy.
-export function needsSync(callDir, markerFile = DEFAULTS.markerFile) {
+// Needs a (re)sync when never synced, when something in the folder is newer
+// than what the last sync saw, or when the call's destination has CHANGED
+// since (a same-day sibling call appeared or vanished, moving this one
+// between "<bot>" and "<bot>-HHMM"; an owner prefix was added). The marker
+// itself is excluded from the walk by being written AFTER newestMtime is
+// taken, and by the exclude on copy.
+export function needsSync(callDir, markerFile = DEFAULTS.markerFile, rel = null) {
   const marker = readMarker(callDir, markerFile);
   const newest = newestMtimeExcluding(callDir, markerFile);
   if (!marker || !Number.isFinite(marker.newestMtime)) return true;
+  // A marker with no `rel` predates this check: one extra pass (cheap — the
+  // copies skip what's there) beats guessing where it went.
+  if (rel && marker.rel !== rel) return true;
   return newest > marker.newestMtime;
 }
 
@@ -225,7 +271,7 @@ function safeReaddir(d) { try { return fs.readdirSync(d); } catch { return []; }
 
 // Which backend, given the environment. Returns { kind: 'rsync'|'rclone', ... }
 // or { kind: 'none', reason }.
-export function pickBackend({ dest, remote, archivePath, haveRclone, rcloneRemotes }) {
+export function pickBackend({ dest, remote, archivePath, haveRclone, rcloneRemotes, rootFolderId = null }) {
   if (dest) {
     if (!fs.existsSync(dest)) return { kind: 'none', reason: `archive dir does not exist: ${dest}` };
     return { kind: 'rsync', dest };
@@ -235,6 +281,9 @@ export function pickBackend({ dest, remote, archivePath, haveRclone, rcloneRemot
   if (!rcloneRemotes.includes(name)) {
     return { kind: 'none', reason: `rclone remote "${name}" is not configured (rclone listremotes shows: ${rcloneRemotes.join(', ') || 'none'})` };
   }
+  // With a root folder id the remote IS the archive for this command, so the
+  // archive path collapses to the root unless one was set explicitly.
+  if (rootFolderId) return { kind: 'rclone', remote: name, archivePath: process.env.VIBECONF_RCLONE_ARCHIVE_PATH ? archivePath : '', rootFolderId };
   return { kind: 'rclone', remote: name, archivePath };
 }
 
@@ -257,6 +306,7 @@ function parseArgs(argv) {
     remote: process.env.VIBECONF_RCLONE_REMOTE || DEFAULTS.rcloneRemote,
     archivePath: process.env.VIBECONF_RCLONE_ARCHIVE_PATH || DEFAULTS.rcloneArchivePath,
     owner: process.env.VIBECONF_SYNC_OWNER || null,
+    rootFolderId: process.env.VIBECONF_RCLONE_ROOT_FOLDER_ID || null,
     profilesRoot: defaultProfilesRoot(),
   };
   for (let i = 0; i < argv.length; i++) {
@@ -271,6 +321,7 @@ function parseArgs(argv) {
     else if (a === '--dest') o.dest = next();
     else if (a === '--remote') o.remote = next();
     else if (a === '--owner') o.owner = next();
+    else if (a === '--root-folder-id') o.rootFolderId = next();
     else if (a === '--profiles-root') o.profilesRoot = next();
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
     else { console.error(`unknown argument: ${a}`); printHelp(); process.exit(1); }
@@ -301,10 +352,10 @@ function copyCall(backend, callDir, relDest, { dryRun, verbose }) {
     const args = ['-rt', '--ignore-existing', '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['-n'] : []), ...(verbose ? ['-v'] : []), callDir + path.sep, target + path.sep];
     return run('rsync', args, verbose);
   }
-  const target = `${backend.remote}:${backend.archivePath}/${relDest}`;
+  const target = `${backend.remote}:${[backend.archivePath, relDest].filter(Boolean).join('/')}`;
   // copy (not sync): never deletes anything on Drive. --ignore-existing: a
   // file already there (the agent's own upload) is never touched.
-  const args = ['copy', '--ignore-existing', '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['--dry-run'] : []), ...(verbose ? ['-v'] : []), callDir, target];
+  const args = ['copy', '--ignore-existing', ...(backend.rootFolderId ? ['--drive-root-folder-id', backend.rootFolderId] : []), '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['--dry-run'] : []), ...(verbose ? ['-v'] : []), callDir, target];
   return run('rclone', args, verbose);
 }
 
@@ -335,28 +386,32 @@ export function main(argv = process.argv.slice(2)) {
   let backend = { kind: 'status' };
   if (!o.status) {
     const rc = o.dest ? { have: false, remotes: [] } : rcloneRemotesOnPath();
-    backend = pickBackend({ dest: o.dest, remote: o.remote, archivePath: o.archivePath, haveRclone: rc.have, rcloneRemotes: rc.remotes });
+    backend = pickBackend({ dest: o.dest, remote: o.remote, archivePath: o.archivePath, haveRclone: rc.have, rcloneRemotes: rc.remotes, rootFolderId: o.rootFolderId });
     if (backend.kind === 'none') {
       console.error(`[${stamp()}] cannot sync: ${backend.reason}`);
       return 2;
     }
   }
-  const where = backend.kind === 'rsync' ? backend.dest : backend.kind === 'rclone' ? `${backend.remote}:${backend.archivePath}` : '(status only)';
+  const where = backend.kind === 'rsync' ? backend.dest
+    : backend.kind === 'rclone' ? `${backend.remote}:${backend.archivePath}${backend.rootFolderId ? ` (root folder ${backend.rootFolderId})` : ''}`
+    : '(status only)';
   console.log(`[${stamp()}] ${o.dryRun ? 'DRY RUN — ' : ''}profiles: ${profiles.join(', ')} → ${where}`);
 
   let synced = 0, skippedBusy = 0, upToDate = 0, failed = 0, ignored = 0;
   for (const profile of profiles) {
     const profileDir = path.join(o.profilesRoot, profile);
     const callsDir = path.join(profileDir, 'agent', 'calls');
-    for (const callId of safeReaddir(callsDir).sort()) {
+    const callIds = safeReaddir(callsDir).sort();
+    const suffixes = collisionSuffixes(callIds);
+    for (const callId of callIds) {
       const callDir = path.join(callsDir, callId);
       if (!fs.statSync(callDir).isDirectory()) continue;
       const botName = botNameFor(callDir, profileDir, profile);
-      const rel = destinationFor(callId, botName, { owner: o.owner });
+      const rel = destinationFor(callId, botName, { owner: o.owner, suffix: suffixes.get(callId) });
       if (!rel) { ignored++; if (o.verbose) console.log(`  ignore ${profile}/${callId} (not a call id)`); continue; }
       const marker = readMarker(callDir);
       if (o.status) {
-        const state = !isQuiescent(callDir, o.minAgeMin) ? 'busy' : needsSync(callDir) ? (marker ? 'changed since last sync' : 'never synced') : `synced ${marker.at}`;
+        const state = !isQuiescent(callDir, o.minAgeMin) ? 'busy' : needsSync(callDir, DEFAULTS.markerFile, rel) ? (marker ? (marker.rel && marker.rel !== rel ? `destination changed (was ${marker.rel})` : 'changed since last sync') : 'never synced') : `synced ${marker.at}`;
         console.log(`  ${profile}/${callId} → ${rel}: ${state}`);
         continue;
       }
@@ -365,13 +420,13 @@ export function main(argv = process.argv.slice(2)) {
         if (o.verbose) console.log(`  busy  ${profile}/${callId} (modified in the last ${o.minAgeMin} min)`);
         continue;
       }
-      if (!needsSync(callDir)) { upToDate++; continue; }
+      if (!needsSync(callDir, DEFAULTS.markerFile, rel)) { upToDate++; continue; }
       const newest = newestMtimeExcluding(callDir, DEFAULTS.markerFile);
       try {
         copyCall(backend, callDir, rel, o);
         if (!o.dryRun) {
           fs.writeFileSync(path.join(callDir, DEFAULTS.markerFile), JSON.stringify({
-            at: new Date().toISOString(), backend: backend.kind, destination: `${where}/${rel}`, newestMtime: newest,
+            at: new Date().toISOString(), backend: backend.kind, destination: `${where}/${rel}`, rel, newestMtime: newest,
           }, null, 2) + '\n');
         }
         synced++;

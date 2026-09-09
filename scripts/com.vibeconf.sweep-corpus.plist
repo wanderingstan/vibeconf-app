@@ -14,8 +14,11 @@
   Run it now:    launchctl start com.vibeconf.sweep-corpus
   Remove it:     launchctl unload ~/Library/LaunchAgents/com.vibeconf.sweep-corpus.plist
 
-  04:10, not 04:00: the test suite runs at 03:00 and the top of an hour is where
-  everything else lands too. Ten past is out of the way of both.
+  23:40, because the small hours are already full: the Meet test suite runs at
+  03:00, a TTS usage check at 04:00 and issue triage at 04:30. A sweep over the
+  whole archive will not finish inside a 20-minute gap between those, and the
+  evening is empty. Not on the hour or the half hour, which is where everything
+  else on this machine already lands.
 -->
 <plist version="1.0">
 <dict>
@@ -33,8 +36,8 @@
 
   <key>StartCalendarInterval</key>
   <dict>
-    <key>Hour</key><integer>4</integer>
-    <key>Minute</key><integer>10</integer>
+    <key>Hour</key><integer>23</integer>
+    <key>Minute</key><integer>40</integer>
   </dict>
 
   <!-- Do NOT run at load, and do not catch up after the machine was asleep. A

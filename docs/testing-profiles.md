@@ -18,8 +18,17 @@ signed-in is obvious at a glance:
 | Class | Profiles | Login | Account | Recreatable? |
 |---|---|---|---|---|
 | **Guest Meet** | `test-meet-guest-1..N` | none (logged out) | — | **100% automatic** — the fleet creates + reaps them |
-| **Google Meet** | `test-meet-google-1..N` | Google, once | `1`=alice@spiritprotocol.io, `2`=jimmy@spiritprotocol.io | documented + `setup-test-profiles.sh`; pinned via `--meet-account-email` |
+| **Google Meet** | `test-meet-google-1..N` | Google, once | `1`=alice_test@spiritprotocol.io, `2`=bob_test@spiritprotocol.io | documented + `setup-test-profiles.sh`; pinned via `--meet-account-email` |
 | **Slack** | `test-slack-1..N` | Slack, once | whatever you log into (no pin) | documented + `setup-test-profiles.sh` |
+
+> **Bot accounts are dedicated logins with a `_test` suffix** — `alice_test@`,
+> `bob_test@`, `charlie_test@` — never the operator's own address, so an
+> unattended run never carries a human identity. `charlie_test@spiritprotocol.io`
+> is reserved for the third bot slot (`test-meet-guest-3`, botName **Charlie**)
+> if that bot ever needs a signed-in account; there is no `test-meet-google-3`
+> profile today. Separately, the rig's own vibeconferencing.com session stays on
+> `jimmy@spiritprotocol.io` — that is an app-level login, not a bot Meet login
+> (see `VIBECONF_EXPECT_ACCOUNT` in `scripts/com.vibeconferencing.meet-test.plist`).
 
 > **Google vs Slack accounts differ.** Google has a real account pin
 > (`--meet-account-email` → `authuser=`), so the email *matters* and is set for
@@ -72,7 +81,7 @@ scripts/setup-test-profiles.sh --slack    # just the Slack profiles
 scripts/setup-test-profiles.sh --installed # use the installed /Applications app
 
 # Override accounts for your environment:
-GTEST_EMAIL_DOMAIN=example.com \
+GTEST_EMAIL_DOMAIN=example.com GTEST_EMAIL_SUFFIX=_test \
 SLACKTEST1_ACCOUNT=a@example.com SLACKTEST2_ACCOUNT=b@example.com \
   scripts/setup-test-profiles.sh
 ```
@@ -105,7 +114,7 @@ scripts/spawn-test-fleet.sh 2 --kill                # reap (also drops ghost par
 
 Ports are `7901, 7902, …` (`BASE_PORT` + index), distinct from the real bots on
 `7865/66`. `--google` pins each profile's account and labels the bots
-Alice/Jimmy to match. Drive a spawned fleet with `node scripts/meet-test.mjs`
+Alice/Bob to match. Drive a spawned fleet with `node scripts/meet-test.mjs`
 (see [testing.md](testing.md)).
 
 ## Housekeeping

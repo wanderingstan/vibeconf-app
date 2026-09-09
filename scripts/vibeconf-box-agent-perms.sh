@@ -64,6 +64,24 @@ BASELINE = [
     "mcp__vibeconferencing__*",
     "Read", "Write", "Edit", "Glob", "Grep",
     "Bash",
+    # The claude.ai Gmail connector. This is the reason the list exists: on
+    # 2026-09-03 a TA session reached its session-close protocol, called
+    # send_message twice, and was denied both times with
+    # toolDenialKind="permission-rule" — not by Gmail, by dontAsk. The bot then
+    # had to tell the person in the room that the promised emails were not sent.
+    # Named one by one rather than mcp__claude_ai_Gmail__*, so that trashing,
+    # spam-marking and label deletion stay off the table for an unattended bot.
+    "mcp__claude_ai_Gmail__send_message",
+    "mcp__claude_ai_Gmail__reply",
+    "mcp__claude_ai_Gmail__forward",
+    "mcp__claude_ai_Gmail__create_draft",
+    "mcp__claude_ai_Gmail__update_draft",
+    "mcp__claude_ai_Gmail__get_draft",
+    "mcp__claude_ai_Gmail__list_drafts",
+    "mcp__claude_ai_Gmail__search_threads",
+    "mcp__claude_ai_Gmail__get_thread",
+    "mcp__claude_ai_Gmail__get_message",
+    "mcp__claude_ai_Gmail__list_labels",
 ]
 
 def load(p):

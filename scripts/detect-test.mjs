@@ -13,8 +13,8 @@
 //   scripts/spawn-test-fleet.sh 1
 //
 // Run:
-//   node scripts/detect-test.mjs --bots Jimmy:7901
-//   node scripts/detect-test.mjs --bots Jimmy:7901 --url https://meet.google.com/abc-defg-hij
+//   node scripts/detect-test.mjs --bots Alice:7901
+//   node scripts/detect-test.mjs --bots Alice:7901 --url https://meet.google.com/abc-defg-hij
 //
 // Exit non-zero if the URL isn't detected within the timeout.
 
@@ -22,7 +22,7 @@ import { execFile } from 'child_process';
 import { Bot, sleep, report, record } from './meet-test-lib.mjs';
 
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
-const [name, port] = arg('bots', 'Jimmy:7901').split(',')[0].split(':');
+const [name, port] = arg('bots', 'Alice:7901').split(',')[0].split(':');
 const bot = new Bot(name, Number(port), 'no-room');
 // Default to the open guest test meet (no sign-in / admission needed).
 const MEET_URL = arg('url', 'https://meet.google.com/paz-sqoa-npe');

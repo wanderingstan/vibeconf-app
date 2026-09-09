@@ -43,10 +43,10 @@
 //
 //   scripts/spawn-test-fleet.sh 2 --kill   # A FRESH FLEET PER RUN — see below
 //   node scripts/etiquette-prep.mjs        # disguise the voice, clear presence
-//   scripts/spawn-test-fleet.sh 2          # boots Alice:7901, Jimmy:7902
+//   scripts/spawn-test-fleet.sh 2          # boots Alice:7901, Bob:7902
 //   node scripts/etiquette-test.mjs --room <meet-code>
 //
-//   --subject Alice:7901 --voice Jimmy:7902   override the roles
+//   --subject Alice:7901 --voice Bob:7902   override the roles
 //   --only no-talk-over,yield                 run a subset
 //   --keep                                    leave the bots in the call
 //   --sequence                                no settling between rules; what
@@ -635,7 +635,33 @@ const RULES = [
       if (saw(w, 'endedEarly')) {
         return { ok: false, note: `armed, then decided the interruption had already ended and kept going${tag}` };
       }
-      return { ok: false, note: `armed but never backed off — the grace never fired${tag}` };
+      // rodeOut was a defined MARKER that this verdict never consulted, so a
+      // deliberate ride-out fell through to "the grace never fired" — naming the
+      // one branch that demonstrably DID work. On 2026-09-02 that sent triage
+      // after a missing timer for an hour; the app's own log said
+      // "rode it out — interrupter stopped during the analyser OFF 1235ms ago
+      // grace", i.e. the grace ran its full 1650ms and made a decision.
+      //
+      // local-server.js added that line for exactly this reason ("riding out a
+      // brief interruption is a DECISION, and it was the only outcome in this
+      // function that left no trace ... the etiquette suite read this exact case
+      // as [a yield failure] and reported a failure against correct behaviour").
+      // The line landed; this verdict was never taught to read it.
+      //
+      // Still ok:false — the rule claims the bot stops for a sustained
+      // interrupter and it did not. But the note now points at the AUDIO PATH,
+      // which is where the fault actually is: an 8s clip that registers as a
+      // sub-second blip at the peer is a capture/analyser problem, not a
+      // barge-in one, and the two want completely different investigations.
+      if (saw(w, 'rodeOut')) {
+        return {
+          ok: false,
+          note: 'armed, then rode it out — the interrupter read as already stopped when the grace '
+            + `expired. The grace WORKED; suspect the audio path (an 8s clip reaching the peer as a `
+            + `blip). Check [floor-audio] speech ON/OFF spans in the subject's session log${tag}`,
+        };
+      }
+      return { ok: false, note: `armed but never backed off — no ride-out, no back-off, no early-end${tag}` };
     },
   },
 
@@ -1189,11 +1215,11 @@ const RULES = [
       // Ordering does not exist below three participants, so this rule brings
       // its own. Built before restore() so the cleanup closure can always see
       // it, whatever happens in between.
-      const third = new Bot('Cosmo', 7903, subject.room);
+      const third = new Bot('Charlie', 7903, subject.room);
       const restore = async () => {
         await subject.setPref('botSpeakOrdering', 'jitter');
         await subject.setPref('peerBotNames', []);
-        // Cosmo must LEAVE again: it changes `others`, and `others` is what
+        // Charlie must LEAVE again: it changes `others`, and `others` is what
         // decides whether ordering engages at all. A third body left in the
         // room silently re-times every rule that runs after this one.
         await third.leave().catch(() => {});
@@ -1229,7 +1255,7 @@ const RULES = [
       }
       if (!haveThird) {
         return { ok: false, note: 'no third participant — ordering does not exist below 3. '
-          + 'Boot with scripts/spawn-test-fleet.sh 3 (adds Cosmo:7903)' };
+          + 'Boot with scripts/spawn-test-fleet.sh 3 (adds Charlie:7903)' };
       }
       if (saw(w, 'noCollision')) {
         // _speakDelay short-circuits at `others < 2` before ordering is ever
@@ -1277,11 +1303,11 @@ const RULES = [
       // Ordering does not exist below three participants, so this rule brings
       // its own. Built before restore() so the cleanup closure can always see
       // it, whatever happens in between.
-      const third = new Bot('Cosmo', 7903, subject.room);
+      const third = new Bot('Charlie', 7903, subject.room);
       const restore = async () => {
         await subject.setPref('botSpeakOrdering', 'jitter');
         await subject.setPref('peerBotNames', []);
-        // Cosmo must LEAVE again: it changes `others`, and `others` is what
+        // Charlie must LEAVE again: it changes `others`, and `others` is what
         // decides whether ordering engages at all. A third body left in the
         // room silently re-times every rule that runs after this one.
         await third.leave().catch(() => {});
@@ -1315,7 +1341,7 @@ const RULES = [
     verdict({ w, busy, replayed, haveThird }) {
       if (!haveThird) {
         return { ok: false, note: 'no third participant — ordering does not exist below 3. '
-          + 'Boot with scripts/spawn-test-fleet.sh 3 (adds Cosmo:7903)' };
+          + 'Boot with scripts/spawn-test-fleet.sh 3 (adds Charlie:7903)' };
       }
       if (!busy) return { ok: false, note: 'scenario did not start — the floor never went busy' };
       if (!saw(w, 'stashed')) return { ok: false, note: 'never stashed — nothing to replay' };
@@ -1377,7 +1403,7 @@ async function main() {
     process.exit(2);
   }
   const [sName, sPort] = arg('subject', 'Alice:7901').split(':');
-  const [vName, vPort] = arg('voice', 'Jimmy:7902').split(':');
+  const [vName, vPort] = arg('voice', 'Bob:7902').split(':');
   const subject = new Bot(sName, Number(sPort), ROOM);
   const voice = new Bot(vName, Number(vPort), ROOM);
 

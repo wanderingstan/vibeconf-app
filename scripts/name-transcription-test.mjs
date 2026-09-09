@@ -14,7 +14,7 @@
 // what Meet actually transcribed of A's audio, from a real viewer.
 //
 //   scripts/spawn-test-fleet.sh 2
-//   node scripts/name-transcription-test.mjs --bots Alice:7901,Jimmy:7902
+//   node scripts/name-transcription-test.mjs --bots Alice:7901,Bob:7902
 //     [--category feminine|masculine|robotic|all]   (default all)
 //     [--limit N]            cap the count (quick pass / one chunk of a chunked run)
 //     [--names "Elena,Milo"] audit an explicit list
@@ -31,7 +31,7 @@
 // batch picks up where the last left off, e.g.
 //   for i in $(seq 1 30); do
 //     scripts/spawn-test-fleet.sh 2   # fresh app pair
-//     node scripts/name-transcription-test.mjs --bots Alice:7901,Jimmy:7902 \
+//     node scripts/name-transcription-test.mjs --bots Alice:7901,Bob:7902 \
 //       --category all --skip-done --limit 15
 //     scripts/spawn-test-fleet.sh 2 --kill
 //   done
@@ -56,7 +56,7 @@ const { FEMININE, MASCULINE, ROBOTIC } = require('../electron-app/bot-names.js')
 
 const arg = (n, d) => { const i = process.argv.indexOf('--' + n); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : d; };
 const ROOM = arg('room', 'paz-sqoa-npe');
-const BOTS = arg('bots', 'Alice:7901,Jimmy:7902').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
+const BOTS = arg('bots', 'Alice:7901,Bob:7902').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
 const VOICE = arg('voice', '');                 // '' → the profile's default macOS voice
 const LIMIT = Number(arg('limit', '0')) || 0;
 const SKIP_DONE = process.argv.includes('--skip-done');

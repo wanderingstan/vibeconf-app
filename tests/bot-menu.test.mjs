@@ -2,7 +2,7 @@
 // out what an app can do, and ours barely used it.
 //
 // Two items already existed in places nobody would look — Show Bot's View under
-// File, and Copy Chat Command parked in Edit by fb6f07aa as a spot fix for one
+// File, and Copy Terminal Command parked in Edit by fb6f07aa as a spot fix for one
 // command rather than a plan. The rest of what the app can do about a bot was
 // reachable only by clicking something in the panel.
 //
@@ -42,7 +42,7 @@ test('the two misfiled items MOVED rather than being duplicated', () => {
   // A second copy would be worse than the original problem: two menu items with
   // one accelerator between them, and only one of them doing anything.
   for (const [label, accel] of [['Show Bot\'s View', 'CmdOrCtrl+Shift+B'],
-    ['Copy Chat Command', 'Alt+CmdOrCtrl+C']]) {
+    ['Copy Terminal Command', 'Alt+CmdOrCtrl+C']]) {
     const copies = main.split(`label: ${label.includes("'") ? `"${label}"` : `'${label}'`}`).length - 1;
     assert.equal(copies, 1, `${label} must exist exactly once`);
     assert.ok(botMenu.includes(label), `${label} must be in the Bot menu`);

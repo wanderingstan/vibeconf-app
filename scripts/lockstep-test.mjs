@@ -26,7 +26,7 @@
 //   scripts/spawn-test-fleet.sh 3
 //
 // Run:
-//   node scripts/lockstep-test.mjs --bots Alice:7901,Jimmy:7902,Cosmo:7903
+//   node scripts/lockstep-test.mjs --bots Alice:7901,Bob:7902,Charlie:7903
 //   node scripts/lockstep-test.mjs --rounds 20 --collision-ms 460
 //   node scripts/lockstep-test.mjs --ordering ranked      # configure + measure
 //
@@ -46,7 +46,7 @@ const COLLISION_MS = Number(flag('collision-ms', '460'));
 const SETTLE_MS = Number(flag('settle', '9000'));
 const ORDERING = flag('ordering', null);          // 'jitter' | 'ranked' | null = leave as configured
 const GAP_MS = flag('gap', null);
-const BOTS = flag('bots', 'Alice:7901,Jimmy:7902,Cosmo:7903').split(',').map((s) => {
+const BOTS = flag('bots', 'Alice:7901,Bob:7902,Charlie:7903').split(',').map((s) => {
   const [name, port] = s.split(':');
   return new Bot(name, Number(port), ROOM);
 });

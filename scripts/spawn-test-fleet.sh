@@ -7,15 +7,15 @@
 #   profile   = test-meet-guest-1, …  (isolated userData: …/profiles/<name>;
 #               class prefix is test-meet-guest / test-meet-google / test-slack)
 #   port      = 7901, 7902, …     (distinct range from real bots 7865/7866)
-#   bot-name  = Alice, Jimmy, Cosmo, …  (Meet display name; the harness keys
+#   bot-name  = Alice, Bob, Charlie, …  (Meet display name; the harness keys
 #               scenarios on this — profile is just the sandbox, name is identity)
 #
 # Profile instances skip the Claude-terminal integration automatically, so this
 # only launches the apps. Drive them with: node scripts/meet-test.mjs
 #
 # Usage:
-#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Alice, Jimmy)
-#   scripts/spawn-test-fleet.sh 3          # 3 bots (adds Cosmo)
+#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Alice, Bob)
+#   scripts/spawn-test-fleet.sh 3          # 3 bots (adds Charlie)
 #   scripts/spawn-test-fleet.sh 2 --dmg    # drive the INSTALLED app (/Applications)
 #   scripts/spawn-test-fleet.sh 2 --built  # drive the freshly-BUILT app (dist/)
 #   scripts/spawn-test-fleet.sh 2 --kill   # stop a previously-spawned fleet
@@ -47,7 +47,7 @@ set -e
 # VIBECONF_REPO to point at a specific checkout.
 REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
-NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Jimmy=-2)
+NAMES=(Alice Bob Charlie Dizzy)           # display names by index (Alice=-1, Bob=-2)
 # One macOS `say` voice per bot, parallel to NAMES.
 #
 # Every test bot used to sound IDENTICAL: the block below pins
@@ -57,7 +57,7 @@ NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Ji
 # 2026-08-20). Distinct voices make the audio self-describing, which matters
 # because those recordings are the primary artifact when a lane fails.
 #
-# Chosen for CONTRAST first, not realism: Alice/Jimmy are the two-bot pair that
+# Chosen for CONTRAST first, not realism: Alice/Bob are the two-bot pair that
 # nearly every lane uses, so they get different genders AND different accents
 # (en_US vs en_GB) — distinguishable even through Meet's compression and even to
 # someone skimming at 2x.
@@ -116,18 +116,26 @@ elif (( GOOGLE )); then PROFILE_BASE="test-meet-google"
 else                   PROFILE_BASE="test-meet-guest"
 fi
 
-# Bot names are Alice (-1), Jimmy (-2) across ALL classes. For --google these
-# match the Google accounts signed into the google profiles (test-meet-google-1
-# = alice@spiritprotocol.io, test-meet-google-2 = jimmy@spiritprotocol.io); the
-# --meet-account-email pin below is derived from the same names.
+# Bot names are Alice (-1), Bob (-2), Charlie (-3) across ALL classes. For
+# --google these match the DEDICATED bot Google accounts signed into the google
+# profiles (test-meet-google-1 = alice_test@spiritprotocol.io, test-meet-google-2
+# = bob_test@spiritprotocol.io); the --meet-account-email pin below is derived
+# from the same names. charlie_test@ is reserved for a third bot login if one is
+# ever needed — no test-meet-google-3 profile exists yet.
+#
+# NB the accounts carry a _test SUFFIX (alice_test@, not alice@). They are
+# purpose-made bot logins, deliberately NOT the operator's own addresses, so the
+# derivation below inserts GTEST_EMAIL_SUFFIX rather than using the bare name.
 
 # For --google, deterministically PIN each profile's Google account (#282) so
 # joins use authuser=<email> and can't fall back to a stray default account. The
-# email is <lowercase-bot-name>@$GTEST_EMAIL_DOMAIN — matching the accounts you
-# sign the google profiles into. Override the domain via env if your bot accounts
-# live elsewhere. (Pinning only SELECTS the account; you still sign each profile
-# in once — the single partition starts fresh.)
+# email is <lowercase-bot-name>$GTEST_EMAIL_SUFFIX@$GTEST_EMAIL_DOMAIN — matching
+# the accounts you sign the google profiles into. Override either via env if your
+# bot accounts live elsewhere or drop the suffix with GTEST_EMAIL_SUFFIX=''.
+# (Pinning only SELECTS the account; you still sign each profile in once — the
+# single partition starts fresh.)
 GTEST_EMAIL_DOMAIN="${GTEST_EMAIL_DOMAIN:-spiritprotocol.io}"
+GTEST_EMAIL_SUFFIX="${GTEST_EMAIL_SUFFIX-_test}"
 
 # --kill: stop instances on the test ports (works regardless of how they launched).
 if (( KILL )); then
@@ -309,7 +317,7 @@ fi
 
 # Per-run name suffix (MEET ONLY): a SIGKILL'd bot ghosts in the Meet room until
 # the ~10min presence TTL, so a fresh run reusing the same names collides with the
-# ghost. A unique per-run suffix (e.g. Jimmy-r4af) sidesteps the collision; the
+# ghost. A unique per-run suffix (e.g. Bob-r4af) sidesteps the collision; the
 # graceful-leave above is the primary fix, this is belt-and-suspenders for when a
 # bot crashed and never left. meet-test resolves its per-name scenario by the BASE
 # name (before the last '-'), so the suffixed name still runs the right script.
@@ -344,7 +352,7 @@ for i in $(seq 1 $N); do
   # #282: pin this profile's Google account for --google runs (base name, not the
   # run-tagged display name). ${(L)...} is zsh lowercasing.
   ACCT_FLAG=""
-  (( GOOGLE )) && ACCT_FLAG="--meet-account-email=${(L)NAMES[$i]}@${GTEST_EMAIL_DOMAIN}"
+  (( GOOGLE )) && ACCT_FLAG="--meet-account-email=${(L)NAMES[$i]}${GTEST_EMAIL_SUFFIX}@${GTEST_EMAIL_DOMAIN}"
   WINFLAGS=""
   if (( GRID )); then
     idx=$(( i - 1 ))

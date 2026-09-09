@@ -16,7 +16,7 @@
 // a join DISPATCH is enough (callStatus leaves 'idle'); no Meet admission needed.
 //
 // Run:
-//   node scripts/whiteboard-roundtrip-test.mjs --bots Alice:7901,Jimmy:7902
+//   node scripts/whiteboard-roundtrip-test.mjs --bots Alice:7901,Bob:7902
 //
 // Exit non-zero if a write didn't round-trip to the other bot.
 
@@ -24,7 +24,7 @@ import { Bot, sleep, report, record } from './meet-test-lib.mjs';
 
 const arg = (n, d) => { const i = process.argv.indexOf('--' + n); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : d; };
 const ROOM = arg('room', 'paz-sqoa-npe');
-const BOTS = arg('bots', 'Alice:7901,Jimmy:7902').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
+const BOTS = arg('bots', 'Alice:7901,Bob:7902').split(',').map((s) => { const [name, port] = s.split(':'); return new Bot(name, Number(port), ROOM); });
 const stamp = arg('stamp', String(Date.now()).slice(-6));
 
 // Wait until the bot's join has DISPATCHED (callStatus off 'idle') so its

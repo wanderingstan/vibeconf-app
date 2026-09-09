@@ -26,7 +26,7 @@
 # WITH this branch is what you'll run.
 #
 # Override the accounts via env (defaults match docs/testing-profiles.md):
-#   GTEST_EMAIL_DOMAIN=spiritprotocol.io
+#   GTEST_EMAIL_DOMAIN=spiritprotocol.io   GTEST_EMAIL_SUFFIX=_test
 #   SLACKTEST1_ACCOUNT / SLACKTEST2_ACCOUNT
 #   SLACK_SETUP_URL=https://app.slack.com/
 
@@ -59,6 +59,10 @@ elif [[ "$MODE" == "installed" ]]; then
 fi
 
 GTEST_EMAIL_DOMAIN="${GTEST_EMAIL_DOMAIN:-spiritprotocol.io}"
+# The bot accounts carry a _test suffix (alice_test@, not alice@) — they are
+# purpose-made logins, not the operator's own addresses. Keep in step with
+# spawn-test-fleet.sh, which derives the same pin at launch time.
+GTEST_EMAIL_SUFFIX="${GTEST_EMAIL_SUFFIX-_test}"
 # Slack has no account pin (unlike Google's --meet-account-email) — you just log
 # in interactively and pick the workspace. These are optional human-readable
 # LABELS for the printed checklist, nothing the app reads.
@@ -70,11 +74,14 @@ SLACK_SETUP_URL="${SLACK_SETUP_URL:-https://app.slack.com/}"
 # Seed each profile's identity so it's correct even when the app is opened
 # WITHOUT the fleet's --bot-name flag (e.g. this setup script, or a manual
 # launch). The naming convention is uniform across every class — Alice is always
-# index 1, Jimmy is always index 2:
+# index 1, Bob is always index 2:
 #   Alice (…-1) = botName Alice, emojiSet fluent3d
-#   Jimmy (…-2) = botName Jimmy, emojiSet noto
+#   Bob   (…-2) = botName Bob,   emojiSet noto
+# The GUEST class also has a third bot, seeded below:
+#   Charlie (test-meet-guest-3) = botName Charlie, emojiSet twemoji
 # botName in particular MUST be persisted: the app reads store.get('botName')
-# and falls back to a hardcoded 'Jimmy' when it's unset — so an un-seeded Alice
+# and falls back to a hardcoded 'Jimmy' when it's unset (that fallback is the
+# APP's own default bot name, unrelated to the fleet) — so an un-seeded Alice
 # profile shows up as "Jimmy" on the main screen and in Bot Preferences.
 # onboardingComplete=true skips the first-run setup wizard: the wizard is a
 # focus-stealing modal window, and once it can appear for ANY un-onboarded
@@ -89,12 +96,18 @@ set_pref() {  # <profile-name> <key> <value> — 'true'/'false' are written as J
   node -e 'const fs=require("fs"),p=process.argv[1],k=process.argv[2],raw=process.argv[3];const v=raw==="true"?true:raw==="false"?false:raw;let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{};c[k]=v;fs.writeFileSync(p,JSON.stringify(c,null,2)+"\n")' "$dir/config.json" "$2" "$3"
   echo "  • $1 → $2=$3"
 }
-echo "▶ Profile identity: Alice(-1)=fluent3d, Jimmy(-2)=noto (+ skip onboarding wizard)"
+echo "▶ Profile identity: Alice(-1)=fluent3d, Bob(-2)=noto, Charlie(guest-3)=twemoji (+ skip onboarding wizard)"
 for cls in test-meet-guest test-meet-google test-slack; do
   mkdir -p "$PROFILE_ROOT/$cls-1" "$PROFILE_ROOT/$cls-2"
   set_pref "$cls-1" botName Alice; set_pref "$cls-1" emojiSet fluent3d; set_pref "$cls-1" onboardingComplete true
-  set_pref "$cls-2" botName Jimmy; set_pref "$cls-2" emojiSet noto;     set_pref "$cls-2" onboardingComplete true
+  set_pref "$cls-2" botName Bob;   set_pref "$cls-2" emojiSet noto;     set_pref "$cls-2" onboardingComplete true
 done
+# Bot 3 exists only in the GUEST class — the etiquette lane boots it as the
+# third participant (spawn-test-fleet.sh 3). Seeding it here and NOT in the loop
+# above is deliberate: the loop's mkdir would conjure empty test-meet-google-3 /
+# test-slack-3 profiles that nothing launches and no account backs.
+mkdir -p "$PROFILE_ROOT/test-meet-guest-3"
+set_pref test-meet-guest-3 botName Charlie; set_pref test-meet-guest-3 emojiSet twemoji; set_pref test-meet-guest-3 onboardingComplete true
 echo
 
 typeset -a STEPS
@@ -149,8 +162,8 @@ echo
 
 if (( DO_GOOGLE )); then
   echo "Google (Meet) profiles:"
-  launch_google test-meet-google-1 7901 "alice@${GTEST_EMAIL_DOMAIN}"
-  launch_google test-meet-google-2 7902 "jimmy@${GTEST_EMAIL_DOMAIN}"
+  launch_google test-meet-google-1 7901 "alice${GTEST_EMAIL_SUFFIX}@${GTEST_EMAIL_DOMAIN}"
+  launch_google test-meet-google-2 7902 "bob${GTEST_EMAIL_SUFFIX}@${GTEST_EMAIL_DOMAIN}"
   echo
 fi
 

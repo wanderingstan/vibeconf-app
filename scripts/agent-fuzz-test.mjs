@@ -13,7 +13,7 @@
 //   PASS/FAIL + results line → tear down.
 //
 // Usage:
-//   node scripts/agent-fuzz-test.mjs [--bots Alice:7901,Jimmy:7902] [--room paz-sqoa-npe]
+//   node scripts/agent-fuzz-test.mjs [--bots Alice:7901,Bob:7902] [--room paz-sqoa-npe]
 //        [--mission smoke] [--duration 180] [--no-spawn] [--keep]
 //
 // ⚠️ SCAFFOLDING — authored without a live run available; validate before trusting.
@@ -46,7 +46,7 @@ const arg = (name, def) => {
 };
 const flag = (name) => process.argv.includes('--' + name);
 
-const BOTS = arg('bots', 'Alice:7901,Jimmy:7902');
+const BOTS = arg('bots', 'Alice:7901,Bob:7902');
 const ROOM = arg('room', 'paz-sqoa-npe');
 const MISSION_KEY = arg('mission', 'smoke');
 const DURATION_S = Number(arg('duration', '180'));

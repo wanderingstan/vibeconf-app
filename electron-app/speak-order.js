@@ -82,6 +82,44 @@ function mentionedBots(text, botNames) {
   return (botNames || []).filter((n) => nameMentioned(text, n));
 }
 
+
+// THE SEED: what all the bots agree on, without exchanging anything.
+//
+// The original seed was the utterance — speaker plus the first 8 words. That is
+// CONTENT, and content has to MATCH across machines. It mostly does, but the
+// ways it fails are real and platform-specific: Meet revises caption text as
+// its ASR settles (hence hashing only the head, which is a mitigation and not a
+// guarantee), and the two bots sample it at different instants — a collision is
+// evaluated ~1.5s apart, because each bot's barge-in grace is scaled from its
+// OWN urgency. Zoom and Teams have their own caption behaviour, so every one of
+// those characterisations would have to be redone per platform.
+//
+// A clock needs no agreement about content at all. Machines with ordinary NTP
+// sit within tens of milliseconds of each other, which is nothing against a
+// bucket measured in seconds, and it behaves identically on every platform.
+//
+// ANCHORED TO THE SILENCE EDGE, NOT TO "NOW". This matters more than the bucket
+// size. The moment a human stops talking is a physical event every bot observes
+// within the speaking-detection spread (~180ms p90 on the meter); each bot's own
+// decision time is not — the start decision runs at speak submission, the yield
+// decision at grace expiry up to 1.5s later, and both differ per bot. Seeding
+// from "now" would reintroduce precisely the divergence this exists to remove.
+//
+// THE RESIDUAL RISK IS A BOUNDARY STRADDLE, and it is quantifiable: two bots
+// whose observations of the same edge differ by d disagree only when a bucket
+// boundary falls between them, with probability d / bucketMs. At d = 180ms and
+// a 6s bucket that is ~3%, against a caption seed whose divergence rate is
+// unmeasured and platform-dependent — and a disagreement is now bounded by the
+// bot-vs-bot safety net rather than running to the end of the utterance.
+//
+// Bigger buckets mean fewer straddles AND a slower rotation of who wins: the
+// permutation is constant within a bucket, so in a rapid exchange the same bot
+// can take several turns in a row. That trade is what the bucket size buys.
+function clockKey(atMs, bucketMs) {
+  const b = Number(bucketMs) > 0 ? Number(bucketMs) : 6000;
+  return `t${Math.floor(Number(atMs) / b)}`;
+}
+
 // Being named gets you priority IN LINE WITH the hash, not instead of it: a
 // bonus, so several bots can be named at once and still order deterministically
 // among themselves.
@@ -98,10 +136,16 @@ function mentionBonus(bot, mentioned) {
 // Ties on the bonus are broken by the hash, which varies per turn — so over a
 // conversation the winner rotates uniformly rather than one bot always going
 // first, which a static priority (by name, by join order) would produce.
-function speakOrder({ botNames, speaker, utterance }) {
+// `seed` overrides the content-derived key (see clockKey above). The mention
+// bonus still reads the utterance, deliberately: being addressed by name is the
+// one piece of content worth the risk. It is a whole-word match on a short name
+// rather than a hash over a text prefix, so it is far more robust to ASR
+// revision — and a scheduler that cannot hear "Alice, what do you think?" is
+// worse than one that occasionally disagrees.
+function speakOrder({ botNames, speaker, utterance, seed }) {
   const bots = [...new Set((botNames || []).filter(Boolean))];
   const mentioned = mentionedBots(utterance, bots);
-  const key = turnKey(speaker, utterance);
+  const key = seed || turnKey(speaker, utterance);
   return bots
     .map((bot) => ({ bot, bonus: mentionBonus(bot, mentioned), tie: hash32(`${key}|${bot.toLowerCase()}`) }))
     .sort((a, b) => (b.bonus - a.bonus) || (a.tie - b.tie) || a.bot.localeCompare(b.bot))
@@ -112,8 +156,8 @@ function speakOrder({ botNames, speaker, utterance }) {
 // another bot start, or the loser will not have noticed the winner by the time
 // its own delay expires and both will speak. Measured (#422): onset p90 is
 // ~180ms with the meter signal and ~360-460ms with the mutation counter.
-function speakDelay({ selfName, botNames, speaker, utterance, gapMs = 500 }) {
-  const order = speakOrder({ botNames, speaker, utterance });
+function speakDelay({ selfName, botNames, speaker, utterance, seed, gapMs = 500 }) {
+  const order = speakOrder({ botNames, speaker, utterance, seed });
   const mine = order.find((e) => e.bot.toLowerCase() === String(selfName || '').toLowerCase());
   if (!mine) return null;              // not a known bot — caller falls back to jitter
   const mentioned = order.filter((e) => e.bonus > 0).map((e) => e.bot);
@@ -148,8 +192,8 @@ function speakDelay({ selfName, botNames, speaker, utterance, gapMs = 500 }) {
 // Returns null when the question cannot be answered — self not in the set, or
 // no interrupter recognised — which is the caller's signal to keep today's
 // behaviour rather than guess.
-function yieldsTo({ selfName, botNames, speaker, utterance, interrupters }) {
-  const order = speakOrder({ botNames, speaker, utterance });
+function yieldsTo({ selfName, botNames, speaker, utterance, seed, interrupters }) {
+  const order = speakOrder({ botNames, speaker, utterance, seed });
   const rankOf = (name) => {
     const e = order.find((x) => x.bot.toLowerCase() === String(name || '').trim().toLowerCase());
     return e ? e.rank : null;
@@ -181,4 +225,4 @@ function yieldsTo({ selfName, botNames, speaker, utterance, interrupters }) {
     why: `rank ${mine + 1}/${order.length}, ahead of ${ranks.map((r) => `${r.name} (${r.rank + 1})`).join(', ')}` };
 }
 
-module.exports = { hash32, turnKey, nameMentioned, mentionedBots, mentionBonus, speakOrder, speakDelay, yieldsTo };
+module.exports = { hash32, turnKey, clockKey, nameMentioned, mentionedBots, mentionBonus, speakOrder, speakDelay, yieldsTo };

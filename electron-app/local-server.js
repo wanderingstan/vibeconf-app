@@ -1297,11 +1297,29 @@ class LocalServer {
       .find((e) => e && e.text && e.participantName && !speakers.has(e.participantName.toLowerCase()));
     if (!last) return this._rankedSkip(`no human utterance yet (${all.length} entries, excluding ${[...speakers].join('/')})`, fallback);
 
+    // THE SEED (see clockKey in speak-order.js). Anchored to lastSpeechStoppedAt
+    // — the silence edge that opened this turn — and NOT to Date.now(): the two
+    // decisions that consume this run at different moments (speak submission vs
+    // grace expiry, up to 1.5s apart and different per bot), while the edge
+    // itself is one physical event all bots observe within the detection spread.
+    //
+    // Falls back to the utterance key when there is no edge yet, which is the
+    // first turn of a call: the content seed is what shipped, so the fallback is
+    // the old behaviour rather than no ordering at all.
+    let seed;
+    if (this._pref('botSpeakSeed') !== 'utterance') {
+      const edge = this.lastSpeechStoppedAt;
+      if (edge) {
+        const { clockKey } = require('./speak-order.js');
+        seed = clockKey(edge, Number(this._pref('botSpeakClockBucketMs')) || 6000);
+      }
+    }
     return {
       selfName: self,
       botNames: [...new Set([...peers, self])],
       speaker: last.participantName,
       utterance: last.text,
+      seed,
     };
   }
 

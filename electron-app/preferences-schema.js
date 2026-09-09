@@ -1241,6 +1241,44 @@ const PREFERENCES = {
       + 'boundary — on 2026-08-17 two agents on two machines found no value '
       + 'this would accept, which left #426 unreachable in production (#430).',
   },
+  botSpeakSeed: {
+    type: 'string',
+    default: 'clock',
+    enum: ['clock', 'utterance'],
+    enumLabels: {
+      clock: 'Wall clock (portable; needs no agreement about caption text)',
+      utterance: 'The utterance being answered (the original; content must match)',
+    },
+    description:
+      'What the bots key their shared ordering on. Both are computed locally '
+      + 'with nothing exchanged; the question is only which shared fact they '
+      + 'use. "utterance" hashes the speaker plus the first 8 words of what was '
+      + 'said — content, which has to MATCH across machines, and which each '
+      + 'platform revises differently as its speech recognition settles. '
+      + '"clock" buckets the moment the speaker stopped (see '
+      + 'botSpeakClockBucketMs), which needs no agreement about text at all and '
+      + 'behaves the same on Meet, Zoom or Teams. Being addressed by name still '
+      + 'reads the utterance under both settings — that is content worth the '
+      + 'risk, and a whole-word name match is far more robust than a hash over '
+      + 'a text prefix.',
+  },
+
+  botSpeakClockBucketMs: {
+    type: 'number',
+    default: 6000,
+    min: 500,
+    max: 60000,
+    description:
+      'With botSpeakSeed="clock", the width of the time bucket the ordering is '
+      + 'keyed on. It sets one trade directly: two bots disagree only when a '
+      + 'bucket boundary falls between their observations of the same silence '
+      + 'edge, with probability (observation spread / this), so at the measured '
+      + '~180ms p90 spread a 6s bucket disagrees about 3% of the time and a 12s '
+      + 'bucket about 1.5%. The cost of a wider bucket is a slower rotation: the '
+      + 'order is constant WITHIN a bucket, so in a rapid exchange the same bot '
+      + 'can win several turns in a row before the winner changes.',
+  },
+
   botSpeakRankGapMs: {
     type: 'number',
     default: 500,

@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { speakOrder, speakDelay, turnKey, nameMentioned, hash32 } =
+const { speakOrder, speakDelay, turnKey, clockKey, nameMentioned, hash32 } =
   require('../electron-app/speak-order.js');
 
 const BOTS = ['Alice', 'Jimmy', 'Cosmo'];
@@ -200,4 +200,61 @@ test('the hash is stable across processes and platforms', () => {
   assert.equal(hash32(''), 0x811c9dc5);
   assert.equal(hash32('a'), 0xe40c292c);
   assert.equal(hash32('stan|what do you think|Alice'), hash32('stan|what do you think|Alice'));
+});
+
+// --- the seed: content vs the clock -----------------------------------------
+
+test('the clock seed produces one agreed order, like the utterance seed', () => {
+  // Same property as the top of this file, keyed on a time bucket instead.
+  const seed = clockKey(1757400000123, 6000);
+  const bots = ['Alice', 'Jimmy', 'Cosmo'];
+  const ranks = bots
+    .map((self) => speakDelay({ selfName: self, botNames: bots, speaker: 'Stan', utterance: 'anything', seed }).rank)
+    .sort();
+  assert.deepEqual(ranks, [0, 1, 2]);
+});
+
+test('the clock seed ignores the utterance entirely', () => {
+  // The whole point: two bots that sampled DIFFERENT caption text for the same
+  // turn still agree. Under the utterance seed they would not.
+  const seed = clockKey(1757400000123, 6000);
+  const bots = ['Alice', 'Jimmy'];
+  const a = speakDelay({ selfName: 'Alice', botNames: bots, speaker: 'Stan', seed,
+    utterance: 'so what should we do about the migration next week' });
+  const b = speakDelay({ selfName: 'Alice', botNames: bots, speaker: 'Stan', seed,
+    utterance: 'what should we do about the migration next week' });   // ASR dropped a word
+  assert.equal(a.rank, b.rank, 'the caption text must not move the order');
+});
+
+test('two observations of the same silence edge share a bucket, unless they straddle', () => {
+  // The residual risk, stated as a test so the trade is visible rather than
+  // buried in a comment: agreement holds while both observations land in one
+  // bucket, and the straddle probability is (spread / bucket).
+  const B = 6000;
+  assert.equal(clockKey(1_000_000_000, B), clockKey(1_000_000_180, B), '180ms apart, same bucket');
+  const boundary = Math.ceil(1_000_000_000 / B) * B;
+  assert.notEqual(clockKey(boundary - 1, B), clockKey(boundary, B), 'a boundary does separate them');
+});
+
+test('the winner still rotates — a fixed order would let one bot dominate', () => {
+  // The order must change over a conversation. Buckets advance with time, so
+  // this is what stops the clock seed becoming a static priority list.
+  const bots = ['Alice', 'Jimmy', 'Cosmo'];
+  const winners = new Set();
+  for (let i = 0; i < 200; i++) {
+    const seed = clockKey(1757400000000 + i * 6000, 6000);
+    winners.add(speakOrder({ botNames: bots, speaker: 'Stan', utterance: 'x', seed })[0].bot);
+  }
+  assert.equal(winners.size, 3, `every bot should win sometimes, got ${[...winners].join(', ')}`);
+});
+
+test('being named still wins under the clock seed', () => {
+  // The mention bonus deliberately still reads the utterance. A scheduler that
+  // cannot hear a direct address is worse than one that rarely disagrees.
+  const seed = clockKey(1757400000123, 6000);
+  const bots = ['Alice', 'Jimmy'];
+  const d = speakDelay({ selfName: 'Alice', botNames: bots, speaker: 'Stan', seed,
+    utterance: 'Alice, what do you think about the pricing?' });
+  assert.equal(d.rank, 0, 'the addressed bot answers');
+  assert.equal(d.delayMs, 0);
 });

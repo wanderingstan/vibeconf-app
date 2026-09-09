@@ -41,6 +41,8 @@ function makeServer(botName, prefs = {}) {
     getConfiguredBotName: () => botName,
     getPref: (k) => ({
       botSpeakOrdering: 'ranked',
+      botSpeakSeed: 'clock',
+      botSpeakClockBucketMs: 6000,
       botSpeakRankGapMs: 500,
       botSpeakReplayRankGapMs: 200,   // explicit: the DEFAULT is 500, see the schema note
       botSpeakJitterMaxMs: 0,
@@ -200,4 +202,35 @@ test('two callers landing on one opening still speak exactly once', async () => 
   s._maybeReplayBargeInStash();
   await settle(400);
   assert.deepEqual(s.spoken, ['said once'], 'exactly once, not twice');
+});
+
+test('the server seeds the order from the silence edge, not from "now"', async () => {
+  // The seed must be the same for both decisions a bot makes about one turn,
+  // and the same for both bots. lastSpeechStoppedAt is one physical event all
+  // bots observe within the detection spread; Date.now() at decision time is
+  // not — the start decision and the yield decision run up to 1.5s apart.
+  const { clockKey } = require('../electron-app/speak-order.js');
+  const s = makeServer(FIRST);
+  s.lastSpeechStoppedAt = 1757400000123;
+  const ctx = s._rankedContext();
+  assert.equal(ctx.seed, clockKey(1757400000123, 6000),
+    'seeded from the edge, bucketed at the default 6s');
+
+  // Time passing must not move it — that is the property "now" would break.
+  await settle(30);
+  assert.equal(s._rankedContext().seed, ctx.seed);
+});
+
+test('with no silence edge yet, it falls back to the utterance seed', () => {
+  // The first turn of a call. The content seed is what shipped, so falling back
+  // to it means the old behaviour rather than no ordering at all.
+  const s = makeServer(FIRST);
+  s.lastSpeechStoppedAt = 0;
+  assert.equal(s._rankedContext().seed, undefined);
+});
+
+test('botSpeakSeed="utterance" restores the original content seed', () => {
+  const s = makeServer(FIRST, { botSpeakSeed: 'utterance' });
+  s.lastSpeechStoppedAt = 1757400000123;
+  assert.equal(s._rankedContext().seed, undefined, 'no clock seed — speakOrder falls back to turnKey');
 });

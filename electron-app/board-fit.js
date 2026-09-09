@@ -44,8 +44,32 @@
 
 'use strict';
 
+// Fingerprint of what is on the board RIGHT NOW, captured BEFORE the write so
+// the measurement afterwards can tell "the new content has rendered" from "the
+// old content is sitting there, perfectly stable".
+//
+// Uses the renderer's own per-section `data-sig` (a hash of each section's
+// markup, maintained for reconcile), falling back to text length if the board
+// has not rendered sections yet.
+const SIGNATURE_SCRIPT = `(() => {
+  const sigs = Array.from(document.querySelectorAll('[data-sig]'))
+    .map((el) => el.getAttribute('data-sig')).join('|');
+  return sigs || String((document.body.textContent || '').trim().length);
+})()`;
+
 const SETTLE_POLL_MS = 40;
-const SETTLE_TIMEOUT_MS = 600;
+// Generous on purpose. The board does not re-render locally: the write goes to
+// the sync server and comes back over SSE, so the pixels move a full network
+// round-trip after update_whiteboard returns. 600ms was a guess and it was too
+// short — it expired twice on a live call, reporting the previous board both
+// times.
+//
+// The cost of a large budget is near zero, because both phases exit the instant
+// the board changes and then settles; this bounds only the pathological case.
+// And the one case that would genuinely burn the whole budget — content that is
+// byte-identical, so the signature never changes — is skipped by the caller
+// before we are ever invoked.
+const SETTLE_TIMEOUT_MS = 3000;
 
 // Runs INSIDE the share surface (a sandboxed browser page), so it must be a
 // self-contained expression with no imports and no closure over this module.
@@ -55,9 +79,15 @@ const SETTLE_TIMEOUT_MS = 600;
 //
 // Returns null when there is nothing measurable, which is how a caller
 // distinguishes "measured, and it fits" from "could not measure".
-const MEASURE_SCRIPT = `(async () => {
+const measureScriptFor = (previousSignature) => `(async () => {
   const POLL = ${SETTLE_POLL_MS}, LIMIT = ${SETTLE_TIMEOUT_MS};
+  const PREV = ${JSON.stringify(previousSignature ?? null)};
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const signature = () => {
+    const sigs = Array.from(document.querySelectorAll('[data-sig]'))
+      .map((el) => el.getAttribute('data-sig')).join('|');
+    return sigs || String((document.body.textContent || '').trim().length);
+  };
 
   // The scrolling element is NOT the document — see board-fit.js. Take the
   // tallest real scroller, so a small inner one (an overflowing code block, say)
@@ -82,14 +112,31 @@ const MEASURE_SCRIPT = `(async () => {
   // mid-reconcile.
   await new Promise((r) => requestAnimationFrame(() => r()));
 
-  let settled = false, previous = -1;
   const startedAt = Date.now();
+
+  // PHASE 1 — wait for the board to actually become the new content.
+  //
+  // Waiting only for "the height stopped changing" is not enough: before the
+  // re-render begins, the PREVIOUS board is sitting there perfectly stable, so
+  // that test passes instantly and measures the old layout. (Exactly what
+  // happened on 2026-09-06: a 3.11-screenful board reported 1.04, the size of
+  // the board it replaced.) PREV is the signature captured before the write, so
+  // a signature that still equals it means the new content has not landed yet.
+  let arrived = PREV === null;   // nothing to wait for if we were not told
+  while (!arrived && Date.now() - startedAt < LIMIT) {
+    if (signature() !== PREV) { arrived = true; break; }
+    await sleep(POLL);
+  }
+
+  // PHASE 2 — now that it is the new content, wait for it to stop reflowing.
+  let settled = false, previous = -1;
   while (Date.now() - startedAt < LIMIT) {
     const h = heightNow();
     if (h === previous) { settled = true; break; }
     previous = h;
     await sleep(POLL);
   }
+  settled = settled && arrived;
 
   const scroller = findScroller();
   const fitted = !scroller;
@@ -151,6 +198,10 @@ const MEASURE_SCRIPT = `(async () => {
   };
 })()`;
 
+// Back-compat for callers that do not capture a prior signature: still waits for
+// the reflow to settle, but cannot tell a stale board from a settled one.
+const MEASURE_SCRIPT = measureScriptFor(null);
+
 // Turn a measurement into the line the agent actually reads.
 //
 // Deliberately leads with the block that got cut rather than the pixel count:
@@ -206,4 +257,4 @@ function formatBudget(m) {
   return bits.length ? ` Budget for this board's styling: ${bits.join(', ')}.` : '';
 }
 
-module.exports = { MEASURE_SCRIPT, formatFitReport, formatBudget, SETTLE_TIMEOUT_MS };
+module.exports = { MEASURE_SCRIPT, measureScriptFor, SIGNATURE_SCRIPT, formatFitReport, formatBudget, SETTLE_TIMEOUT_MS };

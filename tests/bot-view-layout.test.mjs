@@ -230,11 +230,11 @@ test('thumbnail is unchanged — the legacy path still works exactly as before',
     'and still pins Meet\'s virtual width so the DOM never reflows');
 });
 
-test('meetViewSize resolves to a 16:9 host size, and anything unknown is the default', () => {
+test('meetViewSize resolves to a host size whose TILE REGION is 16:9, and anything unknown is the default', () => {
   const defaultSize = L.MEET_VIEW_SIZES[L.DEFAULT_MEET_VIEW_SIZE];
-  assert.deepEqual(L.hiddenSizeFor('1600x900'), L.HIDDEN_SIZE);
+  assert.deepEqual(L.hiddenSizeFor('1360x900'), L.HIDDEN_SIZE);
   assert.deepEqual(L.hiddenSizeFor(L.DEFAULT_MEET_VIEW_SIZE), defaultSize);
-  assert.deepEqual(L.hiddenSizeFor('1920x1080'), { width: 1920, height: 1080 });
+  assert.deepEqual(L.hiddenSizeFor('1680x1080'), { width: 1680, height: 1080 });
   // #673: the fallback must track the DEFAULT, not a hardcoded size. Pinned
   // because the two were once the same value, so a test written against the
   // constant would have kept passing while the fallback silently disagreed
@@ -244,7 +244,15 @@ test('meetViewSize resolves to a 16:9 host size, and anything unknown is the def
   }
   for (const [key, size] of Object.entries(L.MEET_VIEW_SIZES)) {
     assert.equal(key, `${size.width}x${size.height}`, 'the key names the size');
-    assert.equal(size.width * 9, size.height * 16, `${key} must be 16:9 so Meet lays out as on a normal display`);
+    // #735: the RECORDING is the tile region, not the window. Meet's chrome is a
+    // fixed 400x360 CSS px (measured at three view sizes), so a 16:9 WINDOW
+    // yields a 2.0:1 to 2.2:1 region. The window must be wider than 16:9 for
+    // what is recorded to be 16:9 — and by a different amount at each height,
+    // which is why this asserts the region rather than a window ratio.
+    const region = { width: size.width - L.MEET_CHROME_CSS.width, height: size.height - L.MEET_CHROME_CSS.height };
+    assert.equal(region.width * 9, region.height * 16,
+      `${key} must record 16:9, got region ${region.width}x${region.height}`);
+    assert.ok(region.width > 0 && region.height > 0, `${key} must leave room for tiles`);
     assert.ok(size.width >= L.MEET_TARGET_CSS_WIDTH, `${key} must fit Meet's pinned virtual width at zoom 1`);
   }
 });
@@ -256,4 +264,26 @@ test('the meetViewSize preference offers exactly the sizes the layout knows', ()
   assert.deepEqual(p.enum, Object.keys(L.MEET_VIEW_SIZES));
   assert.equal(p.default, L.DEFAULT_MEET_VIEW_SIZE);
   for (const v of p.enum) assert.ok(p.enumLabels[v], `${v} needs a label`);
+});
+
+test('the default view size records exactly 1920x1080', () => {
+  const size = L.MEET_VIEW_SIZES[L.DEFAULT_MEET_VIEW_SIZE];
+  assert.deepEqual(size, { width: 2320, height: 1440 });
+  assert.deepEqual(
+    { width: size.width - L.MEET_CHROME_CSS.width, height: size.height - L.MEET_CHROME_CSS.height },
+    { width: 1920, height: 1080 },
+    'the point of the exercise: a native-resolution 16:9 recording, no bars, no downscale',
+  );
+});
+
+test('no single WINDOW ratio could have worked, which is why the sizes are computed', () => {
+  // Fixed-pixel chrome is a bigger share of a small window than a large one, so
+  // the window ratio that yields a 16:9 region differs at every height.
+  const ratios = [900, 1080, 1440].map((h) => {
+    const s = L.viewSizeForHeight(h);
+    return s.width / s.height;
+  });
+  assert.ok(Math.abs(ratios[0] - ratios[2]) > 0.05,
+    `window ratios must differ across sizes, got ${ratios.map((r) => r.toFixed(3)).join(', ')}`);
+  for (const r of ratios) assert.ok(r > 16 / 9 === false && r < 16 / 9, 'each is NARROWER than 16:9 in window terms');
 });

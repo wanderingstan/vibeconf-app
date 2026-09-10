@@ -46,6 +46,11 @@
 // slack on the top edge is a pixel of the banner's drop shadow.
 const PAD_CSS_PX = 4;
 
+// What a recording is supposed to come out as. The view sizes in
+// bot-view-layout.js are chosen so the measured region lands here (#735), so
+// this is a yardstick for reporting, not something this module enforces.
+const TARGET_ASPECT = 16 / 9;
+
 // Below this, a change in the measured region is treated as jitter and not
 // re-sent to the capture window (which would otherwise redraw its letterbox
 // for a sub-pixel wobble every tick). Fraction of the viewport per edge.
@@ -157,13 +162,23 @@ function computeCropRect(m, { pad = PAD_CSS_PX } = {}) {
   const bannerOverlapPx = (m.banner && validRect(m.banner))
     ? Math.max(0, Math.round(Math.min(y1, m.banner.y + m.banner.h) - Math.max(y0, m.banner.y)))
     : 0;
+  // Reported, never enforced. bot-view-layout.js sizes the view so this lands
+  // at 16:9; logging what it ACTUALLY came out as is how a drift gets noticed
+  // in the session log rather than on YouTube — if Meet changes its chrome, the
+  // insets that law is built on move and every recording quietly goes oblong.
+  // offBy16x9Px is the CSS px of height between here and 16:9, signed: positive
+  // when the region is too wide, negative when too tall, 0 when spot on.
+  const rw = x1 - x0, rh = y1 - y0;
+  const offBy16x9Px = Math.round(rw / TARGET_ASPECT - rh);
   return {
     x: x0 / m.vw,
     y: y0 / m.vh,
-    w: (x1 - x0) / m.vw,
-    h: (y1 - y0) / m.vh,
+    w: rw / m.vw,
+    h: rh / m.vh,
     strategy,
     bannerOverlapPx,
+    aspect: Math.round((rw / rh) * 1000) / 1000,
+    offBy16x9Px,
   };
 }
 
@@ -217,6 +232,7 @@ module.exports = {
   outlineScript,
   fallbackRect,
   PAD_CSS_PX,
+  TARGET_ASPECT,
   CHANGE_EPSILON,
   OUTLINE_ID,
 };

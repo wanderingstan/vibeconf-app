@@ -24,6 +24,9 @@
   // Absent means record the raw frame (the pref is off, or this is the
   // whiteboard-share track, which has no Meet chrome to crop).
   const INITIAL_CROP = parseCrop(params.get('crop'));
+  // Meet's fixed chrome height in CSS px (bot-view-layout.js MEET_CHROME_CSS),
+  // passed by main. Absent for capture windows that are not the Meet view.
+  const CHROME_H = Number(params.get('chromeh')) || 0;
   // How long to give main's first MEASURED region (its first tick is
   // asynchronous — it runs a script in the Meet page) before starting the
   // encoder on the query-string one. The canvas size is fixed for the whole
@@ -247,8 +250,23 @@
     // identical size it always did. In the cases it does not (a share moves the
     // bottom band), the file is still 16:9 and draw()'s existing scale-to-fit
     // letterboxes those frames rather than reshaping the whole recording.
-    const cw = even(sw * first.w);
-    const ch = even(cw / OUTPUT_ASPECT);
+    // Prefer the FRAME over the sample. The region is a fixed inset of the view
+    // (bot-view-layout.js), and the capture box is never smaller than the view,
+    // so `sh - CHROME_H` is the region's height without needing to have
+    // measured it — which matters because the crop available at
+    // FIRST_CROP_WAIT_MS is often still the LOBBY, not the call. Measured
+    // 2026-09-10: the first crop was 2296x1295 (near full frame) and the real
+    // one, a second later, was 1913x1080. Sizing off the former gave a correct
+    // 16:9 file at 2296x1292 that then upscaled the real region into it by 20%.
+    // With the frame: 1920x1080, no upscale.
+    let cw, ch;
+    if (CHROME_H > 0 && sh - CHROME_H > 0) {
+      ch = even(sh - CHROME_H);
+      cw = even(ch * OUTPUT_ASPECT);
+    } else {
+      cw = even(sw * first.w);
+      ch = even(cw / OUTPUT_ASPECT);
+    }
     const canvas = document.createElement('canvas');
     canvas.width = cw; canvas.height = ch;
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });

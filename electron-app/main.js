@@ -545,7 +545,10 @@ function startCallRecording(room, botName, { force = false } = {}) {
       // front (createCallRecordingWindow is synchronous; the first real
       // measurement lands over IPC within the renderer's short grace period).
       const crop = cropCallRecordingEnabled() ? recordRegion.fallbackRect() : null;
-      activeRecordingWindow = createCallRecordingWindow(meetView, { crop });
+      // The chrome sizes the output frame deterministically: see the renderer's
+      // OUTPUT SHAPE note. Without it the canvas came from whatever crop had
+      // been measured 1.5s in, which is usually still the LOBBY.
+      activeRecordingWindow = createCallRecordingWindow(meetView, { crop, chrome: botViewLayout.MEET_CHROME_CSS });
       startRecordingStatsPush(); // #328 — feed the window its running size
       if (crop) startRecordRegionLoop();
       console.log(`[call-record] recording control window created — capturing video${crop ? ' (cropped to the measured Meet video region)' : ' (raw frame)'}`);

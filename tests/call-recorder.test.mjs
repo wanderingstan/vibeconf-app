@@ -224,12 +224,27 @@ test('the recording canvas is 16:9 by construction, not whatever the first crop 
   // the file's aspect for the whole call, so the same room recorded at 1.89,
   // 1.97, 2.01 and 2.72:1 on different days.
   assert.match(src, /const OUTPUT_ASPECT = 16 \/ 9;/, 'the target shape is a named constant');
-  assert.match(src, /const ch = even\(cw \/ OUTPUT_ASPECT\);/, 'height is DERIVED from width, not sampled');
   assert.doesNotMatch(src, /const cw = even\(sw \* first\.w\), ch = even\(sh \* first\.h\);/,
     'the old sampled-height form must be gone');
-  // Width stays sampled on purpose: Meet's left inset and People pane are fixed,
-  // so the region's width is the stable dimension to key off.
-  assert.match(src, /const cw = even\(sw \* first\.w\);/);
+  // Preferred path: size from the FRAME, since the region is a fixed inset of
+  // the view. The crop available at FIRST_CROP_WAIT_MS is often still the lobby
+  // — measured 2026-09-10, first crop 2296x1295 against a real 1913x1080.
+  assert.match(src, /ch = even\(sh - CHROME_H\);/, 'height comes from the frame minus Meet\'s chrome');
+  assert.match(src, /cw = even\(ch \* OUTPUT_ASPECT\);/, 'width derived from it, so the shape is exact');
+  // Fallback for capture windows that are not the Meet view (no chrome passed).
+  assert.match(src, /cw = even\(sw \* first\.w\);/, 'still degrades to the sampled width');
+});
+
+test('the frame-sized canvas gives exact, round output at every view size', () => {
+  const L = require('../electron-app/bot-view-layout.js');
+  const even = (n) => Math.max(2, Math.round(n / 2) * 2);
+  for (const size of Object.values(L.MEET_VIEW_SIZES)) {
+    const ch = even(size.height - L.MEET_CHROME_CSS.height);
+    const cw = even(ch * (16 / 9));
+    assert.equal(cw / ch, 16 / 9, `${size.width}x${size.height} must record exactly 16:9, got ${cw}x${ch}`);
+    assert.equal(cw, size.width - L.MEET_CHROME_CSS.width,
+      `${size.width}x${size.height} must record at the region's own size, no up- or downscale`);
+  }
 });
 
 test('the capture box matches the largest view, so a 1080p region is not silently downscaled', async () => {

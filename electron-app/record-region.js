@@ -157,14 +157,23 @@ function fallbackRect() {
 
 // Grow a region out to `aspect`, in CSS px, staying inside `limits`.
 //
-// WHY GROW, rather than crop to fit or letterbox in the encoder: Meet lays its
-// tiles out as a grid of 16:9 tiles, so the union of c columns by r rows has
-// aspect (c/r) * 16/9. That is 16:9 only when the grid is square (1x1, 2x2,
-// 3x3) and otherwise off, usually wide: 3x2 is 2.67:1, 2x1 is 3.56:1. On top of
-// that the bot's own floating self tile hangs off the side of the grid, which
-// is the whole of the excess in the common one-remote case (measured live
-// 2026-09-10: a 960x540 main tile plus 153px of self-tile overhang gives
-// 1113x540, i.e. 2.06:1 rather than 1.78:1).
+// WHY GROW, rather than crop to fit or letterbox in the encoder: the union of
+// Meet's tiles is almost never 16:9, and there is no formula that says what it
+// will be. Meet sizes tile BOXES to fill whatever grid area it has and
+// letterboxes each video inside its box, so the box aspect moves with the
+// participant count, the window, whether a panel is open and whether anyone is
+// sharing. Measured over 310 samples on this machine: 1.36:1 to 3.68:1, median
+// 2.22:1, 89% of them wider than 16:9.
+//
+// (Do not be tempted by "tiles are 16:9, so a c-by-r grid unions to (c/r)*16/9".
+// Measured 2026-09-10, tile boxes in a 2-up grid were about 1.35:1. The 16:9
+// element inside a tile is the video wrapper, not the box.)
+//
+// The bot's own floating self tile adds to it, hanging off the side of the grid:
+// live on 2026-09-10 a 960x540 main tile plus 153px of self-tile overhang gave
+// 1113x540, i.e. 2.06:1 rather than 1.78:1. Moving that tile into the grid does
+// NOT help, and measured worse (2.58:1), because it promotes the overhang to a
+// whole extra column: see #737. Hence measuring rather than assuming.
 //
 // Three ways to square that up, and only one is any good:
 //   crop in       — throws away tiles. Never.
@@ -175,7 +184,8 @@ function fallbackRect() {
 //                   padding around the tiles, and nothing is lost.
 //
 // There is room for it. Measured at three view sizes, Meet's top inset is a
-// fixed 60 CSS px and the space below the tiles a fixed 300, while the height
+// fixed 60 CSS px and the space below the tiles a fixed 300 (so the region
+// height is view height minus 360, in pixels, at any size), while the height
 // this needs to add is 86 to 116 px. A screen share shortens the tiles and
 // grows that space at the same time (300 -> 395 px against a need of 192), so
 // the headroom scales with the demand. Across all 310 crop samples recorded on

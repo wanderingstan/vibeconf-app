@@ -151,6 +151,76 @@ cries wolf gets ignored, and an ignored preflight is worse than none — the fir
 draft of this one flagged the EC2 box as DOWN for being `stopped`, which would have
 fired every single night.
 
+## Fleet lock
+
+`scripts/fleet-lock.mjs`. The test profiles and their ports are ONE machine-wide
+resource, and two things reach for them independently: the 03:00 nightly, and the
+app-health smoke the self-hosted runner starts **on every push to main**. Both run
+`spawn-test-fleet.sh` — same `test-meet-guest-1`, same port 7901 — so an overlap
+does not merely contend for a port, it rewrites that profile's prefs and resets
+its CLAUDE.md mid-run. GitHub's `concurrency:` cannot see a launchd job.
+
+| Holder | Waits | On timeout |
+|---|---|---|
+| nightly (`scheduled-meet-test.sh`) | 10 min (`VIBECONF_FLEET_LOCK_WAIT`) | **aborts, exit 75** — the EXIT trap still fires, so the digest reports every lane as never-run |
+| CI (`smoke.yml`) | 15 min | skips green — a red X because an unrelated nightly was running teaches people to ignore red |
+
+Two staleness rules, because a lock nobody releases would cancel every future
+night — worse than the collision it prevents. A holder whose **pid is gone** is
+stale immediately (the watchdog SIGKILLs wedged runs; the runner cancels steps),
+and **any** holder older than `VIBECONF_FLEET_LOCK_MAX_AGE_MS` (2h) is stale
+regardless of pid, which covers pid reuse and a genuinely hung holder.
+
+The lock lives at a fixed `/tmp/vibeconf-fleet.lock`, never `$TMPDIR` — macOS
+gives each process a private per-user temp dir, so a launchd job and the runner
+would take two different "shared" locks and never meet.
+
+```bash
+node scripts/fleet-lock.mjs status                       # who holds it
+node scripts/fleet-lock.mjs acquire <owner> --pid $$ --wait 600
+node scripts/fleet-lock.mjs release <owner> --pid $$     # same shell as acquire
+```
+
+Acquire and release must happen in the **same shell**: the lock is owned by a
+PID, and that PID is what stale detection checks.
+
+## Pre-test check (19:00, separate agent)
+
+`scripts/pre-test-check.mjs`, installed as `com.vibeconferencing.pre-test.plist`.
+Catches the conditions that make the 03:00 run **wrong or skipped** rather than
+merely red — each of them silent at 03:00, and a one-minute fix at 19:00:
+
+| Check | Why it blocks the night |
+|---|---|
+| Branch is not `main` | the suite tests the **working tree**, so a stray branch tests stale code and still reports green |
+| Uncommitted / behind origin | advisory — you may mean it, but it should be a choice |
+| App instance left running | teardown pkills `test-meet-guest` / `test-slack` **only**; anything else runs all night, holds fleet ports and can ghost into the test room |
+| Fleet port occupied | spawn fails with no obvious cause |
+| A previous run still going | one wedged run silently ate four consecutive nightlies (2026-07-21) |
+| Host load | timeout-shaped failures across unrelated lanes are usually the HOST, not the diff |
+| Test bot has no identity / `ttsProvider != macos-say` | boots as "Unnamed bot", and with the provider unset bills a whole night of scripted speech to ElevenLabs |
+| LaunchAgent not loaded | the quietest failure of all: nothing runs, so there is no red night to notice |
+| Everything `ecosystem-preflight.mjs` covers | session expiry, disk, redis, telegram, the Linux box, Claude auth — reused, not reimplemented, so the two cannot disagree |
+
+**Alert-only.** A clean host sends nothing; a daily "all good" is the message
+people stop reading. Blocking findings buzz the phone, advisory ones arrive
+silently. **Read-only** — it kills nothing and changes no preference, it hands
+you the command; an unattended job should not decide to quit a bot you are using.
+Always exits 0, so nothing can mistake the check for a broken night.
+
+```bash
+node scripts/pre-test-check.mjs            # report to stdout
+node scripts/pre-test-check.mjs --json     # machine-readable
+VIBECONF_NOTIFY_CHAT=<id> node scripts/pre-test-check.mjs --always   # force a post
+```
+
+Install:
+
+```bash
+cp scripts/com.vibeconferencing.pre-test.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.vibeconferencing.pre-test.plist
+```
+
 ## Morning backlog survey (04:30, separate agent)
 
 The last rung of the nightly ladder — 03:00 meet-test suite → 04:00 TTS guardrail →

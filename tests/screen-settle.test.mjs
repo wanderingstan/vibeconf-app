@@ -1,0 +1,597 @@
+// screen-settle.test.mjs — #673. Can the bot notice a shared screen changing
+// while nobody speaks, without firing on a blinking cursor?
+//
+// The module under test is arithmetic over an array, so this is a real unit
+// test rather than a source assertion. The wiring at either end (Electron's
+// capturePage, the MCP phrasing) is pinned by source assertions at the bottom,
+// the way ui-history-capture.test.mjs does it.
+//
+// THE TEST THAT CARRIES THE ARGUMENT is 'two words of terminal text'. It builds
+// one synthetic 2560x1440 capture, changes a text-line-sized patch of it, and
+// downscales that same change two ways: to ui-signature's 16x16 (where it is
+// arithmetically absent, ~100x under the threshold) and to this module's
+// 320x180 grid with tile differencing (where it is unmissable). That pair is
+// the reason this module exists instead of reusing #615.
+//
+// Run: node --test tests/screen-settle.test.mjs
+
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const {
+  GRID_W, GRID_H, TILE_CELLS, CELL_DELTA, MIN_CELLS_PER_TILE, CHURN_WINDOW,
+  grayGridFromBitmap, changedCellMask, changedTiles,
+  createSettleDetector, createScreenSettleWatcher,
+} = require('../electron-app/screen-settle.js');
+const { signatureFromBitmap, signatureDistance, DEFAULT_THRESHOLD, SIGNATURE_SIDE } =
+  require('../electron-app/ui-signature.js');
+
+// ---------------------------------------------------------------------------
+// Helpers: a synthetic "screen" and a box-average downscale, which is what
+// Electron's nativeImage.resize does and is the step that turns per-pixel noise
+// into something a per-cell threshold can be honest about.
+// ---------------------------------------------------------------------------
+
+// The shipping default meetViewSize. The feature sizes below are in the pixels
+// of THIS capture, so the cell arithmetic in screen-settle.js's header is the
+// arithmetic actually under test.
+const SRC_W = 2560, SRC_H = 1440;
+
+function blankScreen(level = 30) {
+  return new Uint8Array(SRC_W * SRC_H).fill(level); // a dark terminal
+}
+
+// Paint a rectangle in SOURCE pixels.
+function paint(src, x, y, w, h, level) {
+  for (let yy = y; yy < y + h && yy < SRC_H; yy++) {
+    for (let xx = x; xx < x + w && xx < SRC_W; xx++) src[yy * SRC_W + xx] = level;
+  }
+}
+
+// Box-average down to width x height and hand back a BGRA bitmap, i.e. exactly
+// what grayGridFromBitmap is fed in the app.
+function downscaleToBitmap(src, width, height) {
+  const bmp = Buffer.alloc(width * height * 4);
+  const bw = SRC_W / width, bh = SRC_H / height;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let sum = 0, n = 0;
+      for (let sy = Math.floor(y * bh); sy < Math.floor((y + 1) * bh); sy++) {
+        for (let sx = Math.floor(x * bw); sx < Math.floor((x + 1) * bw); sx++) { sum += src[sy * SRC_W + sx]; n++; }
+      }
+      const v = Math.round(sum / n);
+      const i = (y * width + x) * 4;
+      bmp[i] = v; bmp[i + 1] = v; bmp[i + 2] = v; bmp[i + 3] = 255; // BGRA, grey
+    }
+  }
+  return bmp;
+}
+
+const gridOf = (src) => grayGridFromBitmap(downscaleToBitmap(src, GRID_W, GRID_H), GRID_W, GRID_H);
+
+// A line of terminal text, in the pixels of the capture above. Two words of 12px
+// text measure about 90 x 11. Deliberately at the SMALL end of what this is
+// asked to catch.
+const TWO_WORDS = { x: 600, y: 480, w: 90, h: 11 };
+
+// ---------------------------------------------------------------------------
+
+test('the grid is one byte per cell, and a wrong-sized bitmap is refused', () => {
+  const g = gridOf(blankScreen(0x40));
+  assert.equal(g.length, GRID_W * GRID_H);
+  assert.equal(g[0], 0x40);
+  assert.equal(grayGridFromBitmap(Buffer.alloc(16), GRID_W, GRID_H), null,
+    'a short bitmap is not comparable — null, not a silently wrong answer');
+});
+
+test('two words of terminal text ARE detected — and would NOT be at 16x16', () => {
+  // THE POINT OF THE MODULE. One change, two resolutions.
+  const before = blankScreen();
+  const after = blankScreen();
+  paint(after, TWO_WORDS.x, TWO_WORDS.y, TWO_WORDS.w, TWO_WORDS.h, 220); // words appear
+
+  // 16x16, the visual-changelog signature (#615), compared its own way.
+  const d16 = signatureDistance(
+    signatureFromBitmap(downscaleToBitmap(before, SIGNATURE_SIDE, SIGNATURE_SIDE)),
+    signatureFromBitmap(downscaleToBitmap(after, SIGNATURE_SIDE, SIGNATURE_SIDE)));
+  assert.ok(d16 < DEFAULT_THRESHOLD / 10,
+    `at 16x16 the change measures ${d16.toFixed(3)} against a threshold of ${DEFAULT_THRESHOLD} — `
+    + 'not faint, absent. This is why ui-signature.js cannot be reused as-is.');
+
+  // 320x180 with tile differencing.
+  const tiles = changedTiles(changedCellMask(gridOf(before), gridOf(after)));
+  assert.ok(tiles.length >= 1, 'the same change must be detected at the settle grid');
+  assert.ok(tiles[0].cells >= MIN_CELLS_PER_TILE,
+    `busiest tile had ${tiles[0].cells} changed cells, needs ${MIN_CELLS_PER_TILE}`);
+});
+
+test('a blinking cursor, a ticking clock and compression noise do NOT fire', () => {
+  const base = blankScreen();
+  const noisy = blankScreen();
+  // Video-compression noise, at the scale that actually survives the downscale.
+  // Per-PIXEL dither would be averaged away by the resize and would prove
+  // nothing; a codec's artefacts move whole 8x8 blocks, which is a whole CELL,
+  // so that is what is simulated here. Amplitude 16, below CELL_DELTA (24) —
+  // this is precisely the band CELL_DELTA exists to discard.
+  for (let by = 0; by < SRC_H; by += 8) {
+    for (let bx = 0; bx < SRC_W; bx += 8) {
+      paint(noisy, bx, by, 8, 8, 30 + (((bx * 7 + by * 13) % 33) - 16));
+    }
+  }
+  // Cursor: a terminal block, ~8x16 px. Clock: a digit ticking over in a corner,
+  // far enough away that the two cannot pool into one tile.
+  paint(noisy, 1400, 800, 8, 16, 200);
+  paint(noisy, 2200, 40, 10, 14, 200);
+
+  const mask = changedCellMask(gridOf(base), gridOf(noisy));
+  assert.ok(mask.some((v) => v), 'it is not blind — something did change');
+  assert.deepEqual(changedTiles(mask), [],
+    'but nothing reaches the per-tile floor, so a cursor blinking all call wakes nobody');
+});
+
+test('the noise floor is the guard, not luck: drop MIN_CELLS_PER_TILE and the cursor fires', () => {
+  // Verifying the fix by removing it. With the floor at 1 the same frame trips.
+  const base = blankScreen();
+  const cursor = blankScreen();
+  paint(cursor, 1400, 800, 8, 16, 200);
+  const mask = changedCellMask(gridOf(base), gridOf(cursor));
+  assert.deepEqual(changedTiles(mask), [], 'with the shipping floor: silent');
+  assert.ok(changedTiles(mask, { minCells: 1 }).length > 0, 'with the floor removed: fires');
+});
+
+test('a settle fires once, after the screen stops moving — not on every frame of a scroll', () => {
+  const det = createSettleDetector();
+  const idle = gridOf(blankScreen());
+  det.push(idle);
+  for (let i = 0; i < 3; i++) assert.equal(det.push(idle).settled, false, 'a static screen never fires');
+
+  // A scroll: three successive frames all different.
+  const frames = [0, 1, 2].map((n) => {
+    const s = blankScreen();
+    paint(s, 400, 200 + n * 80, 1000, 120, 180);
+    return gridOf(s);
+  });
+  const during = frames.map((f) => det.push(f));
+  assert.deepEqual(during.map((r) => r.settled), [false, false, false],
+    'nothing fires mid-scroll — waking there costs a turn to look at a blur');
+  assert.ok(during.every((r) => r.moving), 'but each frame is seen to be moving');
+
+  const settled = det.push(frames[2]); // it stops
+  assert.equal(settled.settled, true, 'the frame after it stops is the event');
+  assert.ok(settled.cells > 0 && settled.tiles.length > 0, 'and it says what changed');
+  assert.equal(det.push(frames[2]).settled, false, 'exactly once, not once per quiet frame');
+});
+
+test('a live webcam tile does not drown out a screen change beside it', () => {
+  // The hard noise case: the Meet view has PEOPLE in it, and a face changes on
+  // every single frame. Without the churn map the detector never sees a quiet
+  // frame and therefore never settles — the bot would be blind for the whole
+  // call in exactly the situation it is meant for.
+  const det = createSettleDetector();
+  let tick = 0;
+  const withWebcam = (extra) => {
+    const s = blankScreen();
+    // A camera tile bottom-right, different every frame.
+    for (let y = 1120; y < 1400; y++) {
+      for (let x = 2000; x < 2480; x++) s[y * SRC_W + x] = (x * 7 + y * 13 + tick * 91) % 255;
+    }
+    if (extra) extra(s);
+    tick++;
+    return gridOf(s);
+  };
+
+  // Long enough for the churn window to learn which cells are video.
+  for (let i = 0; i < CHURN_WINDOW + 3; i++) det.push(withWebcam(null));
+  const quiet = det.push(withWebcam(null));
+  assert.equal(quiet.moving, false,
+    'once the camera cells are known to be live video, the frame reads as quiet');
+
+  // Now the student edits two words on the shared terminal.
+  det.push(withWebcam((s) => paint(s, TWO_WORDS.x, TWO_WORDS.y, TWO_WORDS.w, TWO_WORDS.h, 220)));
+  const r = det.push(withWebcam((s) => paint(s, TWO_WORDS.x, TWO_WORDS.y, TWO_WORDS.w, TWO_WORDS.h, 220)));
+  assert.equal(r.settled, true, 'the screen change still reaches the bot with a camera live');
+  assert.ok(r.tiles.every((t) => !(t.tx * TILE_CELLS >= 250 && t.ty * TILE_CELLS >= 140)),
+    'and the reported region is the terminal, not the face');
+});
+
+test('a resize is adopted, not reported as a change', () => {
+  const det = createSettleDetector();
+  det.push(gridOf(blankScreen()));
+  const shorter = new Uint8Array(GRID_W * (GRID_H - 1)).fill(30);
+  const r = det.push(shorter);
+  assert.equal(r.settled, false);
+  assert.equal(r.reason, 'resized', 'a different capture size is not comparable, so it is a new baseline');
+});
+
+// ---------------------------------------------------------------------------
+// The watcher: its whole job is to never reach the call.
+// ---------------------------------------------------------------------------
+
+test('a capture that throws does not propagate into the call path', async () => {
+  const seen = [];
+  const w = createScreenSettleWatcher({
+    capture: async () => { throw new Error('Current display surface not available'); },
+    onSettled: () => seen.push('settled'),
+    log: () => {},
+    setIntervalFn: () => null, clearIntervalFn: () => {},
+  });
+  await w.step(); // must not reject
+  assert.equal(w.stats.failures, 1);
+  assert.deepEqual(seen, []);
+});
+
+test('a capture that keeps failing disarms itself instead of logging forever', async () => {
+  let cleared = false;
+  const w = createScreenSettleWatcher({
+    capture: async () => null,
+    onSettled: () => {},
+    maxFailures: 3,
+    log: () => {},
+    setIntervalFn: () => 'timer', clearIntervalFn: () => { cleared = true; },
+  });
+  w.start();
+  for (let i = 0; i < 3; i++) await w.step();
+  assert.equal(cleared, true, 'it stops itself');
+  assert.match(w.stats.stoppedReason, /kept failing/);
+});
+
+test('an onSettled handler that throws is swallowed too', async () => {
+  const grids = [gridOf(blankScreen()), gridOf(blankScreen()), null, null];
+  const changed = blankScreen();
+  paint(changed, TWO_WORDS.x, TWO_WORDS.y, TWO_WORDS.w, TWO_WORDS.h, 220);
+  grids[2] = gridOf(changed); grids[3] = gridOf(changed);
+  let i = 0;
+  const w = createScreenSettleWatcher({
+    capture: async () => grids[i++],
+    onSettled: () => { throw new Error('local-server exploded'); },
+    log: () => {},
+    setIntervalFn: () => null, clearIntervalFn: () => {},
+  });
+  for (let n = 0; n < grids.length; n++) await w.step(); // must not reject
+  assert.equal(w.stats.settles, 1, 'the event still happened');
+  assert.equal(w.stats.failures, 0, 'a handler blowing up is not a capture failure');
+});
+
+test('captures never overlap — a slow one is skipped, not queued', async () => {
+  let inFlight = 0, maxInFlight = 0;
+  const w = createScreenSettleWatcher({
+    capture: async () => {
+      inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 20));
+      inFlight--;
+      return gridOf(blankScreen());
+    },
+    onSettled: () => {},
+    log: () => {},
+    setIntervalFn: () => null, clearIntervalFn: () => {},
+  });
+  await Promise.all([w.step(), w.step(), w.step()]);
+  assert.equal(maxInFlight, 1, 'a capture slower than the interval must not pile up');
+});
+
+// ---------------------------------------------------------------------------
+// The two ends, pinned by source. Neither can be exercised without a live call.
+// ---------------------------------------------------------------------------
+
+const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+const server = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
+const mcp = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
+const schema = readFileSync(join(root, 'electron-app/preferences-schema.js'), 'utf8');
+
+test('the screen wake is a new REASON on the existing waiter machinery', () => {
+  assert.match(server, /_resolveWaiter\(waiter, 'screen'\)/,
+    'it must resolve waiters the way chat does, not invent a second path');
+  assert.match(server, /reason === 'screen'[\s\S]{0,120}screenWake = true/,
+    'and tag the response so the agent is told WHY it woke');
+  assert.match(server, /noteScreenSettled[\s\S]{0,1800}anyoneSpeaking \? 'someone-speaking'/,
+    'the floor beats the screen — same gate chat uses');
+});
+
+test('the MCP side consumes a finished value and never reaches across the packaging boundary', () => {
+  assert.match(mcp, /data\.screenWake/, 'it reads the flag the app already computed');
+  assert.doesNotMatch(mcp, /(?:from\s*|require\s*\(\s*)['"][^'"]*screen-settle/,
+    'mcp-server/ is packaged without electron-app/ beside it — importing the detector '
+    + 'would resolve in the repo and kill the MCP server in the built app (v0.8.50)');
+});
+
+
+test('the watcher starts and stops on the presenting EDGE, not just on pref or call changes', () => {
+  // A share beginning mid-call must start the watcher then, rather than waiting
+  // for something unrelated to change.
+  assert.match(main, /someonePresenting[\s\S]{0,600}reconcileScreenSettleWatcher\(\)/,
+    'the presenting IPC edge must reconcile the watcher');
+});
+
+
+// --- the throttle ----------------------------------------------------------
+
+test('a screen wake is throttled, and the throttle is a knob', () => {
+  // Debounce vs throttle, which are different mechanisms for different problems:
+  // "settle" IS the debounce (continuous typing never goes quiet, so it never
+  // fires). The throttle covers discrete edits with pauses, where every pause is
+  // a real settle. Stan, 2026-09-09: "we need some max rate at which these
+  // updates flow, one every 10 seconds?"
+  assert.match(schema, /screenWakeMinGapMs:[\s\S]{0,200}default: 10000/);
+  assert.match(server, /screenWakeMinGapMs/, 'the wake path must consult it');
+  assert.match(server, /throttled \(/, 'and say so, so a missing wake is explainable from the log');
+});
+
+
+test('the existing back-pressure is kept, not replaced by the throttle', () => {
+  // Between a wake and the agent parking again, nothing can fire at all. The
+  // throttle only covers the case that slips through: the agent decides there is
+  // nothing to say, parks quickly, and the next keystroke pause wakes it again.
+  assert.match(server, /no-active-waiter/);
+  assert.match(server, /someone-speaking/, 'the floor still beats the screen');
+});
+
+// --- the picture that comes with the wake ----------------------------------
+
+
+
+test('the picture is cropped to the share, not the whole Meet view', () => {
+  assert.match(main, /cropRect: lastPresentationRect/,
+    'the wake capture reuses the rect the sample already measured');
+  assert.match(main, /onCaptureScreenshot: async \(\{ roomId, cropRect \} = \{\}\)/,
+    'and the capture handler accepts one');
+});
+
+
+// --- behaviour, not source text --------------------------------------------
+//
+// These replace four regex-over-the-source assertions that a review correctly
+// called theatre: they asserted that certain lines sat near each other, passed
+// while the code around them was wrong, and had to be widened twice when my own
+// edits moved lines apart. Widening a guard to accommodate yourself is the tell
+// that it is not guarding anything.
+//
+// The behaviour they claimed to pin — the capture happens only when the wake
+// fires, the throttle is not charged for a wake that never went out, and the
+// agent is told the truth about the picture — is checked here by running
+// noteScreenSettled against a real LocalServer instead.
+
+const { createRequire: _cr } = await import('node:module');
+const _require = _cr(import.meta.url);
+_require('../electron-app/local-server.js');
+const LocalServer = globalThis.LocalServer;
+
+function serverWithWaiter(prefs = {}) {
+  const captures = [];
+  const s = new LocalServer({
+    port: 0,
+    getPref: (k) => ({ screenWakeMinGapMs: 10000, ...prefs })[k],
+  });
+  s.setRoom('test-room');
+  s.callStatus = 'in-call';
+  s.someoneElsePresenting = true;
+  const resolved = [];
+  s.waiters = [{ resolved: false, since: null, resolve: (v) => resolved.push(v) }];
+  s._resolveWaiter = (w, reason) => { w.resolved = true; resolved.push(reason); };
+  s.captures = captures;
+  s.resolved = resolved;
+  return s;
+}
+
+test('the capture runs only when the wake will actually fire', async () => {
+  // Most settles are blocked. Encoding a PNG for each of those is work whose
+  // result is discarded, so the capture is a function called after the gates.
+  const s = serverWithWaiter();
+  let calls = 0;
+  const capture = async () => { calls++; return { path: '/tmp/x.png', cropped: true }; };
+
+  s.anyoneSpeaking = true;                       // the floor beats the screen
+  assert.equal(await s.noteScreenSettled({}, capture), false);
+  assert.equal(calls, 0, 'blocked by the floor — nothing should have been captured');
+
+  s.anyoneSpeaking = false;
+  s.waiters = [];                                // nobody waiting
+  assert.equal(await s.noteScreenSettled({}, capture), false);
+  assert.equal(calls, 0, 'no waiter — nothing to wake, nothing to capture');
+});
+
+test('a wake dropped during the capture does not charge the throttle', async () => {
+  // The capture is a page capture, a PNG encode and a disk write, and it can
+  // enter a self-heal loop. If the waiters resolve on their own meanwhile, the
+  // wake never goes out — and must not leave the throttle holding for 10s
+  // against a wake that never happened.
+  const s = serverWithWaiter();
+  const capture = async () => { s.waiters = []; return { path: '/tmp/x.png', cropped: true }; };
+
+  assert.equal(await s.noteScreenSettled({}, capture), false, 'no waiter left, so no wake');
+  assert.equal(s._lastScreenWakeAt, 0, 'the throttle must not be charged for it');
+
+  // ...and the very next settle is therefore free to wake.
+  const s2 = serverWithWaiter();
+  assert.equal(await s2.noteScreenSettled({}, async () => ({ path: '/tmp/y.png', cropped: true })), true);
+});
+
+test('speech starting during the capture wins — the floor beats the screen', async () => {
+  const s = serverWithWaiter();
+  const capture = async () => { s.anyoneSpeaking = true; return { path: '/tmp/x.png', cropped: true }; };
+  assert.equal(await s.noteScreenSettled({}, capture), false);
+  assert.deepEqual(s.resolved, [], 'no waiter resolved with a screen wake');
+});
+
+test('a share that stops during the capture cancels the wake', async () => {
+  // The rect the picture was cropped to describes a layout that no longer
+  // exists, so the picture is of whatever replaced the share.
+  const s = serverWithWaiter();
+  const capture = async () => { s.someoneElsePresenting = false; return { path: '/tmp/x.png', cropped: true }; };
+  assert.equal(await s.noteScreenSettled({}, capture), false);
+});
+
+test('the throttle holds a second wake, and the first one is remembered', async () => {
+  const s = serverWithWaiter({ screenWakeMinGapMs: 10000 });
+  assert.equal(await s.noteScreenSettled({}, async () => ({ path: '/a.png', cropped: true })), true);
+  assert.ok(s._lastScreenWakeAt > 0, 'a wake that fired IS charged');
+
+  s.waiters = [{ resolved: false, since: null }];
+  let calls = 0;
+  assert.equal(await s.noteScreenSettled({}, async () => { calls++; return null; }), false);
+  assert.equal(calls, 0, 'throttled before the capture, not after it');
+});
+
+test('whether the picture is CROPPED reaches the AGENT, and is not assumed', async () => {
+  // Telling the agent a full view of faces is "the shared screen" is a
+  // confident wrong statement about evidence it is about to reason from.
+  //
+  // Asserted on the RESPONSE the agent receives, not on an internal field: an
+  // earlier version of this test read the internal one and passed happily while
+  // the payload hardcoded cropped:true.
+  const responseFor = async (cropped) => {
+    const s = serverWithWaiter();
+    let payload = null;
+    // The REAL _resolveWaiter, so this exercises the response the agent gets.
+    // serverWithWaiter stubs it for the other tests, which only care whether a
+    // wake happened; here the payload is the whole point.
+    delete s._resolveWaiter;
+    s._buildResponse = () => ({});               // the transcript half is not what this tests
+    s.waiters = [{ resolved: false, since: null, startTime: Date.now(),
+                   resolve: (v) => { payload = v; } }];
+    await s.noteScreenSettled({}, async () => ({ path: '/a.png', cropped }));
+    return payload;
+  };
+
+  const uncropped = await responseFor(false);
+  assert.equal(uncropped.screenShot, '/a.png', 'the picture is attached either way');
+  assert.equal(uncropped.screenShotCropped, false,
+    'an uncropped capture must be reported as uncropped — the agent phrases from this');
+
+  const cropped = await responseFor(true);
+  assert.equal(cropped.screenShotCropped, true);
+});
+
+test('a capture that fails leaves the wake intact, without a picture', async () => {
+  const s = serverWithWaiter();
+  assert.equal(await s.noteScreenSettled({}, async () => { throw new Error('capture died'); }), true,
+    'the wake still fires — a wake without a picture beats no wake');
+  assert.equal(s.lastScreenShot, null);
+});
+
+// --- comparability across a moving layout ----------------------------------
+
+test('a rect that jitters by a pixel does NOT re-baseline the detector', () => {
+  // This is the bug that killed the detector outright in the first live test:
+  // the comparability check used exact rect equality, Meet's measured rect moves
+  // a pixel or two between samples, so EVERY frame read as "not comparable", the
+  // baseline was adopted every time, and nothing ever settled. No error, no log
+  // line — just a watcher that ran forever and never fired.
+  const { createSettleDetector } = require('../electron-app/screen-settle.js');
+  const W = 320, H = 180;
+  const flat = (v) => { const g = new Uint8Array(W * H); g.fill(v); return g; };
+  const still = flat(100);
+  const changed = flat(100);
+  for (let y = 0; y < 40; y++) for (let x = 0; x < 40; x++) changed[y * W + x] = 250;
+  const seq = [still, still, still, still, still, still, changed, changed, still, still, still, still];
+
+  const settlesWith = (rectAt) => {
+    const d = createSettleDetector();
+    let n = 0;
+    seq.forEach((g, i) => { if (d.push(g, rectAt(i)).settled) n++; });
+    return n;
+  };
+
+  const stable = settlesWith(() => ({ x: 0, y: 0, w: 1900, h: 1050 }));
+  assert.ok(stable > 0, 'a stable rect must settle at all');
+  assert.equal(settlesWith((i) => ({ x: 0, y: 0, w: 1900 + (i % 2), h: 1050 })), stable,
+    'a 1px width jitter must behave exactly like a stable rect');
+  assert.equal(settlesWith((i) => ({ x: (i % 2) * 3, y: 0, w: 1900, h: 1050 })), stable,
+    'and a 3px position jitter likewise');
+});
+
+test('a rect that genuinely moves DOES re-baseline', () => {
+  // The guard still has to do its job: a relayout that puts a different region
+  // in front of the camera must not read as a large diff followed by a settle.
+  const { sameRegion } = require('../electron-app/screen-settle.js');
+  const at = (x, w) => ({ x, y: 0, w, h: 1050 });
+  assert.equal(sameRegion(at(0, 1900), at(2, 1900)), true, 'a couple of pixels is the same region');
+  assert.equal(sameRegion(at(0, 1900), at(400, 1900)), false, 'a tile-width move is not');
+  assert.equal(sameRegion(at(0, 1900), at(0, 900)), false, 'nor is halving the width');
+  assert.equal(sameRegion(null, null), true, 'no crop on either side is comparable');
+  assert.equal(sameRegion(null, at(0, 1900)), false, 'gaining a crop is not');
+});
+
+test('the tolerance is ONE GRID CELL — not a percentage of the dimension', () => {
+  // The bound has to be the cell, because that is the resolution of the data
+  // being compared: under a cell a shift cannot appear at all, over a cell it
+  // moves content into neighbouring cells and the frames are not comparable.
+  //
+  // The first version took max(cell, 2% of the dimension) and the 2% term
+  // dominated — 38px on a 1900px share, 6.4 cells of movement called "the same
+  // region". Live on 2026-09-09 that produced a wake reporting 539 changed
+  // cells with no visible change on screen, because the crop had slid and every
+  // cell duly read as different. This pins the bound so the percentage cannot
+  // creep back.
+  const { sameRegion, GRID_W } = require('../electron-app/screen-settle.js');
+  const w = 1900, cell = w / GRID_W;
+  const at = (x) => ({ x, y: 0, w, h: 1050 });
+
+  assert.ok(sameRegion(at(0), at(Math.floor(cell * 0.8))), 'under one cell: same region');
+  assert.equal(sameRegion(at(0), at(Math.ceil(cell * 2))), false, 'two cells: not comparable');
+  assert.equal(sameRegion(at(0), at(Math.round(w * 0.02))), false,
+    'a 2% shift is SIX cells of movement and must not be tolerated');
+
+  // ...and the floor still protects a tiny share, where one cell is ~1px and
+  // exact comparison would re-baseline forever (the bug this file's other test
+  // covers).
+  const tiny = (x) => ({ x, y: 0, w: 320, h: 180 });
+  assert.ok(sameRegion(tiny(0), tiny(1)), 'a 1px jitter on a small share is still tolerated');
+});
+
+// --- nothing safe to sample --------------------------------------------
+
+test('no crop means no sample — and that is not a capture failure', async () => {
+  // Watching the whole Meet view does not degrade the detector, it defeats it.
+  // The view contains live camera tiles, and a moving face changes a DIFFERENT
+  // set of cells every frame, so the churn map — which only excludes cells that
+  // change in the SAME place, like a cursor or a clock — never learns to ignore
+  // it. Measured live on 2026-09-09: 75 samples, every one "moving", zero
+  // settles, because the picture never went quiet.
+  //
+  // So the capture refuses, and the watcher must treat that as a deliberate
+  // skip. Counting it as a failure would spam the log every 2s and trip the
+  // consecutive-failure backoff over a condition working exactly as designed.
+  const { createScreenSettleWatcher } = require('../electron-app/screen-settle.js');
+  const logs = [];
+  let settles = 0;
+  const w = createScreenSettleWatcher({
+    intervalMs: 5,
+    capture: async () => ({ skip: 'the shared tile could not be located' }),
+    onSettled: () => { settles++; },
+    log: (m) => logs.push(m),
+  });
+  w.start();
+  await new Promise((r) => setTimeout(r, 60));
+  w.stop();
+
+  assert.equal(settles, 0);
+  assert.equal(w.stats.failures, 0, 'a deliberate skip must NOT count as a capture failure');
+  assert.equal(w.stats.samples, 0, 'and must not be fed to the detector');
+  assert.ok(w.stats.skipped > 0, 'it is counted as a skip, so the stop line can report it');
+  const skipLines = logs.filter((l) => /skipping samples/.test(l));
+  assert.equal(skipLines.length, 1,
+    `logged once, not once per sample — got ${skipLines.length} of ${w.stats.skipped} skips`);
+  assert.match(skipLines[0], /could not be located/, 'and it says WHY');
+});
+
+test('a real capture failure is still a failure', async () => {
+  // The skip path must not swallow genuine breakage.
+  const { createScreenSettleWatcher } = require('../electron-app/screen-settle.js');
+  const w = createScreenSettleWatcher({
+    intervalMs: 5,
+    capture: async () => { throw new Error('capturePage exploded'); },
+    onSettled: () => {},
+    log: () => {},
+  });
+  w.start();
+  await new Promise((r) => setTimeout(r, 60));
+  w.stop();
+  assert.ok(w.stats.failures > 0, 'a throwing capture is a failure, not a skip');
+  assert.equal(w.stats.skipped, 0);
+});

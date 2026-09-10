@@ -10,7 +10,7 @@
 // /join-call and a MISSION prompt. Each agent joins, does its mission, leaves.
 //
 // Usage:
-//   node scripts/spawn-agents.mjs --bots Alice:7901,Jimmy:7902 --room paz-sqoa-npe [--mission smoke]
+//   node scripts/spawn-agents.mjs --bots Alice:7901,Bob:7902 --room paz-sqoa-npe [--mission smoke]
 //   node scripts/spawn-agents.mjs --kill
 //
 // ⚠️ SCAFFOLDING — not yet validated live (no live tests available while authored).

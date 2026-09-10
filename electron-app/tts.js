@@ -16,6 +16,19 @@
 // original spelling). Capture groups preserve the caller's casing.
 const TTS_PRONUNCIATION_FIXES = [
   [/(vibe)(conferencing)/gi, '$1-$2'],
+  // #383 follow-up: a dot BETWEEN DIGITS is spoken, not punctuation. Stan, on a
+  // call 2026-09-09, hearing the bot say a version number: "your pronunciation
+  // of version numbers is really weird, it doesn't even really sound like
+  // English." Engines treat "0.8.51" as one token and guess; saying "point"
+  // removes the guess.
+  //
+  // Between digits ONLY, which is what keeps this safe. Sentence-ending periods,
+  // decimals in domain names (vibeconferencing.com) and file extensions are all
+  // untouched because at least one side is not a digit.
+  //
+  // A function rather than '$1 point $2' because a version has TWO dots and a
+  // pattern with capture groups only replaces one of them.
+  [/\d+(?:\.\d+)+/g, (m) => m.replace(/\./g, ' point ')],
 ];
 
 function applyTtsPronunciationFixes(text) {

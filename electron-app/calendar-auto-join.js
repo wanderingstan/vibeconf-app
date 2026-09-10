@@ -238,7 +238,22 @@ function selectUpcomingMatches(events, {
     .filter((e) => e && e.id
       && isEventUpcoming(e, now, lookaheadMs, pastGraceMs)
       && matchesCalendarEvent(e, { calendarIdentityEmail, botName }))
-    .sort((a, b) => msUntilStart(a, now) - msUntilStart(b, now));
+    .sort((a, b) => {
+      // Time dominates. Acceptance only decides EQUALS — an accepted 5pm must
+      // never jump ahead of an unaccepted noon, or the banner starts lying
+      // about what happens next.
+      const byTime = msUntilStart(a, now) - msUntilStart(b, now);
+      if (byTime !== 0) return byTime;
+      // Two meetings at the same minute is not hypothetical (2026-08-24: a
+      // standup and a test call both at 12:00). Before this the winner was
+      // whatever the API happened to return first, which showed the meeting
+      // the bot would NOT join — struck through, "(not yet accepted)" — while
+      // hiding the accepted one behind it. The one that is actually going to
+      // happen is the one worth the single line.
+      const ac = ownerHasConfirmed(a) ? 0 : 1;
+      const bc = ownerHasConfirmed(b) ? 0 : 1;
+      return ac - bc;
+    });
 }
 
 // hangoutLink from the API is expected to already be a full

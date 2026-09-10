@@ -48,12 +48,45 @@
 
 const STATES = ['hidden', 'thumbnail', 'popped'];
 
+// Meet's chrome around the tile grid, in CSS px: everything the view spends on
+// something other than tiles. MEASURED, at three view sizes, with a recording
+// running so the app reported its own crop (2026-09-10, #735):
+//
+//   view        region      left  top  right  bottom
+//   1600x900    1200x540     12    60   388    300
+//   1920x1080   1520x720     12    60   388    300
+//   2560x1440   2160x1080    12    60   388    300
+//
+// Identical at every size: these are FIXED PIXELS, not proportions. Right is
+// the People pane, which the bot keeps open permanently because it is the only
+// place Meet reports who is present and who is sharing. Bottom is the caption
+// strip plus the control bar.
+//
+// Hence: region = (width - 400) x (height - 360). Predicted 1520x720 for the
+// 1920x1080 view from the other two, then measured it: 1520x720.
+const MEET_CHROME_CSS = { width: 400, height: 360 };
+
+// What a recording should come out as. The whole point of the sizes below.
+const RECORDING_ASPECT = 16 / 9;
+
+// The view size whose TILE REGION is `height - MEET_CHROME_CSS.height` tall and
+// 16:9. This is the correction: sizing the WINDOW 16:9 (which is what this file
+// used to do) leaves the region at 2.0:1 to 2.2:1, because fixed-pixel chrome is
+// a bigger share of a small window than a large one. There is no single window
+// ratio that works — 1.511:1 at height 900, 1.611:1 at 1440 — which is why this
+// is computed per size rather than declared as a constant.
+function viewSizeForHeight(height) {
+  return {
+    width: Math.round(MEET_CHROME_CSS.width + (height - MEET_CHROME_CSS.height) * RECORDING_ASPECT),
+    height,
+  };
+}
+
 // Size of the never-shown host window in the 'hidden' state, in CSS px. Chosen
 // so Meet's pinned virtual width (MEET_TARGET_CSS_WIDTH) fits at zoom 1 with
-// room to spare, and 16:9 so Meet lays out as it would on a normal display.
-// The capture comes back at this x devicePixelRatio — 3200x1800 on a 2x screen,
-// against 760x428 docked. Roughly 3x linear, 10x area.
-const HIDDEN_SIZE = { width: 1600, height: 900 };
+// room to spare, and so the TILE REGION is 16:9 (see viewSizeForHeight).
+// The capture comes back at this x devicePixelRatio.
+const HIDDEN_SIZE = viewSizeForHeight(900); // 1360x900 -> region 960x540
 
 // The sizes the meetViewSize preference can pick from (preferences-schema.js),
 // keyed by the pref's string value. All 16:9 for the same reason HIDDEN_SIZE
@@ -69,11 +102,12 @@ const HIDDEN_SIZE = { width: 1600, height: 900 };
 // toolbar buttons into its overflow menu and hiding parts of the UI the
 // provider's selectors rely on (seen in practice), and the cramped-grid
 // problem this pref exists for only ever points the other way.
-const MEET_VIEW_SIZES = {
-  '1600x900': HIDDEN_SIZE,
-  '1920x1080': { width: 1920, height: 1080 },
-  '2560x1440': { width: 2560, height: 1440 },
-};
+const MEET_VIEW_SIZES = Object.fromEntries(
+  [900, 1080, 1440].map((h) => {
+    const size = viewSizeForHeight(h);
+    return [`${size.width}x${size.height}`, size];
+  }),
+); // 1360x900, 1680x1080, 2320x1440 -> regions 960x540, 1280x720, 1920x1080
 
 // #673: the largest size, NOT the historical 1600x900. Measured against a real
 // remote share (a second machine sharing a 1920x1080 screen into the call):
@@ -100,7 +134,7 @@ const MEET_VIEW_SIZES = {
 // The recording is NOT affected: renderer/call-recording-window.js's
 // CAPTURE_CONSTRAINTS bounds the capture to 1080p, so this buys screenshot
 // pixels without growing recordings.
-const DEFAULT_MEET_VIEW_SIZE = '2560x1440';
+const DEFAULT_MEET_VIEW_SIZE = '2320x1440'; // region exactly 1920x1080
 
 // The hidden host window's size for a meetViewSize pref value. Anything
 // unrecognised (unset, a typo, a size removed from the table) is the DEFAULT,
@@ -267,6 +301,9 @@ function windowWidthFor(state, opts = {}) {
 }
 
 module.exports = {
+  MEET_CHROME_CSS,
+  RECORDING_ASPECT,
+  viewSizeForHeight,
   STATES,
   HIDDEN_SIZE,
   MEET_VIEW_SIZES,

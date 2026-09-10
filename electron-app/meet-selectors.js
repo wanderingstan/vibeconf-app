@@ -158,6 +158,41 @@ const MEET = {
   },
 
   // -------------------------------------------------------------------------
+  // The bot's OWN tile in the video grid, and the menu on it. #737.
+  //
+  // Meet renders the local participant as a floating self view that hangs off
+  // the side of the grid rather than sitting in it, which makes the recorded
+  // tile region an irregular shape that no window size can correct. "Show in a
+  // tile" promotes it to an ordinary grid tile, which is what makes the
+  // geometry in bot-view-layout.js hold (#735).
+  //
+  // All recon done live in the bot's own page on 2026-09-10.
+  selfView: {
+    // The menu handle, ON the tile. Meet interpolates the bot's display name
+    // ("More options for jimmy bot"), so match the PREFIX. Text/ARIA rather
+    // than the minified VYBDae-* classes, per this file's house style. The same
+    // tile also carries "Reframe" and "Backgrounds and effects".
+    moreOptions: 'button[aria-label^="More options for"]',
+    // ⚠️ A TOGGLE, not an opener. Clicking it while the menu is already up
+    // CLOSES the menu — a probe that clicked unconditionally reported "menu
+    // item not found" for exactly this reason. Always branch on aria-expanded.
+    expandedAttr: 'aria-expanded',
+    // The item to click, matched on its visible text. Its siblings are
+    // "Minimize", "Pin to screen" and "Show my full video to others".
+    showInTileText: 'show in a tile',
+    // Menu items put their label in this span; textContent is the fallback.
+    menuItem: '[role^="menuitem"]',
+    menuItemLabel: '[jsname="K4r5Ff"]',
+    // ⚠️ THREE [role="menu"] nodes are in the DOM at ALL TIMES before anything
+    // is clicked — the caption size picker (Default/Tiny/.../Jumbo), the
+    // caption colour picker (Default/White/Black/...) and a global menu (Ask
+    // Gemini, Change meeting language). A page-wide query for menu items
+    // returns those, which reads as "the tile menu opened" when nothing was
+    // clicked at all. Scope to the menu that appeared.
+    menu: '[role="menu"]',
+  },
+
+  // -------------------------------------------------------------------------
   // Present / screen share. Toolbar button cycles through label states; both
   // aria-label and data-tooltip carry the text depending on Meet's build.
   // -------------------------------------------------------------------------

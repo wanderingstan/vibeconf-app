@@ -25,7 +25,7 @@ const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 // than throwing.
 let adoptSessionAsBot = null;
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
-const { MEASURE_SCRIPT: BOARD_FIT_SCRIPT } = require('./board-fit.js');
+const { readFitScriptFor: boardFitReaderFor, FIT_VERSION_SCRIPT: BOARD_FIT_VERSION_SCRIPT } = require('./board-fit.js');
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
 const recordRegion = require('./record-region.js');
@@ -397,7 +397,14 @@ function startRecordRegionLoop() {
         }
       } catch { /* outline is a courtesy for the human watching; never fatal */ }
       const pct = (n) => (n * 100).toFixed(1) + '%';
-      console.log(`[call-record] recorded region ${first ? 'set' : 'moved'} (${rect.strategy}): x=${pct(rect.x)} y=${pct(rect.y)} w=${pct(rect.w)} h=${pct(rect.h)}${rect.bannerOverlapPx ? ` — status banner overlaps the top by ${rect.bannerOverlapPx}px` : ''}`);
+      // The aspect is the headline number: the view sizes exist to make it
+      // 16:9 (#735), so a non-zero offBy16x9Px in the log is the early warning
+      // that Meet's chrome moved under us.
+      const offBy = rect.offBy16x9Px;
+      const aspectNote = rect.aspect
+        ? ` — ${rect.aspect}:1${offBy ? ` (${offBy > 0 ? '+' : ''}${offBy}px off 16:9)` : ' ✓ 16:9'}`
+        : '';
+      console.log(`[call-record] recorded region ${first ? 'set' : 'moved'} (${rect.strategy}): x=${pct(rect.x)} y=${pct(rect.y)} w=${pct(rect.w)} h=${pct(rect.h)}${aspectNote}${rect.bannerOverlapPx ? ` — status banner overlaps the top by ${rect.bannerOverlapPx}px` : ''}`);
       try {
         fs.appendFileSync(path.join(activeRecording.dir, 'crop-region.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...rect }) + '\n');
       } catch { /* the tracks dir is best-effort bookkeeping here */ }
@@ -538,7 +545,10 @@ function startCallRecording(room, botName, { force = false } = {}) {
       // front (createCallRecordingWindow is synchronous; the first real
       // measurement lands over IPC within the renderer's short grace period).
       const crop = cropCallRecordingEnabled() ? recordRegion.fallbackRect() : null;
-      activeRecordingWindow = createCallRecordingWindow(meetView, { crop });
+      // The chrome sizes the output frame deterministically: see the renderer's
+      // OUTPUT SHAPE note. Without it the canvas came from whatever crop had
+      // been measured 1.5s in, which is usually still the LOBBY.
+      activeRecordingWindow = createCallRecordingWindow(meetView, { crop, chrome: botViewLayout.MEET_CHROME_CSS });
       startRecordingStatsPush(); // #328 — feed the window its running size
       if (crop) startRecordRegionLoop();
       console.log(`[call-record] recording control window created — capturing video${crop ? ' (cropped to the measured Meet video region)' : ' (raw frame)'}`);
@@ -2612,15 +2622,28 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] eval_share →', result.ok ? 'ok' : `error: ${result.error}`);
     return result;
   },
-  // Measure how much of the board fits on the shared surface (#644). Returns
-  // null rather than an error when there is nothing to measure: this rides on
-  // every whiteboard write, and a board write must not fail because the bot
-  // happens not to be presenting yet.
-  onMeasureBoardFit: async () => {
+  // Read how much of the board fits from the measurement the RENDERER publishes
+  // about itself (#644, vibeconferencing#540). Returns null rather than an error
+  // when there is nothing to read: this rides on every whiteboard write, and a
+  // board write must not fail because the bot happens not to be presenting yet,
+  // or because the website build in front of us predates the publisher.
+  onMeasureBoardFit: async ({ previousVersion } = {}) => {
     const wc = shareWebContents();
     if (!wc) return null;
     try {
-      const result = await evalInShare(wc, BOARD_FIT_SCRIPT);
+      const result = await evalInShare(wc, boardFitReaderFor(previousVersion ?? null));
+      return result?.ok ? (result.result ?? null) : null;
+    } catch {
+      return null;
+    }
+  },
+  // The version stamp of the measurement currently on the board, read BEFORE a
+  // write so the read afterwards can tell the new board from the old one (#644).
+  onBoardFitVersion: async () => {
+    const wc = shareWebContents();
+    if (!wc) return null;
+    try {
+      const result = await evalInShare(wc, BOARD_FIT_VERSION_SCRIPT);
       return result?.ok ? (result.result ?? null) : null;
     } catch {
       return null;
@@ -2912,6 +2935,10 @@ const localServer = new globalThis.LocalServer({
     // possible — 'navigating' fires well before the agent is ready to speak,
     // so synthesis happens in the background while the bot is still joining.
     if (isInCall(status)) prewarmAckCache();
+    // #673: the shared-screen watch only runs inside a call. Reconciled here so
+    // every route in and out of a call — panel, calendar, CLI, agent — is
+    // covered by one place rather than each remembering.
+    reconcileScreenSettleWatcher();
     if (isFinished(status)) { _noVoiceAnnouncedFor = null; ackCachePrewarmedForCall = false; }
     // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
     // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the
@@ -3160,7 +3187,16 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
-  onCaptureScreenshot: async ({ roomId }) => {
+  // cropRect (CSS pixels, from presentation-rect.js) narrows the capture to the
+  // presented tile. Used by the screen-settle wake (#673), which wants the SHARE
+  // rather than a view of the room in which the share is one tile.
+  // Returns { path, cropped } — `cropped` says whether the picture is actually
+  // the share or the whole Meet view. The caller PHRASES from it: telling the
+  // agent a full view of faces is "the shared screen" is a confident wrong
+  // statement about evidence it is about to reason from, which is the failure
+  // this codebase keeps paying for.
+  onCaptureScreenshot: async ({ roomId, cropRect } = {}) => {
+    let cropped = false;
     if (!meetView || meetView.webContents.isDestroyed()) {
       return { error: 'No active Meet view to capture' };
     }
@@ -3197,6 +3233,36 @@ const localServer = new globalThis.LocalServer({
         return { error: 'Capture came back empty — the bot view has no display surface yet. Retry in a moment; if it persists, set the botViewMode preference to "thumbnail".' };
       }
 
+      // Crop before encoding, so the PNG on disk is the share and not the room.
+      // capturePage returns pixels in the capture's own scale, which is not
+      // necessarily CSS pixels on a HiDPI display, so the measured CSS rect is
+      // converted by the ratio between them.
+      if (cropRect) {
+        // REFUSE rather than guess the scale. capturePage returns pixels in the
+        // capture's own scale and cropRect is in CSS pixels, so the conversion
+        // needs the view's CSS width. Falling back to scale 1 when that read
+        // fails looks harmless and is not: on a Retina host the capture is 2x,
+        // so a CSS-space rect crops the TOP-LEFT QUARTER of the share — and the
+        // result is a valid non-empty image, so nothing downstream notices.
+        const cssW = await meetViewCssWidth();
+        const scale = cssW > 0 ? image.getSize().width / cssW : 0;
+        if (scale > 0) {
+          const c = image.crop({
+            x: Math.round(cropRect.x * scale), y: Math.round(cropRect.y * scale),
+            width: Math.round(cropRect.w * scale), height: Math.round(cropRect.h * scale),
+          });
+          // Electron's crop CLAMPS to the image rather than throwing, so an
+          // out-of-bounds rect yields a shifted partial crop that passes
+          // isEmpty(). Check the size we asked for actually came back.
+          const want = { w: Math.round(cropRect.w * scale), h: Math.round(cropRect.h * scale) };
+          const got = c && !c.isEmpty() ? c.getSize() : null;
+          if (got && Math.abs(got.width - want.w) <= 2 && Math.abs(got.height - want.h) <= 2) {
+            image = c;
+            cropped = true;
+          }
+        }
+      }
+
       const buf = image.toPNG();
       const dir = path.join(app.getPath('temp'), 'vibeconf-screenshots');
       await fs.promises.mkdir(dir, { recursive: true });
@@ -3215,8 +3281,9 @@ const localServer = new globalThis.LocalServer({
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const filePath = path.join(dir, `${prefix}${stamp}.png`);
       await fs.promises.writeFile(filePath, buf);
-      console.log('[electron] Screenshot saved:', filePath, '(' + buf.length + ' bytes)');
-      return { path: filePath };
+      console.log('[electron] Screenshot saved:', filePath, '(' + buf.length + ' bytes)'
+        + (cropRect ? (cropped ? ' cropped to the share' : ' NOT cropped — full view') : ''));
+      return { path: filePath, cropped };
     } catch (err) {
       console.error('[electron] Screenshot capture failed:', err);
       return { error: err.message };
@@ -3404,6 +3471,10 @@ const localServer = new globalThis.LocalServer({
     } else if (key === 'remoteLogging') {
       setRemoteLoggingEnabled(value === true);
       console.log('[electron] Remote logging', value === true ? 'ENABLED' : 'disabled', '(live)');
+    } else if (key === 'watchSharedScreen') {
+      // Live, mid-call: this is a mode you turn on when the conversation becomes
+      // "coach me through my screen", which is exactly mid-call.
+      reconcileScreenSettleWatcher();
     }
   },
 });
@@ -3809,6 +3880,206 @@ const { SIGNATURE_SIDE, signatureFromBitmap } = require('./ui-signature.js');
 function uiSignature(image) {
   return signatureFromBitmap(image.resize({ width: SIGNATURE_SIDE, height: SIGNATURE_SIDE, quality: 'good' }).toBitmap());
 }
+// #673 — watch a participant's shared screen for changes while nobody speaks.
+// The comparison lives in screen-settle.js (pure, tested); everything here is
+// wiring: where the pixels come from, and where a settle event goes.
+//
+// The pixels come from the SAME capture the bot already uses to look at the
+// room — meetView.webContents.capturePage(), the thing behind
+// get_call_screenshot.
+//
+// This used to say the Meet view was "the honest and only route", which was too
+// strong: the page could draw the presented <video> element to a canvas and get
+// the SOURCE resolution instead of whatever Meet's layout shrank it to (see
+// #694's measurements). That is a better picture and a worse dependency — it
+// leans on Meet's DOM, which changes. For DETECTION it also buys nothing, since
+// every sample is downscaled to a 320x180 grid immediately. So capturePage
+// stays here, and the canvas route is worth considering only where the
+// resolution is actually spent: the picture handed to the agent.
+//
+// CROPPED to the presented tile before it is downscaled (presentation-rect.js).
+// Faces are the hardest noise source this detector has — a webcam changes every
+// frame — and cropping removes them by construction instead of by the churn
+// filter. It also spends the grid on the thing being watched: a 1900px share
+// mapped onto 320 cells rather than a 2560px view in which the share is one
+// tile.
+//
+// Resized in-process to the detector's grid, so the full-size PNG is never
+// encoded and nothing is written to disk on the 2-second path.
+const screenSettle = require('./screen-settle.js');
+const presentationRect = require('./presentation-rect.js');
+let screenSettleWatcher = null;
+
+// Where the share is on screen, re-measured each sample because Meet re-lays
+// out constantly (someone joins, someone pins, the layout flips). Cheap: one
+// executeJavaScript returning a few rects, the same measurement record
+// record-region.js already defines.
+//
+// null means "cannot tell which tile is the share" — NOT "there is no share".
+// That second question is Meet's own presenting signal and is answered by the
+// caller. When it cannot tell, the sample falls back to the whole view, which
+// is what shipped before cropping existed.
+let lastPresentationRect = null;   // what the most recent sample cropped to
+let lastPresentationKey = null;    // so the crop verdict is logged on change, not every 2s
+
+async function measurePresentationRect() {
+  if (!meetView || meetView.webContents.isDestroyed()) return null;
+  try {
+    const m = await meetView.webContents.executeJavaScript(recordRegion.MEASURE_SCRIPT, true);
+    const next = presentationRect.pickPresentationRect(m);
+    // SAY WHICH WAY IT WENT, once per change. Whether the crop found the share
+    // is the difference between a working detector and a useless one, and until
+    // now nothing reported it: a live test on 2026-09-09 ran 75 samples with 0
+    // settles, and the only way to find out why was to reason about it from the
+    // source. That is the same failure the verdict logging was added to fix,
+    // one layer down.
+    const key = next ? `${next.x},${next.y},${next.w},${next.h}` : 'none';
+    if (key !== lastPresentationKey) {
+      lastPresentationKey = key;
+      console.log('[screen-settle] crop → ' + (next
+        ? `the shared tile at ${next.w}x${next.h}`
+        : 'COULD NOT FIND THE SHARE — the picker refused, so there is nothing safe to watch'));
+    }
+    lastPresentationRect = next;
+    return lastPresentationRect;
+  } catch (err) {
+    if (lastPresentationKey !== 'error') {
+      lastPresentationKey = 'error';
+      console.log('[screen-settle] crop → measurement failed: ' + (err && err.message));
+    }
+    lastPresentationRect = null; return null;
+  }
+}
+
+async function captureMeetViewGrid() {
+  if (!meetView || meetView.webContents.isDestroyed()) return null;
+  const image = await meetView.webContents.capturePage();
+  // A view with no display surface captures as 0x0 rather than throwing. Do NOT
+  // self-heal by showing the hidden host the way onCaptureScreenshot does: that
+  // flashes a window on screen, and doing it every two seconds for a monitor
+  // nobody asked to see would be its own bug. Skip the sample instead.
+  if (!image || image.isEmpty()) return null;
+
+  // Crop to the share when we can find it. capturePage returns pixels in the
+  // capture's own scale, which is not necessarily CSS pixels on a HiDPI
+  // display, so the measured CSS rect is scaled by the ratio between them
+  // rather than used directly.
+  // NO CROP, NO SAMPLE. Watching the whole Meet view does not degrade the
+  // detector, it defeats it: the view contains live camera tiles, and a moving
+  // face changes a DIFFERENT set of cells every frame, so the churn map — which
+  // only excludes cells that change in the same place, like a cursor or a
+  // clock — never learns to ignore it. Measured live on 2026-09-09: 75 samples,
+  // every one "moving", zero settles, because the picture never goes quiet.
+  //
+  // So a failed crop returns nothing and the sample is skipped, which the
+  // watcher already handles. Better to watch nothing and say so than to run
+  // forever and never fire.
+  let target = image;
+  const rect = await measurePresentationRect();
+  if (!rect) return { skip: 'the shared tile could not be located, and the full Meet view contains faces the detector can never settle on' };
+  if (rect) {
+    try {
+      const size = image.getSize();
+      const scale = size.width / (await meetViewCssWidth()) || 1;
+      const cropped = image.crop({
+        x: Math.round(rect.x * scale), y: Math.round(rect.y * scale),
+        width: Math.round(rect.w * scale), height: Math.round(rect.h * scale),
+      });
+      if (cropped && !cropped.isEmpty()) target = cropped;
+    } catch { /* crop out of bounds mid-relayout — sample the whole view */ }
+  }
+
+  const small = target.resize({ width: screenSettle.GRID_W, height: screenSettle.GRID_H, quality: 'good' });
+  // The rect travels WITH the grid: every sample is resized to the same 320x180
+  // whatever region it came from, so the grid alone cannot tell the detector
+  // that it is now looking at a different part of the screen.
+  return {
+    grid: screenSettle.grayGridFromBitmap(small.toBitmap(), screenSettle.GRID_W, screenSettle.GRID_H),
+    source: rect || null,
+  };
+}
+
+// The view's width in CSS pixels, for converting a measured rect into capture
+// pixels. Cached per sample rather than per call: the bot view can be resized
+// mid-call (set_share_size, meetViewSize).
+async function meetViewCssWidth() {
+  try {
+    return await meetView.webContents.executeJavaScript('window.innerWidth', true);
+  } catch { return 0; }
+}
+
+// Start/stop to match (pref is on) AND (we are in a call). Called from both
+// edges — the pref changing and the call status changing — so neither has to
+// know about the other.
+// A cropped, full-resolution PNG of the share, for the agent to LOOK at when a
+// settle wakes it. Separate from the grid sample: that is 320x180 greyscale for
+// detection, this is the picture.
+//
+// Returns a path or null. Null simply means the wake carries no image and the
+// agent can still call get_call_screenshot — a wake without a picture is worse
+// than one with, and far better than no wake.
+async function onCaptureScreenshotForWake() {
+  try {
+    const r = await localServer.onCaptureScreenshot({
+      roomId: localServer.roomId,
+      cropRect: lastPresentationRect,
+    });
+    // { path, cropped } or null. `cropped` travels with the picture so the MCP
+    // layer can describe it truthfully instead of assuming.
+    return (r && !r.error && r.path) ? { path: r.path, cropped: !!r.cropped } : null;
+  } catch { return null; }
+}
+
+function reconcileScreenSettleWatcher() {
+  try {
+    // Three conditions, not two. The third is the one that matters most:
+    // WITHOUT AN ACTIVE SHARE THERE IS NOTHING TO WATCH. The watcher used to
+    // run for the whole call, sampling a view of faces every two seconds and
+    // relying on the churn filter to ignore them — work whose only possible
+    // output was a false wake. Stan, 2026-09-09: "when nobody is presenting,
+    // stop the watcher entirely."
+    //
+    // Reconciled on the presenting edge as well as the pref and call-status
+    // edges, so a share starting mid-call starts the watcher without waiting
+    // for anything else to change.
+    const want = prefValue('watchSharedScreen') === true
+      && localServer.callStatus === 'in-call'
+      && localServer.someoneElsePresenting === true;
+    if (want && !screenSettleWatcher) {
+      screenSettleWatcher = screenSettle.createScreenSettleWatcher({
+        capture: captureMeetViewGrid,
+        // The capture is passed as a FUNCTION, not a picture, so it runs only
+        // when the wake actually fires. Most settles are blocked — someone is
+        // speaking, no agent is waiting, the throttle is holding — and encoding
+        // a full PNG for each of those would be work whose output is discarded.
+        onSettled: (v) => localServer.noteScreenSettled(v, () =>
+          onCaptureScreenshotForWake()),
+        log: (msg) => console.log('[screen-settle]', msg),
+      });
+      screenSettleWatcher.start();
+      console.log('[electron] Shared-screen watch ON (#673) — sampling every',
+        screenSettle.DEFAULT_INTERVAL_MS + 'ms at', screenSettle.GRID_W + 'x' + screenSettle.GRID_H);
+    } else if (!want && screenSettleWatcher) {
+      screenSettleWatcher.stop();
+      const why = prefValue('watchSharedScreen') !== true ? 'preference off'
+        : localServer.callStatus !== 'in-call' ? 'not in a call'
+        : 'nobody is presenting';
+      console.log('[electron] Shared-screen watch OFF (' + why + ') —',
+        screenSettleWatcher.stats.samples, 'samples,', screenSettleWatcher.stats.settles, 'settle(s),',
+        screenSettleWatcher.stats.skipped, 'skipped (no crop),',
+        screenSettleWatcher.stats.failures, 'capture failure(s),',
+        // Many samples, no settles and many re-baselines is the signature of an
+        // unstable crop rect — the failure that ran silently on 2026-09-09.
+        screenSettleWatcher.stats.rebaselines, 're-baseline(s)');
+      screenSettleWatcher = null;
+    }
+  } catch (err) {
+    // Never let the monitor's own bookkeeping reach a call. Worst case the bot
+    // behaves exactly as it did before #673.
+    console.warn('[electron] screen-settle reconcile failed (watch disabled):', err && err.message);
+  }
+}
+
 let meetView = null;      // right Meet BrowserView
 let panelPopoutWindow = null; // when popped out, the panelView lives here instead
 let troubleshootingWindow = null; // the ⓘ window — a second copy of panel.html
@@ -8432,10 +8703,17 @@ if (isDefaultInstance) {
 // audit: Fable averages ~17s stop→audio vs ~8s for Sonnet/Opus, almost entirely
 // think time) — via the join_call tool call itself, so it fires exactly once
 // per join, for whoever's actually watching that terminal.
+//
+// A SECOND hook — Notification, not tool-scoped — rides the same script and
+// reports permission prompts / idle nudges to /api/agent-notification, so the
+// brain panel can show "waiting on you" instead of the silence an unhandled
+// prompt produces today (see agent-spawn.js's headlessBlockedReason comment
+// on why that silence is "the single worst failure shape in this app").
 const AGENT_HOOK_CONTENT = `#!/usr/bin/env node
 // Auto-installed by Vibeconferencing — reports the Claude session's transcript
-// path to the local bot server for the debug-overlay agent-activity tail, and
-// warns (once per join_call) when the joining model is Fable.
+// path to the local bot server for the debug-overlay agent-activity tail,
+// forwards Notification events (permission prompts, idle nudges), and warns
+// (once per join_call) when the joining model is Fable.
 // Never blocks or breaks the agent: swallows all errors, exits 0 fast.
 const http = require('http');
 const fs = require('fs');
@@ -8449,10 +8727,7 @@ process.stdin.on('end', () => {
   let d = {};
   try { d = JSON.parse(raw); } catch (e) {}
   maybeWarnSlowModel(d);
-  const transcriptPath = d.transcript_path;
-  if (!transcriptPath) return done();
   const port = process.env.VIBECONF_LOCAL_PORT || '7865';
-  const body = JSON.stringify({ sessionId: d.session_id, transcriptPath });
   // #201 made the control API require a bearer token, and this hook was not
   // updated — so every POST here 401'd from Aug 1 and the agent session was
   // never bound. Nothing surfaced it: the hook swallows all errors by design,
@@ -8467,17 +8742,29 @@ process.stdin.on('end', () => {
       require('path').join(require('os').homedir(), '.vibeconferencing', 'local-tokens', port + '.token'),
       'utf8').trim();
   } catch (e) { /* no token file — server may be running with auth off */ }
+
+  if (d.hook_event_name === 'Notification') {
+    const body = JSON.stringify({ sessionId: d.session_id, message: d.message });
+    return postJson('/api/agent-notification', body, port, token);
+  }
+  const transcriptPath = d.transcript_path;
+  if (!transcriptPath) return done();
+  const body = JSON.stringify({ sessionId: d.session_id, transcriptPath });
+  postJson('/api/agent-session', body, port, token);
+});
+
+function postJson(urlPath, body, port, token) {
   const headers = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) };
   if (token) headers.authorization = 'Bearer ' + token;
   const req = http.request({
-    host: '127.0.0.1', port, path: '/api/agent-session', method: 'POST',
+    host: '127.0.0.1', port, path: urlPath, method: 'POST',
     headers,
     timeout: 500,
   }, (res) => { res.resume(); res.on('end', done); });
   req.on('error', done);
   req.on('timeout', () => { req.destroy(); done(); });
   req.write(body); req.end();
-});
+}
 
 // A PostToolUse hook's stdout JSON can carry a systemMessage shown to the user
 // in-terminal (not fed to the model, and non-blocking — the tool already ran).
@@ -8546,22 +8833,44 @@ function ensureAgentActivityHook() {
     let settings = {};
     try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* none yet */ }
     if (!settings.hooks) settings.hooks = {};
-    if (!Array.isArray(settings.hooks.PostToolUse)) settings.hooks.PostToolUse = [];
     // Is our entry already present with the right command? (idempotent)
     const isOurs = (e) => (e.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('vibeconf-agent-hook'));
-    const current = settings.hooks.PostToolUse.find(isOurs);
-    if (current && current.matcher === 'mcp__vibeconferencing__.*' && current.hooks?.[0]?.command === desiredCmd) {
-      return; // already correct
+
+    // Checked independently (not one early-return after the first match) so an
+    // existing install missing just the newer Notification hook still gets it
+    // added on the next launch, instead of the PostToolUse match short-circuiting
+    // before Notification is ever looked at.
+    let changed = false;
+
+    if (!Array.isArray(settings.hooks.PostToolUse)) settings.hooks.PostToolUse = [];
+    const toolCurrent = settings.hooks.PostToolUse.find(isOurs);
+    if (!toolCurrent || toolCurrent.matcher !== 'mcp__vibeconferencing__.*' || toolCurrent.hooks?.[0]?.command !== desiredCmd) {
+      settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter((e) => !isOurs(e));
+      settings.hooks.PostToolUse.push({
+        matcher: 'mcp__vibeconferencing__.*',
+        hooks: [{ type: 'command', command: desiredCmd }],
+      });
+      changed = true;
     }
-    // Drop any stale vibeconf entries, then add the current one (preserves the
-    // user's own hooks).
-    settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter((e) => !isOurs(e));
-    settings.hooks.PostToolUse.push({
-      matcher: 'mcp__vibeconferencing__.*',
-      hooks: [{ type: 'command', command: desiredCmd }],
-    });
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-    console.log('[electron] Installed agent-activity PostToolUse hook (port from session env, default 7865)');
+
+    // Notification — permission prompts / idle nudges, so the brain panel can
+    // show a session as waiting-on-you instead of just quiet. No matcher: this
+    // fires per-notification, not per-tool, and every notification is worth
+    // forwarding — the server (not this hook) decides what to do with it.
+    if (!Array.isArray(settings.hooks.Notification)) settings.hooks.Notification = [];
+    const notifCurrent = settings.hooks.Notification.find(isOurs);
+    if (!notifCurrent || notifCurrent.hooks?.[0]?.command !== desiredCmd) {
+      settings.hooks.Notification = settings.hooks.Notification.filter((e) => !isOurs(e));
+      settings.hooks.Notification.push({
+        hooks: [{ type: 'command', command: desiredCmd }],
+      });
+      changed = true;
+    }
+
+    if (changed) {
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      console.log('[electron] Installed agent-activity PostToolUse + Notification hooks (port from session env, default 7865)');
+    }
   } catch (err) {
     console.warn('[electron] Failed to install agent-activity hook:', err.message);
   }
@@ -8574,15 +8883,18 @@ function removeAgentActivityHook() {
   const settingsPath = path.join(claudeDir, 'settings.json');
   try {
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-    if (Array.isArray(settings.hooks?.PostToolUse)) {
-      const before = settings.hooks.PostToolUse.length;
-      settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter(
-        (e) => !(e.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('vibeconf-agent-hook'))
-      );
-      if (settings.hooks.PostToolUse.length !== before) {
-        fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-        console.log('[electron] Removed agent-activity hook from settings.json');
+    const isOurs = (e) => (e.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('vibeconf-agent-hook'));
+    let changed = false;
+    for (const eventName of ['PostToolUse', 'Notification']) {
+      if (Array.isArray(settings.hooks?.[eventName])) {
+        const before = settings.hooks[eventName].length;
+        settings.hooks[eventName] = settings.hooks[eventName].filter((e) => !isOurs(e));
+        if (settings.hooks[eventName].length !== before) changed = true;
       }
+    }
+    if (changed) {
+      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+      console.log('[electron] Removed agent-activity hooks from settings.json');
     }
   } catch { /* no settings file */ }
   try { fs.rmSync(hookPath, { force: true }); } catch { /* ignore */ }
@@ -10658,6 +10970,32 @@ function attachMeetViewForState() {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.addBrowserView(meetView);
 }
 
+// #498: the platform sign-in buttons in Preferences → Identity drive the bot's
+// own browser view, which is 'hidden' by default. Nothing about a login can be
+// done blind, so those buttons pop the view out into its own window first —
+// the same state the 👀 button gives you. Already popped: leave it alone.
+function revealBotViewForSignIn() {
+  try {
+    if (botViewState === 'popped') {
+      // Already popped, but the caller may have just REPLACED meetView
+      // (activateSlackProvider builds a fresh one and parks it in the main
+      // window), which would leave the popout showing nothing. Re-attach the
+      // current view to whichever window this state owns.
+      if (meetView && !meetView.webContents.isDestroyed()
+          && mainWindow && !mainWindow.isDestroyed()) {
+        try { mainWindow.removeBrowserView(meetView); } catch { /* not attached */ }
+      }
+      attachMeetViewForState();
+      layoutViews();
+    } else {
+      setBotViewState('popped');
+    }
+    if (meetPopoutWindow && !meetPopoutWindow.isDestroyed()) meetPopoutWindow.show();
+  } catch (err) {
+    console.warn('[electron] could not reveal the bot view for sign-in:', err.message);
+  }
+}
+
 function setBotViewState(state) {
   if (!botViewLayout.STATES.includes(state)) state = restingBotViewState();
   botViewState = state;
@@ -10721,7 +11059,9 @@ function setBotViewState(state) {
       // so on a Retina display the captured frame is 2x this. The capture
       // constraint in renderer/call-recording-window.js is what bounds the
       // actual encoded resolution; this only fixes the SHAPE.
-      width: 960, height: 540,
+      // Region 560x315, i.e. 16:9, by the same law the view sizes use. Was
+      // 960x540 (a 16:9 WINDOW), whose region is 560x180 — 3.1:1.
+      width: 960, height: 675,
       title: windowTitle("Bot's view"),
       icon: path.join(__dirname, 'icon.png'),
       // Deliberately NOT `parent: mainWindow`. A child window is dragged around
@@ -10740,7 +11080,15 @@ function setBotViewState(state) {
     // it — nothing here calls setSize on this window). Where it's unavailable
     // it no-ops, and the capture constraint still bounds the encode; the
     // recording is then merely the old arbitrary shape, not broken.
-    try { win.setAspectRatio(16 / 9, { width: 0, height: 0 }); } catch { /* not supported here */ }
+    // extraSize is Meet's own chrome (botViewLayout.MEET_CHROME_CSS): Electron
+    // applies the ratio to (size - extraSize), which is exactly the tile region.
+    // Passing {0,0} — as this did — made the WINDOW 16:9 and left the region at
+    // 2.0:1 to 2.2:1, because the chrome is fixed pixels rather than a share of
+    // the window (measured 2026-09-10, #735). No single window ratio can be
+    // right for every size, so the ratio has to be applied to the region.
+    try {
+      win.setAspectRatio(botViewLayout.RECORDING_ASPECT, { ...botViewLayout.MEET_CHROME_CSS });
+    } catch { /* not supported here */ }
     meetPopoutWindow = win;
     if (meetView && !meetView.webContents.isDestroyed()) win.addBrowserView(meetView);
     const fit = () => {
@@ -11402,7 +11750,7 @@ function createMainWindow() {
           },
         },
         {
-          // The pair to Copy Chat Command below: PRESSES the panel's Call
+          // The pair to Copy Terminal Command below: PRESSES the panel's Call
           // button as if Option were held, rather than reimplementing the
           // terminal launch here — same reasoning as Call Now above it. Useful
           // from the app-wide accelerator, or when the panel doesn't have
@@ -11431,7 +11779,7 @@ function createMainWindow() {
           // It also closes a real gap. The renderer's ⌥⌘C only fires when the
           // panel has keyboard focus, and the panel usually does not (see the
           // Option-label lag fix). A menu accelerator works app-wide.
-          label: 'Copy Chat Command',
+          label: 'Copy Terminal Command',
           accelerator: 'Alt+CmdOrCtrl+C',
           click: () => {
             try {
@@ -12227,6 +12575,7 @@ function setupIPC() {
     if (key === 'emojiSet') pushEmojiSet(value);
     if (key === 'meetViewSize') applyMeetViewSize();
     if (key === 'botName') applyAllWindowTitles();
+    if (key === 'watchSharedScreen') reconcileScreenSettleWatcher();
     // The background is settable from Bot Settings now, not just by the agent.
     // Without this the in-call avatar kept the OLD background until the next
     // launch, while the panel preview showed the new one.
@@ -13376,6 +13725,11 @@ function setupIPC() {
   ipcMain.handle('meet-sign-in-as-bot', () => {
     const url = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmeet.google.com%2F';
     navigateMeetView(url);
+    // #498: the bot view is hidden by default, so without this the sign-in page
+    // loads somewhere nobody can see and the button looks broken. You cannot
+    // type a Google password into a window that isn't on screen — pop the view
+    // out (the 👀 state) so the login is where the click implied it would be.
+    revealBotViewForSignIn();
     return { ok: true, mode: 'account' };
   });
 
@@ -13496,6 +13850,10 @@ function setupIPC() {
   // workspace.
   ipcMain.handle('slack-sign-in', () => {
     activateSlackProvider('https://app.slack.com/', { autojoin: false });
+    // #498, same reason as the Google button above: Slack's login has to be
+    // visible to be completed. Pop the view AFTER activateSlackProvider, which
+    // rebuilds meetView and parks it in the main window.
+    revealBotViewForSignIn();
     return { ok: true };
   });
 
@@ -13519,6 +13877,9 @@ function setupIPC() {
       console.warn('[electron] slack-sign-out failed:', err.message);
     }
     activateSlackProvider('https://app.slack.com/', { autojoin: false });
+    // Signing out drops you on Slack's login page, and the usual reason to sign
+    // out is to sign back in as someone else — so show the view here too.
+    revealBotViewForSignIn();
     return { ok: true };
   });
 
@@ -14214,7 +14575,12 @@ function setupIPC() {
   });
 
   ipcMain.on(CALL_EVENTS.someonePresenting, (_event, { presenting, presenterName }) => {
+    const was = localServer.someoneElsePresenting;
     localServer.setSomeoneElsePresenting(presenting, presenterName);
+    // #673: the share starting or stopping is exactly when the settle watcher
+    // should start or stop. Reconciled on the EDGE so a share beginning mid-call
+    // does not wait for the next pref or call-status change.
+    if (was !== localServer.someoneElsePresenting) reconcileScreenSettleWatcher();
   });
 
   // Track our own presenting state from Meet UI (Stop presenting button visible)

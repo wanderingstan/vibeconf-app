@@ -81,7 +81,7 @@ const STOP_ACK_TIMEOUT_MS = 5000;
 // Throws if targetWebContents isn't available. Callers are expected to catch
 // this and degrade gracefully (fall back to not capturing that track) rather
 // than let a capture-window failure break the recording or the share itself.
-function createFrameCaptureWindow(targetWebContents, { trackName, partition, visible = true, title = 'Recording…', crop = null } = {}) {
+function createFrameCaptureWindow(targetWebContents, { trackName, partition, visible = true, title = 'Recording…', crop = null, chrome = null } = {}) {
   if (!targetWebContents || targetWebContents.isDestroyed()) {
     throw new Error(`no target webContents to capture for track "${trackName}"`);
   }
@@ -148,7 +148,10 @@ function createFrameCaptureWindow(targetWebContents, { trackName, partition, vis
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, 'renderer', 'call-recording-window.html'), {
     search: `track=${encodeURIComponent(trackName)}&controls=${visible ? '1' : '0'}`
-      + (crop ? `&crop=${[crop.x, crop.y, crop.w, crop.h].map((n) => Number(n).toFixed(4)).join(',')}` : ''),
+      + (crop ? `&crop=${[crop.x, crop.y, crop.w, crop.h].map((n) => Number(n).toFixed(4)).join(',')}` : '')
+      // Meet's fixed chrome in CSS px, so the renderer can size its canvas from
+      // the frame rather than from one sampled crop. See its OUTPUT SHAPE note.
+      + (chrome ? `&chromeh=${Math.round(chrome.height)}` : ''),
   });
   if (visible) {
     win.once('ready-to-show', () => {
@@ -215,13 +218,14 @@ const SHARE_PARTITION = 'call-recording-share';
 // The bot's own Meet view — visible status window (elapsed time + Stop
 // button), active for the whole recording. See main.js's
 // startCallRecording()/stopCallRecording().
-function createCallRecordingWindow(meetView, { crop = null } = {}) {
+function createCallRecordingWindow(meetView, { crop = null, chrome = null } = {}) {
   return createFrameCaptureWindow(meetView && meetView.webContents, {
     trackName: 'video',
     partition: VIDEO_PARTITION,
     visible: true,
     title: 'Recording call…',
     crop,
+    chrome,
   });
 }
 

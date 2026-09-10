@@ -64,6 +64,13 @@ const BACKGROUND_TICK_POLL_MS = 2500;
 // resting face. Long enough to be seen, short enough that it can't be mistaken
 // for a state the bot is stuck in.
 const TICK_FACE_MS = 4000;
+// A stuck-on-notification flag (permission prompt, idle nudge) that outlives
+// this backstop is almost certainly stale — the session crashed, or the
+// Notification hook's clearing activity line never arrived — not a prompt
+// someone has genuinely been staring at for ten minutes. Cleared by the next
+// real agent-activity line long before this in the normal case; this is only
+// the floor for "nobody is ever coming back to clear it."
+const AGENT_NOTIFICATION_MAX_AGE_MS = 10 * 60_000;
 
 // Short HH:MM:SS.mmm timestamp for emoji diagnostic logs — lets us cross-
 // reference log lines with actual conversation moments. Keep it local so
@@ -121,7 +128,7 @@ function namesDiffer(a, b) {
 const { formatFitReport, formatBudget } = require('./board-fit.js');
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onBoardFitVersion, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -186,6 +193,7 @@ class LocalServer {
     // than throwing: a host that has not wired it up must still be able to
     // write to the whiteboard.
     this.onMeasureBoardFit = onMeasureBoardFit || (async () => null);
+    this.onBoardFitVersion = onBoardFitVersion || (async () => null);
     this.onFindShareElement = onFindShareElement || (async () => ({ ok: false, error: 'not implemented' }));
     this.onReadShareConsole = onReadShareConsole || (async () => ({ ok: false, error: 'not implemented' }));
     this.onReadShareNetwork = onReadShareNetwork || (async () => ({ ok: false, error: 'not implemented' }));
@@ -301,6 +309,13 @@ class LocalServer {
     // by the activity source (onModel). null until the source can tell — the
     // brain window shows nothing rather than a guess.
     this.agentModel = null;
+    // The driving session's Notification hook (permission prompt, idle nudge)
+    // reports here — { message, sessionId, at } — so the brain panel can show
+    // "waiting on you" instead of going quiet, the way an unhandled prompt
+    // does today. Cleared by the next real agent-activity line (proof the
+    // session moved past whatever it was waiting on) or by age, see
+    // AGENT_NOTIFICATION_MAX_AGE_MS.
+    this.agentNotification = null;
     // #339: the same feed also drives the avatar's "working" state — new agent
     // activity while we're between speaks means the bot is heads-down doing tool
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
@@ -409,6 +424,8 @@ class LocalServer {
     this.participants = [];      // [{ name, speaking, isPseudo }] from DOM speaker tracker
     this.screenShares = [];      // [{ name, id }] — every screen share in the people pane
     this.someoneElsePresenting = false;  // another participant is screen sharing
+    this._lastScreenWakeAt = 0;          // #673 throttle: when a screen wake last fired
+    this.lastScreenShot = null;          // #673: { path, cropped } for the last screen wake
     this.presenterName = null;   // name of the person presenting (if any)
 
     // Real-time speaking state (from DOMSpeakerTracker, not captions)
@@ -556,6 +573,11 @@ class LocalServer {
     // match what these used to be hardcoded as. See preferences-schema.js.
     this._bargeInTimer = null;
     this._bargeInClearTimer = null;
+    // #442: a replay waiting out its rank gap. Held separately from
+    // _bargeInTimer because it means the opposite thing — that timer is the bot
+    // deciding whether to STOP, this one is a held reply waiting its turn to
+    // START — and clearing one must not cancel the other.
+    this._replayRankTimer = null;
     // #392: when the current monitor was armed. The analyser's quiet verdict
     // at grace evaluation is only trusted if the analyser produced an OFF edge
     // AFTER this — proof it actually tracked the interruption to its end. An
@@ -577,6 +599,8 @@ class LocalServer {
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
     this.lastWaitForSpeechAt = null; // ms timestamp of the most recent wait_for_speech call
+    this.lastScreenChangeAt = null;  // #673: when the watched share last settled
+    this.lastScreenChange = null;    // ...and how big that change was
     // Anything the AGENT did, not just wait_for_speech (#38). Every MCP tool
     // reaches the app over HTTP, so one stamp at the request door covers the
     // whole surface — including the long tool-work stretches where the loop is
@@ -1125,7 +1149,7 @@ class LocalServer {
     //
     // Falls through to jitter whenever the peer set is unknown or this bot is
     // not in it — so the worst case is exactly today's behaviour.
-    const ranked = this._rankedSpeakDelay(t);
+    const ranked = this._rankedSpeakDelay();
     if (ranked) return ranked;
 
     const lead = Number(this._pref('botSpeakUrgencyLeadMs')) || 0;
@@ -1151,19 +1175,58 @@ class LocalServer {
   // indistinguishable from the feature being off, which cost an afternoon:
   // preferences were set, the code was live, and the only visible symptom was
   // that the collision rate did not improve.
-  _rankedSkip(why) {
-    if (this._lastRankSkip !== why) {
-      this._lastRankSkip = why;
-      console.log(ts(), `🎲 [bot-order] ranked ordering unavailable (${why}) — using jitter`);
+  // `fallback` names what happens INSTEAD, because that now differs by caller:
+  // the start path falls back to jitter, the yield path to the random back-off,
+  // and the replay path to speaking immediately. One hardcoded "using jitter"
+  // was true for one of the three and misleading for the others — and this
+  // function exists because a fallback nobody can identify from the log cost an
+  // afternoon once already.
+  _rankedSkip(why, fallback = 'using jitter') {
+    const line = `${why} — ${fallback}`;
+    if (this._lastRankSkip !== line) {
+      this._lastRankSkip = line;
+      console.log(ts(), `🎲 [bot-order] ranked ordering unavailable (${line})`);
     }
     return null;
   }
 
-  _rankedSpeakDelay(t) {
+  // The shared inputs the ordering is computed from: who the bots are, and
+  // which human turn everyone is keying on. Extracted because TWO decisions
+  // need the identical seed — who starts (_rankedSpeakDelay) and who stops
+  // (_evaluateBargeIn's bot-vs-bot branch, #573). Computing it twice from two
+  // copies of this logic is how the two halves would drift apart, and a yield
+  // rule that disagrees with the start order is worse than no yield rule: both
+  // bots would think they won.
+  //
+  // Returns null (having logged why, once) when it cannot be computed.
+  _rankedContext(fallback) {
     const mode = this._pref('botSpeakOrdering');
-    if (mode !== 'ranked') return this._rankedSkip(`botSpeakOrdering=${JSON.stringify(mode)}`);
-    const self = this.getEffectiveBotName();
-    if (!self) return this._rankedSkip('this bot has no name yet');
+    if (mode !== 'ranked') return this._rankedSkip(`botSpeakOrdering=${JSON.stringify(mode)}`, fallback);
+    // RANK SELF UNDER THE NAME EVERYONE ELSE SEES.
+    //
+    // The configured name and the Meet display name are routinely different —
+    // _registerPresence one screen down publishes `displayName` precisely when
+    // `self.name !== name`, and the test fleet runs "Alice" on a tile reading
+    // "Alice-r4a32". Ranking self by the CONFIGURED name while every peer ranks
+    // it by the ROSTER name means the two sides hash different strings for the
+    // same bot and compute different orders.
+    //
+    // namesMatch is prefix-based and lenient, so discovery still succeeds
+    // across the difference: peers are found, ordering reports itself working,
+    // and the agreement it rests on is silently gone. Simulated on this code
+    // with the two names skewed, 2000 turns: 16% both keep the floor (two bots
+    // talking to the end — worse than the dice, which at least terminated) and
+    // 18% both yield (turn lost, then both replay into the same opening with
+    // the same skewed orders). With the names matched: 2000/2000 complementary.
+    //
+    // The roster's own isSelf entry is what the other bots see, so it is the
+    // only correct key. The configured name remains the fallback for the window
+    // before Meet's people pane has named our tile.
+    const rosterSelf = (this.participants || []).find(
+      (p) => p && p.isSelf && p.name && p.name !== 'You');
+    const configuredName = this.getEffectiveBotName();
+    const self = (rosterSelf && rosterSelf.name) || configuredName;
+    if (!self) return this._rankedSkip('this bot has no name yet', fallback);
     // Peers come from the website's room presence, where every bot registers
     // itself with role='bot' (verified live 2026-08-17). peerBotNames is the
     // manual override for when presence is unreachable or a peer predates it.
@@ -1208,14 +1271,14 @@ class LocalServer {
     const source = configured.length ? configured : discovered;
     if (!source.length) {
       return this._rankedSkip('no peer bots known — presence has not named any yet, '
-        + 'and peerBotNames is empty');
+        + 'and peerBotNames is empty', fallback);
     }
     const known = new Set(source.map((n) => n.toLowerCase()));
     const peers = roster.filter((n) => known.has(n.toLowerCase())
       || source.some((s) => namesMatch(n, s)));
     if (!peers.length) {
       return this._rankedSkip(`none of the ${source.length} known bot name(s) are in the `
-        + `roster (${roster.length} listed)`);
+        + `roster (${roster.length} listed)`, fallback);
     }
 
     // The utterance being answered: the last thing said by a HUMAN — anyone
@@ -1240,24 +1303,66 @@ class LocalServer {
     // sync API shows a human utterance that this.transcripts never contains.
     // Reading the wrong collection made this report "no human utterance to key
     // on yet" for hours while the speaker was plainly in the API's transcript.
-    const speakers = new Set([self.toLowerCase(), ...peers.map((p) => p.toLowerCase())]);
+    // Both of our names, not just the one we rank under: the transcript may
+    // carry either, and our own speech must never be mistaken for the human
+    // turn the whole order keys on.
+    const speakers = new Set([
+      self.toLowerCase(),
+      ...(configuredName ? [configuredName.toLowerCase()] : []),
+      ...peers.map((p) => p.toLowerCase()),
+    ]);
     const all = this._entriesSince(null, null) || [];
     const last = [...all].reverse()
       .find((e) => e && e.text && e.participantName && !speakers.has(e.participantName.toLowerCase()));
-    if (!last) return this._rankedSkip(`no human utterance yet (${all.length} entries, excluding ${[...speakers].join('/')})`);
+    if (!last) return this._rankedSkip(`no human utterance yet (${all.length} entries, excluding ${[...speakers].join('/')})`, fallback);
 
+    // THE SEED (see clockKey in speak-order.js). Anchored to lastSpeechStoppedAt
+    // — the silence edge that opened this turn — and NOT to Date.now(): the two
+    // decisions that consume this run at different moments (speak submission vs
+    // grace expiry, up to 1.5s apart and different per bot), while the edge
+    // itself is one physical event all bots observe within the detection spread.
+    //
+    // Falls back to the utterance key when there is no edge yet, which is the
+    // first turn of a call: the content seed is what shipped, so the fallback is
+    // the old behaviour rather than no ordering at all.
+    let seed;
+    if (this._pref('botSpeakSeed') !== 'utterance') {
+      const edge = this.lastSpeechStoppedAt;
+      if (edge) {
+        const { clockKey } = require('./speak-order.js');
+        seed = clockKey(edge, Number(this._pref('botSpeakClockBucketMs')) || 6000);
+      }
+    }
+    return {
+      selfName: self,
+      botNames: [...new Set([...peers, self])],
+      speaker: last.participantName,
+      utterance: last.text,
+      seed,
+    };
+  }
+
+  // What THIS bot should wait before starting, when the order can be computed.
+  // Returns null to mean "fall back to jitter" — the caller's contract since
+  // #426, so an uncomputable order degrades to exactly the old behaviour.
+  //
+  // `gapMs` is overridable because a REPLAY must not pay the same base as fresh
+  // speech: a held reply has already waited out somebody else's turn, and
+  // charging it a full gap per rank can push it past the opening it was waiting
+  // for (#442 warned about exactly this double-delay). The RANK still orders
+  // the bots; only the spacing shrinks.
+  _rankedSpeakDelay({ gapMs, fallback } = {}) {
+    const ctx = this._rankedContext(fallback);
+    if (!ctx) return null;
     let ranked;
     try {
       const { speakDelay } = require('./speak-order.js');
       ranked = speakDelay({
-        selfName: self,
-        botNames: [...new Set([...peers, self])],
-        speaker: last.participantName,
-        utterance: last.text,
-        gapMs: Number(this._pref('botSpeakRankGapMs')) || 500,
+        ...ctx,
+        gapMs: Number.isFinite(gapMs) ? gapMs : (Number(this._pref('botSpeakRankGapMs')) || 500),
       });
-    } catch (err) { return this._rankedSkip(`speak-order threw: ${err.message}`); }
-    if (!ranked) return this._rankedSkip(`this bot ("${self}") is not in the peer set`);
+    } catch (err) { return this._rankedSkip(`speak-order threw: ${err.message}`, fallback); }
+    if (!ranked) return this._rankedSkip(`this bot ("${ctx.selfName}") is not in the peer set`, fallback);
 
     // Urgency deliberately absent: a bot cannot know the others' urgency, so
     // folding its own in would give each bot a different order and undo the
@@ -1666,6 +1771,112 @@ class LocalServer {
     this.sharing = sharing;
   }
 
+  // #673 — a participant's shared screen changed and has now stopped changing.
+  // Wake a parked wait_for_speech the same way a new chat message does.
+  //
+  // WHY THIS EXISTS AT ALL. Bethany, 2026-09-02: "I shared it like 10 seconds
+  // ago. Why aren't you seeing it?" A bot between turns is inside a long poll
+  // that only speech resolves, so a screen changing in silence is not slow to
+  // reach it — it cannot reach it. This is a new wake REASON, not new
+  // machinery: chat proved the shape (see setChatUnread).
+  //
+  // The gates are chat's, for chat's reasons:
+  //   - somebody speaking: the floor beats the screen. Nothing is lost — the
+  //     agent will look at the screen on the turn it is about to be handed.
+  //   - no waiter: nobody to wake; the next wait_for_speech sees it as part of
+  //     the normal snapshot.
+  // Plus one of its own: only in a call, because outside one there is no screen
+  // and no agent loop.
+  // `capture` is a FUNCTION returning a screenshot path, not a path — so it is
+  // called only once every gate has passed and the wake is definitely firing.
+  // Most settles are blocked (someone is speaking, no agent is waiting, the
+  // throttle is holding) and encoding a full PNG for each of those would be
+  // work whose result is thrown away.
+  //
+  // Async now. The only caller is the watcher callback, which does not await it.
+  async noteScreenSettled(info = {}, capture = null) {
+    if (this.callStatus !== 'in-call') return false;
+    this.lastScreenChangeAt = Date.now();
+    this.lastScreenChange = {
+      at: this.lastScreenChangeAt,
+      regions: Array.isArray(info.tiles) ? info.tiles.length : 0,
+      cells: info.cells || 0,
+    };
+    // THROTTLE, which is a different thing from the detector's debounce.
+    //
+    // "Settle" already debounces: continuous typing never produces one, because
+    // the frame never goes quiet. What it does not cover is discrete edits with
+    // pauses — type a line, pause, type another — where every pause is a real
+    // settle and every settle is a real wake. Stan, 2026-09-09: "we need some
+    // max rate at which these updates flow, one every 10 seconds?"
+    //
+    // The no-active-waiter gate below already provides back-pressure: between a
+    // wake and the agent parking again, nothing can fire. This covers the case
+    // that slips through — the agent decides there is nothing to say, parks
+    // again quickly, and is woken by the next keystroke pause.
+    //
+    // Measured from the last WAKE, not the last settle: the cost being limited
+    // is the agent's turn, not the detector's sample.
+    const minGapMs = Number(this._pref('screenWakeMinGapMs'));
+    const sinceWake = this._lastScreenWakeAt ? Date.now() - this._lastScreenWakeAt : Infinity;
+    const blocked = this.anyoneSpeaking ? 'someone-speaking'
+      : this.waiters.length === 0 ? 'no-active-waiter'
+      : (Number.isFinite(minGapMs) && minGapMs > 0 && sinceWake < minGapMs)
+        ? `throttled (${Math.round(sinceWake / 1000)}s since the last wake, min ${Math.round(minGapMs / 1000)}s)`
+      : null;
+    if (blocked) {
+      console.log(ts(), '🖥️ [screen-wake] shared screen settled but NOT waking —', blocked,
+        '(anyoneSpeaking=' + this.anyoneSpeaking + ' waiters=' + this.waiters.length + ')');
+      return false;
+    }
+    console.log(ts(), '🖥️ [screen-wake] shared screen settled in a quiet room — waking',
+      this.waiters.length, 'waiter(s)',
+      '(' + this.lastScreenChange.regions + ' region(s), ' + this.lastScreenChange.cells + ' cells)');
+    this._lastScreenWakeAt = Date.now();
+
+    // Take the picture BEFORE resolving. The agent is being woken because
+    // something is worth looking at, and it will look — so making it ask costs
+    // two more round trips (emit the call, receive the file) that re-process the
+    // whole call's context. Stan, 2026-09-09: "just *telling* the agent to take
+    // a screenshot is using the LLM to activate a screenshot toolcall and
+    // wasting tokens." Same argument as #726, applied where the need is known
+    // in advance rather than guessed.
+    //
+    // Best effort: a wake with no picture still beats no wake, and the agent can
+    // always call get_call_screenshot itself.
+    this.lastScreenShot = null;
+    if (capture) {
+      try { this.lastScreenShot = await capture(); }
+      catch { this.lastScreenShot = null; }
+    }
+
+    // RE-CHECK THE GATES AFTER THE AWAIT. The capture is not instant — it is a
+    // page capture, a PNG encode and a disk write, and it can enter the
+    // 20x100ms self-heal loop — so the room can change underneath it. Three
+    // things can go stale:
+    //   • the waiters can resolve on their own (a timeout, a silence resolve, a
+    //     chat wake), leaving nothing to wake and a throttle stamp already spent
+    //     on a wake that never happened;
+    //   • someone can start speaking, and the floor beats the screen;
+    //   • the share can STOP, at which point the rect we cropped to describes a
+    //     layout that no longer exists and the picture is of whatever replaced it.
+    const stale = this.waiters.length === 0 ? 'the waiters resolved during the capture'
+      : this.anyoneSpeaking ? 'someone started speaking during the capture'
+      : this.someoneElsePresenting === false ? 'the share stopped during the capture'
+      : null;
+    if (stale) {
+      console.log(ts(), '🖥️ [screen-wake] not waking after all —', stale);
+      this._lastScreenWakeAt = 0;   // the throttle must not charge for a wake that never fired
+      this.lastScreenShot = null;
+      return false;
+    }
+
+    for (const waiter of [...this.waiters]) {
+      this._resolveWaiter(waiter, 'screen');
+    }
+    return true;
+  }
+
   setDetectedMeetUrls(urls) {
     this.detectedMeetUrls = urls || [];
   }
@@ -1926,6 +2137,11 @@ class LocalServer {
       // off the session's own turns — null until it has authored one. Shown in
       // the brain window header so multiple bots are tellable apart.
       agentModel: this.agentModel || null,
+      // Null once granted/denied/dismissed, cleared by the next agent-activity
+      // line, or once stale — see AGENT_NOTIFICATION_MAX_AGE_MS.
+      agentNotification: (this.agentNotification && (Date.now() - this.agentNotification.at) <= AGENT_NOTIFICATION_MAX_AGE_MS)
+        ? this.agentNotification
+        : null,
       workingMemory: this.getWorkingMemory(),
       sharing: this.sharing,
       someoneElsePresenting: this.someoneElsePresenting,
@@ -3429,12 +3645,25 @@ class LocalServer {
     this.onBotStateChange(state, extra);
   }
 
+  // The Notification hook's report of a prompt/nudge. Best-effort and cheap
+  // on purpose: this fires from a hook script with a 500ms socket timeout, so
+  // nothing here should be able to slow it down or throw.
+  setAgentNotification({ sessionId, message } = {}) {
+    if (!message) return;
+    this.agentNotification = { message: String(message), sessionId: sessionId || null, at: Date.now() };
+    console.log(ts(), '🔔 [agent] notification:', this.agentNotification.message);
+  }
+
   // #339: new agent activity → reflect a "working" avatar state so the room can
   // tell "heads-down doing tool work" from "listening". A tool line (🔧) means
   // the bot is running tools → 🧑‍💻 working; other activity (reasoning/text) →
   // 🤔 thinking. Only escalates from resting states — never overrides speaking
   // or yielding. A quiet timer eases back to listening/idle once activity stops.
   _onAgentActivity(line) {
+    // Any new activity line is proof the session is past whatever it was
+    // reporting — a granted/denied prompt, a dismissed idle nudge, or a
+    // notification that just wasn't actually blocking anything.
+    if (this.agentNotification) this.agentNotification = null;
     if (this.callStatus !== 'in-call') return;
     if (!RESTING_STATES.includes(this.botState)) return;
     if (this.botState === 'idle' || this.botState === 'listening' || this.botState === 'ticking') {
@@ -3645,6 +3874,26 @@ class LocalServer {
   // Grace period elapsed. Decide whether to back off based on who's
   // interrupting. Caller guarantees the timer slot is clear so we can
   // re-arm with the random bot-vs-bot delay if needed.
+  // Should this bot stop, given who is talking over it? (#573)
+  //
+  // Uses _rankedContext so the seed is IDENTICAL to the one that decided who
+  // started — a yield rule computed from a different turn key would let both
+  // bots believe they outrank the other.
+  //
+  // Returns null when the order cannot be computed, which is the caller's
+  // signal to fall back to the random delay rather than guess.
+  _rankedYield(interrupterNames) {
+    const ctx = this._rankedContext('using the random back-off');
+    if (!ctx) return null;
+    try {
+      const { yieldsTo } = require('./speak-order.js');
+      return yieldsTo({ ...ctx, interrupters: interrupterNames });
+    } catch (err) {
+      console.warn(ts(), '[bot-order] yield rule threw:', err.message);
+      return null;
+    }
+  }
+
   _evaluateBargeIn() {
     if (this.botState !== 'speaking' || !this.floorBusy) {
       // Bot already stopped, or interrupter shut up during the grace
@@ -3703,9 +3952,66 @@ class LocalServer {
       return;
     }
 
-    // All interrupters are bots. Wait an additional random delay; if still
-    // being interrupted at the end of it, back off. Whichever bot's random
-    // timer fires first will yield first, breaking the tie.
+    // All interrupters are bots. ASK THE ORDER WE ALREADY COMPUTED (#573).
+    //
+    // speak-order.js has stated the rule since it was written — "they detect
+    // each other within ~180ms and the yield rule is already common knowledge:
+    // higher rank stops" — and nothing implemented it. This branch drew a
+    // SECOND random delay instead, so the collision the ordering exists to
+    // resolve was handed straight back to the coin flip. The cost is not
+    // theoretical: 1500ms grace + up to 3000ms random is up to 4.5s of two bots
+    // talking BY DESIGN, and the overlaps measured on 2026-08-26 were 4.5s and
+    // 3.4s — the budget being spent.
+    //
+    // Both sides compute the same order from the same seed, so the answers are
+    // complementary by construction: the lower rank keeps the floor and the
+    // higher rank stops NOW rather than after a random wait. No exchange, no
+    // timer, and — unlike the dice — no outcome where both yield and the turn
+    // is lost, or neither does and they talk to the end.
+    const yielding = this._rankedYield(interrupters.map((p) => p.name));
+    if (yielding) {
+      if (yielding.yield) {
+        console.log(ts(), '🛡️  [barge-in] bot-vs-bot — yielding by rank: ' + yielding.why
+          + ' (' + this._analyserStateForLog() + ')');
+        this._performBackOff('bot-interrupt-ranked');
+      } else {
+        // Keeping the floor is a DECISION and needs a trace, for the same
+        // reason winning the start order did (#444): silent success and never
+        // running look identical from outside.
+        console.log(ts(), '🛡️  [barge-in] bot-vs-bot — keeping the floor by rank: ' + yielding.why);
+        // SAFETY NET. "Complementary by construction" holds only while both
+        // bots compute the same order, and the ways that can fail are real:
+        // names that differ between presence and the roster, a peer set that
+        // has not converged after a join, a caption landing between the two
+        // bots' grace expiries. When it does fail both sides conclude "keep"
+        // and — unlike the random delay this replaced, which always terminated
+        // within bargeInBotRandomMaxMs — nothing ends the overlap. It runs to
+        // the end of the utterance, which is WORSE than the 4.5s worst case.
+        //
+        // So the rank decides, and this bounds the cost of the rank being
+        // wrong. Re-checked once, against the same window the dice used: still
+        // colliding means the other bot did not accept its loss, and the tie
+        // has to break somehow.
+        const max = Number(this._pref('bargeInBotRandomMaxMs')) || 3000;
+        clearTimeout(this._bargeInTimer);
+        this._bargeInTimer = setTimeout(() => {
+          this._bargeInTimer = null;
+          if (this.botState !== 'speaking' || !this.floorBusy) return;
+          if (this._floorQuietPerAnalyser()) return;
+          const still = this.participants.filter((p) => p.speaking && !p.isSelf && p.name !== 'You');
+          if (!still.length) return;
+          console.log(ts(), '🛡️  [barge-in] bot-vs-bot — still colliding '
+            + max + 'ms after winning the rank; the order is not agreed, backing off ('
+            + this._analyserStateForLog() + ')');
+          this._performBackOff('bot-interrupt-rank-disagreed');
+        }, max);
+      }
+      return;
+    }
+
+    // Order unavailable (jitter mode, no peers discovered, an interrupter we
+    // cannot place). Fall back to the dice, which is what shipped before — a
+    // worse resolution than ranking, but a resolution.
     const min = this._pref('bargeInBotRandomMinMs');
     const max = this._pref('bargeInBotRandomMaxMs');
     const delay = Math.floor(min + Math.random() * (max - min));
@@ -3947,7 +4253,14 @@ class LocalServer {
   // to the slow model. Returns the array of texts that were played (or
   // null if nothing). The bot speaks via the existing onBotSpeech path,
   // so TTS playback / transcript registration follow the normal route.
-  _maybeReplayBargeInStash() {
+  // `orderingPaid` marks the second pass, after a ranked hold has elapsed. The
+  // timer RE-ENTERS this function rather than jumping straight to the flush, so
+  // every guard above is evaluated again against the state as it is NOW: the
+  // supersede check (#519), staleness, and the floor. Skipping them was the
+  // first version's bug — the agent could submit a newer reply, or the user
+  // could leave or go silent, during the hold, and the stale reply went out
+  // anyway because only the stash identity and the floor were re-read.
+  _maybeReplayBargeInStash({ orderingPaid = false } = {}) {
     if (!this.bargeInStash) return null;
     // Supersede guard (#519), checked before the tuned ones because it is exact
     // rather than heuristic and costs nothing. If the agent has submitted a
@@ -4024,7 +4337,64 @@ class LocalServer {
       return null;                       // the stash survives for the next opening
     }
 
-    const entries = this.bargeInStash.entries;
+    // #442's remaining gap: ORDER THE REPLAY BETWEEN BOTS.
+    //
+    // The floor check above stops a replay landing on top of speech already in
+    // progress. It does nothing about the case the issue called "the most
+    // likely way a room with two bots still hears them talk over each other":
+    // two bots that stashed during the SAME busy floor both wake on the SAME
+    // opening, and with no ordering between them they start together — the
+    // exact collision ranked ordering removes for fresh speech.
+    //
+    // The rank orders them; the SPACING is deliberately tighter than fresh
+    // speech. #442: "a stash has already waited; adding a full ranked delay on
+    // top may push it past the opening it was waiting for." So the gap shrinks
+    // to botSpeakReplayRankGapMs, and when the order cannot be computed the
+    // replay goes NOW rather than falling back to jitter — a mean ~1000ms coin
+    // flip is precisely the delay a held reply cannot afford, and it would
+    // reintroduce the latency the stash already paid once.
+    const gapPref = Number(this._pref('botSpeakReplayRankGapMs'));
+    const replayRank = orderingPaid ? null : this._rankedSpeakDelay({
+      gapMs: Number.isFinite(gapPref) ? gapPref : 500,   // 0 is a legal "no spacing"
+      fallback: 'replaying immediately',
+    });
+    if (replayRank && replayRank.delayMs > 0) {
+      console.log(ts(), `🎲 [bot-order] holding replay ${replayRank.delayMs}ms (${replayRank.why})`);
+      const stash = this.bargeInStash;
+      // Both callers — the opening timer and the waiter's silence resolve —
+      // are scheduled from the same speech-stop edge, so they land here within
+      // milliseconds and the second overwrites the first handle. Double SPEECH
+      // is already prevented by the stash-identity check below; this only stops
+      // the first handle leaking.
+      clearTimeout(this._replayRankTimer);
+      this._replayRankTimer = setTimeout(() => {
+        this._replayRankTimer = null;
+        if (this.bargeInStash !== stash) return;      // replayed or cleared meanwhile
+        // The same two conditions _maybeReplayStashOnOpening checks before it
+        // ever calls us, re-read because the hold gave them time to change: the
+        // call can end and the user can ask for silence inside the window.
+        if (this.callStatus !== 'in-call') return;
+        if (this.mode === 'silent') return;
+        // Second pass. Every other guard — supersede, staleness, the floor —
+        // is re-evaluated inside, against the state as it is now.
+        const texts = this._maybeReplayBargeInStash({ orderingPaid: true });
+        // AND TELL THE AGENT IT WENT OUT. The synchronous callers do this from
+        // the return value; a deferred replay has no return value to inspect,
+        // so without this the reply is spoken and the agent never learns it —
+        // it then composes a fresh answer to the same question and says that
+        // too. For every rank>=1 bot, which is half the replays in a two-bot
+        // room.
+        if (texts) this._lastReplayedStash = texts;
+      }, replayRank.delayMs);
+      return null;                                    // spoken later, or held again
+    }
+    if (replayRank) console.log(ts(), `🎲 [bot-order] replaying first (${replayRank.why})`);
+    return this._flushStashNow(this.bargeInStash, ageMs);
+  }
+
+  // The replay itself, once the floor and the order both say go.
+  _flushStashNow(stash, ageMs) {
+    const entries = stash.entries;
     console.log(ts(), '🛡️  [barge-in] replaying stash — ' + entries.length + ' entries, ' + ageMs + 'ms old');
     this.bargeInStash = null;
     const texts = [];
@@ -4369,6 +4739,21 @@ class LocalServer {
     // Tag a chat-triggered wake so the MCP layer can phrase it as "new chat"
     // rather than a misleading "no one spoke / timed out".
     if (reason === 'chat') response.chatWake = true;
+    // #673: same idea for a shared screen that changed and settled. Without the
+    // tag the agent gets "no one spoke, timed out" and has no reason to look.
+    if (reason === 'screen') {
+      response.screenWake = true;
+      response.screenChange = this.lastScreenChange || null;
+      // The picture, already taken (see noteScreenSettled). The MCP layer inlines
+      // it so the agent SEES the screen in the same turn it is told about it.
+      if (this.lastScreenShot?.path) {
+        response.screenShot = this.lastScreenShot.path;
+        // Whether it is actually the SHARE or the whole Meet view. The wording
+        // the agent sees depends on this; without it the agent is told a view
+        // of faces is the shared screen.
+        response.screenShotCropped = !!this.lastScreenShot.cropped;
+      }
+    }
 
     // If there are actual transcript entries, the agent will now process them → thinking state.
     // Captions arrive as multiple progressively-growing entries for one utterance
@@ -5067,6 +5452,20 @@ class LocalServer {
       return;
     }
 
+    // The driving Claude session's Notification hook reports here whenever
+    // Claude Code needs the user's attention — most commonly a permission
+    // prompt. Lets the brain panel show "waiting on you" instead of going
+    // quiet, which today is indistinguishable from a session mid-thought.
+    if (url.pathname === '/api/agent-notification' && req.method === 'POST') {
+      const body = await this._readBody(req);
+      let parsed;
+      try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+      this.setAgentNotification({ sessionId: parsed.sessionId, message: parsed.message });
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: true }));
+      return;
+    }
+
     if (url.pathname === '/api/bank-probe' && req.method === 'POST') {
       const body = await this._readBody(req);
       let parsed;
@@ -5726,6 +6125,18 @@ class LocalServer {
 
     // Handle whiteboard update
     if (data.whiteboard && typeof data.whiteboard.content === 'string') {
+      // Note the version stamp of the measurement already on the board, BEFORE
+      // overwriting it. The renderer publishes its own fit stamped with the
+      // board version it describes (#644, vibeconferencing#540), so this is what
+      // lets the read afterwards tell "this is the board I just wrote" from
+      // "this is the one before it" — instead of guessing with a timeout.
+      // Skipped when the content is unchanged: nothing will re-render, so there
+      // is no newer measurement coming and the current one is already correct.
+      const contentChanged = this.whiteboard.content !== data.whiteboard.content;
+      let fitVersionBefore = null;
+      if (contentChanged) {
+        try { fitVersionBefore = await this.onBoardFitVersion(); } catch { /* best effort */ }
+      }
       this.whiteboard.content = data.whiteboard.content;
       this.whiteboard.version++;
       this.whiteboard.lastModified = now;
@@ -5748,14 +6159,18 @@ class LocalServer {
       // it — the two failures are independent and the bot needs to tell them
       // apart ("it didn't save" vs "it saved and nobody can see it").
       const readable = this.boardReadHealthy !== false;
-      // How much of it actually fit (#644). Measured in the share surface AFTER
-      // the write has rendered, so the author learns on the same round trip
-      // whether the room can see what it just wrote — no extra call, and a
-      // running sense of the budget accumulates over a call for free.
+      // How much of it actually fit (#644). The RENDERER measures itself and
+      // publishes the answer stamped with the board version it describes
+      // (vibeconferencing#540); we read that back and accept it only when the
+      // stamp is newer than the one we noted before the write. So the author
+      // learns on the same round trip whether the room can see what it just
+      // wrote — no extra call, no polling, and no timeout standing in for an
+      // answer — and a running sense of the budget accumulates for free.
       //
-      // Best-effort by design: nothing is being shared, the surface is busy, or
-      // the measurement throws — none of those should turn a successful board
-      // write into a failure. A missing measurement is silence, not a lie.
+      // Best-effort by design: nothing is being shared, the surface is busy, the
+      // website build in front of us is older than the publisher, or the read
+      // throws — none of those should turn a successful board write into a
+      // failure. A missing measurement is silence, not a lie.
       // NOTE: the note is FORMATTED here, on the Electron side, and shipped as a
       // finished string. mcp-server/ is copied into the package as extraResources
       // and cannot reach into electron-app/ — importing board-fit.js from there
@@ -5767,7 +6182,7 @@ class LocalServer {
       let fitNote = '';
       if (delivered !== false) {
         try {
-          fit = await this.onMeasureBoardFit();
+          fit = await this.onMeasureBoardFit({ previousVersion: fitVersionBefore });
           if (fit) {
             fitNote = formatFitReport(fit) + (fit.fits ? '' : formatBudget(fit));
           }

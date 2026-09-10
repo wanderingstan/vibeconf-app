@@ -1786,6 +1786,108 @@ function clickCaptionsWhenReady() {
   }, 1000);
 }
 
+// #737 — put the bot's own camera in the GRID rather than in Meet's floating
+// self view, so the recorded tile region is a plain rectangle.
+//
+// WHY: the floating self view overhangs the grid box (measured 2026-09-10, its
+// right edge sat 15px past the box at a 1600x900 view), so the union of tiles
+// is not the box, and none of the fixed insets bot-view-layout.js relies on
+// hold. In the grid, region = (width - 400) x (height - 360) exactly, which is
+// what makes a 16:9 recording possible at all (#735).
+//
+// This makes the raw region WIDER, not narrower — a 2-person call becomes a 2x1
+// grid, 2.06:1 -> 2.58:1 — and that is fine and expected: it trades a shape
+// nothing can correct for one the view size corrects exactly. It is also what
+// Stan asked for on its own merits, so every participant tile is the same size
+// in the recording.
+//
+// Best-effort throughout. Every failure here leaves the bot in a call with a
+// floating self view, which is the status quo, so nothing is worth throwing or
+// retrying forever over.
+const SELF_VIEW_MENU_SETTLE_MS = 400;
+let _selfViewInGridDone = false;
+
+function selfGridTile() {
+  const SV = MEET.selfView;
+  // The local participant's id comes from the People pane row marked "(You)";
+  // the grid tile is the element with that id that is NOT inside a panel.
+  const row = Array.from(document.querySelectorAll(`[role="listitem"][${MEET.people.idAttr}]`))
+    .find((li) => (li.textContent || '').includes(MEET.people.selfMarker));
+  const id = row && row.getAttribute(MEET.people.idAttr);
+  if (!id) return null;
+  return Array.from(document.querySelectorAll(`[${MEET.people.idAttr}="${CSS.escape(id)}"]`))
+    .find((el) => !el.closest('[role="complementary"], [role="region"], [role="dialog"], nav, header')) || null;
+}
+
+async function showSelfViewInGrid() {
+  const SV = MEET.selfView;
+  try {
+    const tile = selfGridTile();
+    if (!tile) return { ok: false, why: 'no self tile in the grid yet' };
+    const btn = tile.querySelector(SV.moreOptions);
+    if (!btn) return { ok: false, why: 'no More options button on the self tile' };
+
+    // Toggle, not opener: clicking an already-open menu closes it.
+    const before = new Set(document.querySelectorAll(SV.menu));
+    if (btn.getAttribute(SV.expandedAttr) !== 'true') btn.click();
+    await new Promise((r) => setTimeout(r, SELF_VIEW_MENU_SETTLE_MS));
+
+    // Scope to the menu that APPEARED. Meet keeps three unrelated menus in the
+    // DOM permanently (see meet-selectors.js selfView.menu), and a page-wide
+    // query happily returns those instead.
+    const opened = Array.from(document.querySelectorAll(SV.menu)).filter((m) => !before.has(m));
+    const scope = opened.length ? opened : [document];
+    let item = null;
+    for (const root of scope) {
+      item = Array.from(root.querySelectorAll(SV.menuItem)).find((el) => {
+        const label = el.querySelector(SV.menuItemLabel);
+        const text = ((label && label.textContent) || el.textContent || '').trim().toLowerCase();
+        return text.includes(SV.showInTileText);
+      });
+      if (item) break;
+    }
+    if (!item) {
+      // Almost always means it is ALREADY in the grid (Meet drops the item
+      // rather than disabling it), which is success, not failure. Close up.
+      if (btn.getAttribute(SV.expandedAttr) === 'true') btn.click();
+      return { ok: true, why: 'no "Show in a tile" item — already in the grid' };
+    }
+    if (item.getAttribute('aria-disabled') === 'true') return { ok: false, why: 'item disabled' };
+    item.click();
+    return { ok: true, why: 'clicked "Show in a tile"' };
+  } catch (err) {
+    return { ok: false, why: String((err && err.message) || err) };
+  }
+}
+
+// Meet renders the grid, the People pane and the self tile at different
+// moments after admission, so a one-shot attempt at admission misses. Same
+// shape as clickCaptionsWhenReady: retry on a slow tick, stop on success, and
+// give up quietly rather than polling for the rest of the call.
+function showSelfViewInGridWhenReady({ attempts = 20, everyMs = 1000 } = {}) {
+  if (_selfViewInGridDone) return;
+  let left = attempts;
+  const timer = setInterval(async () => {
+    if (_selfViewInGridDone) { clearInterval(timer); return; }
+    if (!inCallToolbarPresent()) {
+      if (--left <= 0) { clearInterval(timer); }
+      return; // still in the lobby, or the call ended
+    }
+    const res = await showSelfViewInGrid();
+    if (res.ok) {
+      _selfViewInGridDone = true;
+      clearInterval(timer);
+      console.log('[electron-meet] [self-view] in grid —', res.why, '(#737)');
+      return;
+    }
+    if (--left <= 0) {
+      clearInterval(timer);
+      console.warn('[electron-meet] [self-view] gave up putting the self view in the grid:', res.why,
+        '— recording keeps the floating-self-view shape, which no view size corrects (#735/#737)');
+    }
+  }, everyMs);
+}
+
 // Diagnostic: snapshot the full page DOM when the bot is stuck on an
 // unrecognized full-screen state — most importantly the "You can't join this
 // video call" denial page, which Meet auto-dismisses after ~30s (too fast to
@@ -2095,6 +2197,9 @@ async function autoJoin(botName) {
         // button is in the DOM, then clicks it. captionScraper.start()
         // also retries via its own loop, so this is a fast-path overlap.
         clickCaptionsWhenReady();
+        // #737: same reasoning as the captions waiter — the self tile and the
+        // People pane render after the toolbar does, so this retries.
+        showSelfViewInGridWhenReady();
         break;
       }
 

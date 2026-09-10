@@ -14,6 +14,7 @@ const {
   outlineScript,
   fallbackRect,
   PAD_CSS_PX,
+  TARGET_ASPECT,
   OUTLINE_ID,
 } = require('../electron-app/record-region.js');
 
@@ -108,4 +109,39 @@ test('the outline is drawn outside the box, so it can never be in the recording'
   assert.match(s, new RegExp(OUTLINE_ID));
   const removal = outlineScript(null);
   assert.match(removal, /\.remove\(\)/);
+});
+
+// --- reporting the achieved aspect (#735) ------------------------------------
+
+test('the region reports the aspect it actually achieved, and how far off 16:9 it is', () => {
+  // This is the early-warning instrument for #735: the view sizes are computed
+  // to make the region 16:9, so a non-zero offBy16x9Px in the session log means
+  // Meet's chrome moved and every recording has quietly gone oblong.
+  const spotOn = computeCropRect({
+    vw: 2320, vh: 1440, banner: null, videos: [],
+    tiles: [{ x: 12, y: 60, w: 1920, h: 1080 }],
+  }, { pad: 0 });
+  assert.equal(spotOn.aspect, 1.778);
+  assert.equal(spotOn.offBy16x9Px, 0, 'the default view size must report dead on');
+
+  const tooWide = computeCropRect({
+    vw: 2320, vh: 1440, banner: null, videos: [],
+    tiles: [{ x: 12, y: 60, w: 1920, h: 985 }], // a share moves the bottom band
+  }, { pad: 0 });
+  assert.ok(tooWide.aspect > TARGET_ASPECT, `expected wider than 16:9, got ${tooWide.aspect}`);
+  assert.ok(tooWide.offBy16x9Px > 0, 'positive px when too wide');
+  assert.equal(tooWide.offBy16x9Px, Math.round(1920 / TARGET_ASPECT - 985));
+
+  const tooTall = computeCropRect({
+    vw: 2320, vh: 1440, banner: null, videos: [],
+    tiles: [{ x: 12, y: 60, w: 900, h: 1080 }],
+  }, { pad: 0 });
+  assert.ok(tooTall.offBy16x9Px < 0, 'negative px when too tall');
+});
+
+test('reporting is reporting: the region itself is never moved to hit 16:9', () => {
+  const m = { vw: 2320, vh: 1440, banner: null, videos: [], tiles: [{ x: 12, y: 60, w: 1920, h: 985 }] };
+  const r = computeCropRect(m, { pad: 0 });
+  assert.ok(close(r.w, 1920 / 2320), 'width untouched');
+  assert.ok(close(r.h, 985 / 1440), 'height untouched — no silent growing or cropping here');
 });

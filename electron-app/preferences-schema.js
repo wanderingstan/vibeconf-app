@@ -230,6 +230,41 @@ const PREFERENCES = {
       'settled. The messy data needed to test utterance-completeness detection ' +
       '(#243). Verbose; turn ON only when collecting test data, OFF for normal use.',
   },
+  screenWakeMinGapMs: {
+    type: 'number',
+    default: 10000,
+    min: 0,
+    max: 600000,
+    description:
+      'With watchSharedScreen on, the minimum time between two screen wakes. '
+      + 'This is a THROTTLE, and it is not the same as the detector\'s settle, '
+      + 'which is a debounce: continuous typing never produces a settle at all, '
+      + 'because the frame never goes quiet. What this covers is discrete edits '
+      + 'with pauses — type a line, pause, type another — where every pause is a '
+      + 'genuine settle and would otherwise be a genuine wake. '
+      + 'Measured from the last WAKE, not the last settle, because the cost being '
+      + 'limited is the agent\'s turn rather than the detector\'s sample. '
+      + '0 disables it, leaving only the back-pressure of "no waiter, no wake".',
+  },
+
+  watchSharedScreen: {
+    type: 'boolean',
+    default: true,
+    label: 'Watch a shared screen for changes',
+    description:
+      'While in a call, sample the bot\'s Meet view every couple of seconds and '
+      + 'wake the bot when a shared screen CHANGES and then stops changing — so a '
+      + 'student who shares something in silence gets looked at instead of being '
+      + 'asked to share again (#673). The watching itself is arithmetic over a '
+      + '320x180 grid (electron-app/screen-settle.js): no vision model, no network, '
+      + 'no tokens. What it gates is the expensive look, which the agent takes only '
+      + 'when the picture actually moved. ON by default (Stan, 7 Sept): a student '
+      + 'who needs this would never find a setting to turn it on, so the failure it '
+      + 'prevents is silent while the cost of it being wrong is merely noise we can '
+      + 'hear and switch off. Turn it OFF for a meeting where someone presents slides '
+      + 'and nobody wants a remark on each one. Applies immediately, including mid-call.',
+    requiresRestart: false,
+  },
   recordCallAudio: {
     type: 'boolean',
     default: false,
@@ -281,22 +316,23 @@ const PREFERENCES = {
   },
   meetViewSize: {
     type: 'string',
-    default: '2560x1440',
-    enum: ['1600x900', '1920x1080', '2560x1440'],
+    default: '2320x1440',
+    enum: ['1360x900', '1680x1080', '2320x1440'],
     enumLabels: {
-      '1600x900': '1600 × 900 — smallest (a shared screen is usually too small to read)',
-      '1920x1080': '1920 × 1080 — roomier (large text on a shared screen only)',
-      '2560x1440': '2560 × 1440 — default (needed to read a shared screen; recording still capped at 1080p)',
+      '1360x900': '1360 × 900 — smallest (records 960 × 540; a shared screen is usually too small to read)',
+      '1680x1080': '1680 × 1080 — roomier (records 1280 × 720; large text on a shared screen only)',
+      '2320x1440': '2320 × 1440 — default (records 1920 × 1080; needed to read a shared screen)',
     },
     label: 'Bot\'s Meet view size',
     description:
       'How big the bot\'s own Google Meet view is, in pixels. Meet lays its grid out ' +
       'for this size, so a bigger view means bigger tiles when three or more people ' +
       'are on the call — which is what the bot sees in its screenshots and what the ' +
-      'call recording keeps. The trade-off is a larger capture: the recording\'s ' +
-      'pixel size grows with it (up to 1920 × 1080, where the capture is capped, so ' +
-      'the largest setting buys layout room rather than recording pixels). Applies ' +
-      'immediately, including mid-call.',
+      'call recording keeps. Each size is chosen so the recorded tile region comes ' +
+      'out exactly 16:9 — Meet\'s own chrome (the People pane, the caption strip, ' +
+      'the toolbar) is a fixed number of pixels, so the window has to be wider than ' +
+      '16:9 for what is recorded to be 16:9. The trade-off is a larger capture. ' +
+      'Applies immediately, including mid-call.',
     requiresRestart: false,
   },
   cropCallRecording: {
@@ -1162,7 +1198,15 @@ const PREFERENCES = {
 
   botSpeakOrdering: {
     type: 'string',
-    default: 'jitter',
+    // Ranked by default since 2026-09-09. It shipped in #426 (17 Aug) and was
+    // made usable without configuration in #430/#443 (19 Aug) — and then sat
+    // behind a 'jitter' default for three weeks, so no call ever ordered. Every
+    // [bot-order] line in the logs from that period reads the same way:
+    //     ranked ordering unavailable (botSpeakOrdering="jitter") — using jitter
+    // The fallback makes this safe to flip: when the order cannot be computed
+    // (no peers discovered, an unnamed roster) _rankedSpeakDelay returns null
+    // and the caller uses jitter, so the worst case is exactly the old default.
+    default: 'ranked',
     enum: ['jitter', 'ranked'],
     enumLabels: {
       jitter: 'Random jitter (each bot waits a random delay)',
@@ -1233,6 +1277,44 @@ const PREFERENCES = {
       + 'boundary — on 2026-08-17 two agents on two machines found no value '
       + 'this would accept, which left #426 unreachable in production (#430).',
   },
+  botSpeakSeed: {
+    type: 'string',
+    default: 'clock',
+    enum: ['clock', 'utterance'],
+    enumLabels: {
+      clock: 'Wall clock (portable; needs no agreement about caption text)',
+      utterance: 'The utterance being answered (the original; content must match)',
+    },
+    description:
+      'What the bots key their shared ordering on. Both are computed locally '
+      + 'with nothing exchanged; the question is only which shared fact they '
+      + 'use. "utterance" hashes the speaker plus the first 8 words of what was '
+      + 'said — content, which has to MATCH across machines, and which each '
+      + 'platform revises differently as its speech recognition settles. '
+      + '"clock" buckets the moment the speaker stopped (see '
+      + 'botSpeakClockBucketMs), which needs no agreement about text at all and '
+      + 'behaves the same on Meet, Zoom or Teams. Being addressed by name still '
+      + 'reads the utterance under both settings — that is content worth the '
+      + 'risk, and a whole-word name match is far more robust than a hash over '
+      + 'a text prefix.',
+  },
+
+  botSpeakClockBucketMs: {
+    type: 'number',
+    default: 6000,
+    min: 500,
+    max: 60000,
+    description:
+      'With botSpeakSeed="clock", the width of the time bucket the ordering is '
+      + 'keyed on. It sets one trade directly: two bots disagree only when a '
+      + 'bucket boundary falls between their observations of the same silence '
+      + 'edge, with probability (observation spread / this), so at the measured '
+      + '~180ms p90 spread a 6s bucket disagrees about 3% of the time and a 12s '
+      + 'bucket about 1.5%. The cost of a wider bucket is a slower rotation: the '
+      + 'order is constant WITHIN a bucket, so in a rapid exchange the same bot '
+      + 'can win several turns in a row before the winner changes.',
+  },
+
   botSpeakRankGapMs: {
     type: 'number',
     default: 500,
@@ -1248,6 +1330,32 @@ const PREFERENCES = {
       + 'default and could fall to ~250ms once speakingDetectionMode is "meter". '
       + 'It is also what a silent winner costs: the next bot in line waits this '
       + 'long before filling the gap.',
+  },
+
+  botSpeakReplayRankGapMs: {
+    type: 'number',
+    default: 500,
+    min: 0,
+    max: 5000,
+    description:
+      'The spacing between ranks for a HELD reply being replayed into an '
+      + 'opening (#442). Two bots that stashed during the same busy floor '
+      + 'otherwise wake on the same opening with nothing between them, which '
+      + '#442 called the most likely way a room with two bots still hears them '
+      + 'talk over each other. '
+      + 'Separate from botSpeakRankGapMs so a replay CAN be tuned tighter — '
+      + '#442 warned that a full gap per rank may push a held reply past the '
+      + 'opening it was waiting for. But it defaults to the same 500ms, '
+      + 'because that argument does not survive the constraint on the sibling '
+      + 'setting: the gap must EXCEED the time a bot needs to SEE another bot '
+      + 'start, or the loser\'s delay expires before it has noticed the winner '
+      + 'and both talk anyway. Shipped at 200ms first, which is below the '
+      + '360-460ms p90 of the mutation counter and level with the meter\'s '
+      + '180ms — i.e. it bought collisions, not latency. Lower it toward ~250 '
+      + 'only with speakingDetectionMode="meter". And the saving is small where '
+      + 'it matters: the extra 300ms is paid only when the higher-ranked bot '
+      + 'ABSTAINS, since otherwise the floor is busy and the reply waits for '
+      + 'the next opening regardless.',
   },
 
   botSpeakJitterMaxMs: {

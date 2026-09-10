@@ -1086,7 +1086,39 @@ function brainReuseOffset(prev, next) {
 // The lines currently in the DOM, in order. Compared against the incoming buffer
 // to work out the delta — see brainReuseOffset.
 let _brainRendered = [];
+
+// The session's Notification hook (permission prompt, idle nudge) surfaced
+// here — see local-server.js's setAgentNotification / getCallStateSnapshot.
+// Kept separate from renderBrain's "don't fight the user's scroll" gate below:
+// a stuck-on-you banner should never wait behind an unrelated scroll-position
+// check to appear.
+//
+// Built from nodes for the same reason brainLineNode is: the message is the
+// agent's own prompt text, verbatim, and innerHTML would render it as markup.
+//
+// Deliberately NOT named with the renderBrain prefix: tests/brain-pane.test.mjs
+// locates that function by a plain indexOf on its declaration, so a longer name
+// sharing the prefix and sitting above it silently hands those tests the wrong
+// body. (This comment avoids spelling the declaration out for the same reason.)
+function renderAgentNotification(s) {
+  const el = document.getElementById('brainNotification');
+  if (!el) return;
+  const n = s && s.agentNotification;
+  // style.display, not `hidden`: .brain-notification sets display:flex, which
+  // outranks the UA's [hidden] rule — the banner would never actually hide.
+  if (!n || !n.message) { el.style.display = 'none'; el.replaceChildren(); return; }
+  const icon = document.createElement('span');
+  icon.className = 'bn-icon';
+  icon.textContent = '⏸';
+  const msg = document.createElement('span');
+  msg.className = 'bn-message';
+  msg.textContent = `Waiting on you: ${n.message}`;
+  el.replaceChildren(icon, msg);
+  el.style.display = '';
+}
+
 function renderBrain(s) {
+  renderAgentNotification(s);
   const feed = document.getElementById('brainFeed');
   const status = document.getElementById('brainStatus');
   if (!feed) return;
@@ -2128,6 +2160,45 @@ function paintCalendarUpcoming(events, error) {
     lineSpan.style.textDecoration = 'line-through';
     calendarUpcomingText.appendChild(document.createTextNode(' ⚠️ (not yet accepted)'));
   }
+  // Say when there ARE others, without spending the room to list them. One
+  // line is the right size for "what is the bot about to do", but silence
+  // about the rest reads as "your other meeting is missing" — which is
+  // exactly how the 2026-08-24 two-at-noon confusion started, from the far
+  // side (the accepted meeting was the hidden one).
+  //
+  // Counted over TODAY, not over the list. The list is a 24h lookahead, so at
+  // 11am it runs to 11am tomorrow and a bare "+3 more" cannot be read: three
+  // more today, or three more between now and tomorrow morning? Counting the
+  // local calendar day makes the number mean exactly what the word says. A
+  // meeting tomorrow morning is then neither counted nor claimed.
+  const startOfTomorrow = new Date(next.start);
+  startOfTomorrow.setHours(24, 0, 0, 0);
+  const rest = (Array.isArray(events) ? events : [])
+    .slice(1)
+    .filter((e) => {
+      const t = new Date(e.start).getTime();
+      return Number.isFinite(t) && t < startOfTomorrow.getTime();
+    });
+  if (rest.length > 0) {
+    const moreSpan = document.createElement('span');
+    moreSpan.style.opacity = '0.75';
+    moreSpan.textContent = ` +${rest.length} more today`;
+    // Hover to see WHICH — a stopgap until there's a real upcoming-meetings
+    // view. A bare count answers "is anything else there?" but not "is the one
+    // I care about there?", which is the question that started this: the
+    // meeting Stan had accepted was present all along and simply not shown.
+    //
+    // Lists exactly what the count counts, so the tooltip and the word "today"
+    // can never disagree. Set as `title`, so it is plain text the browser
+    // escapes for us — these strings are calendar-sourced, and the line above
+    // deliberately builds DOM nodes rather than innerHTML for the same reason.
+    moreSpan.title = rest.map((e) => {
+      const when = new Date(e.start).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+      const name = e.summary || 'Untitled event';
+      return `${when} — ${name}${e.ownerConfirmed === false ? '  (not yet accepted)' : ''}`;
+    }).join('\n');
+    calendarUpcomingText.appendChild(moreSpan);
+  }
   calendarUpcomingBanner.style.display = 'flex';
 }
 api.on('calendar-upcoming', ({ events, error }) => paintCalendarUpcoming(events, error));
@@ -2198,6 +2269,9 @@ function loadConfigIntoControls() {
   // WOULD be used rather than a vague "(auto)" — same reason the field is
   // pinned on first use: the name is the thing you can type at `claude --resume`.
   if (agentSessionIdInput) agentSessionIdInput.placeholder = result?.botName || '(the bot’s name)';
+  // The stored value and the bot name are both known only now, so this is the
+  // first point at which a mismatch can be judged.
+  updateAgentSessionMismatch();
   if (result?.claudeModel) claudeModelInput.value = result.claudeModel;
   if (emojiSetInput && result?.emojiSet) {
     // emojiSet has two OPEN forms — `font:<Family>` and `dir:<path>` — and
@@ -3295,6 +3369,8 @@ botNameInput.addEventListener('change', () => {
     api.send('to-meet', { action: 'set-config', payload: { botName: typed } });
     updateBotNameBig();
     refreshBotIdentity(); // keep the guest "👤 Guest 'Name'" line in sync
+    // A rename can turn a matching session name into a mismatched one.
+    updateAgentSessionMismatch();
     return;
   }
   // Emptying the field CLEARS the stored name rather than persisting the
@@ -3316,6 +3392,7 @@ botNameInput.addEventListener('change', () => {
     if (info?.name) botNameInput.placeholder = info.name;
     updateBotNameBig();
     refreshBotIdentity();
+    updateAgentSessionMismatch();
   }).catch(() => {
     currentBotName = 'Unnamed bot';
     botNameDisplay = null;
@@ -3624,6 +3701,41 @@ async function refreshAgentSession() {
 }
 refreshAgentSession();
 
+// A typed Session name/id that isn't the bot's own name. It is a legal thing to
+// do — the field's whole point is that you CAN take it over — but it is far more
+// often a typo, and the failure is silent: the bot quietly resumes (or starts)
+// somebody else's session and stops following renames. So: amber, never
+// blocking, and worded for the two different things a mismatch can mean.
+function updateAgentSessionMismatch() {
+  // Looked up per call, not hoisted into a const: this runs from loadSettings,
+  // which can fire before this part of the file has been evaluated.
+  const agentSessionMismatchEl = document.getElementById('agentSessionMismatch');
+  if (!agentSessionIdInput || !agentSessionMismatchEl) return;
+  const typed = agentSessionIdInput.value.trim();
+  const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  // The name to compare against, freshest first. The field's own placeholder is
+  // the name as of the last settings load, and its "(the bot’s name)" fallback
+  // is not a name at all — comparing against that would warn on everything.
+  const placeholder = agentSessionIdInput.placeholder === '(the bot’s name)' ? '' : agentSessionIdInput.placeholder;
+  const botName = (botNameInput?.value.trim() || placeholder || currentBotName || '').trim();
+  const clean = () => {
+    agentSessionMismatchEl.style.display = 'none';
+    agentSessionMismatchEl.textContent = '';
+    agentSessionIdInput.classList.remove('is-warning');
+  };
+  // Empty = following the bot's name, which is the state this warns you left.
+  if (!typed || !botName || typed.toLowerCase() === botName.toLowerCase()) { clean(); return; }
+  agentSessionMismatchEl.textContent = SESSION_ID_RE.test(typed)
+    ? `Pinned to a session id, not to “${botName}”. This bot resumes that session and no longer follows renames — clear the field to go back to following its name.`
+    : `Doesn’t match this bot’s name (“${botName}”). This bot will use the session named “${typed}” instead, and renaming the bot won’t move it — clear the field to go back to following its name.`;
+  agentSessionMismatchEl.style.display = '';
+  agentSessionIdInput.classList.add('is-warning');
+}
+
+// On input, not just change: the warning is about what you are typing, and
+// waiting for blur means the field looks fine right up until you leave it.
+agentSessionIdInput?.addEventListener('input', updateAgentSessionMismatch);
+
 agentSessionIdInput?.addEventListener('change', async () => {
   const value = agentSessionIdInput.value.trim();
   // Typing here takes the field over, so renaming the bot no longer drags the
@@ -3632,6 +3744,7 @@ agentSessionIdInput?.addEventListener('change', async () => {
   await setConfig('agentSessionAuto', !value);
   await setConfig('agentSession', value);
   refreshAgentSession();
+  updateAgentSessionMismatch();
 });
 
 claudeModelInput.addEventListener('change', () => {

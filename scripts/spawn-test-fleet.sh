@@ -7,15 +7,15 @@
 #   profile   = test-meet-guest-1, …  (isolated userData: …/profiles/<name>;
 #               class prefix is test-meet-guest / test-meet-google / test-slack)
 #   port      = 7901, 7902, …     (distinct range from real bots 7865/7866)
-#   bot-name  = Alice, Jimmy, Cosmo, …  (Meet display name; the harness keys
+#   bot-name  = Alice, Bob, Charlie, …  (Meet display name; the harness keys
 #               scenarios on this — profile is just the sandbox, name is identity)
 #
 # Profile instances skip the Claude-terminal integration automatically, so this
 # only launches the apps. Drive them with: node scripts/meet-test.mjs
 #
 # Usage:
-#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Alice, Jimmy)
-#   scripts/spawn-test-fleet.sh 3          # 3 bots (adds Cosmo)
+#   scripts/spawn-test-fleet.sh            # 2 bots from SOURCE (Alice, Bob)
+#   scripts/spawn-test-fleet.sh 3          # 3 bots (adds Charlie)
 #   scripts/spawn-test-fleet.sh 2 --dmg    # drive the INSTALLED app (/Applications)
 #   scripts/spawn-test-fleet.sh 2 --built  # drive the freshly-BUILT app (dist/)
 #   scripts/spawn-test-fleet.sh 2 --kill   # stop a previously-spawned fleet
@@ -47,7 +47,7 @@ set -e
 # VIBECONF_REPO to point at a specific checkout.
 REPO="${VIBECONF_REPO:-${0:A:h:h}}"
 ELECTRON="$REPO/electron-app"
-NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Jimmy=-2)
+NAMES=(Alice Bob Charlie Dizzy)           # display names by index (Alice=-1, Bob=-2)
 # One macOS `say` voice per bot, parallel to NAMES.
 #
 # Every test bot used to sound IDENTICAL: the block below pins
@@ -57,11 +57,17 @@ NAMES=(Alice Jimmy Cosmo Dizzy)           # display names by index (Alice=-1, Ji
 # 2026-08-20). Distinct voices make the audio self-describing, which matters
 # because those recordings are the primary artifact when a lane fails.
 #
-# Chosen for CONTRAST first, not realism: Alice/Jimmy are the two-bot pair that
+# Chosen for CONTRAST first, not realism: Alice/Bob are the two-bot pair that
 # nearly every lane uses, so they get different genders AND different accents
 # (en_US vs en_GB) — distinguishable even through Meet's compression and even to
-# someone skimming at 2x.
-VOICES=(Samantha Daniel Karen "Ava (Premium)")
+# someone skimming at 2x. Charlie's Fred is the most distinctive of the lot,
+# which suits a bot that only appears as the third participant in the roster
+# tests. Dizzy keeps Karen (en_AU) now that Ava has moved to index 1.
+#
+# The name must match what `say -v '?'` prints EXACTLY, parenthetical and all —
+# "Ava" alone is not installed, and the guard below silently leaves the pref
+# alone for a voice it cannot find, which surfaces as the bot going mute mid-run.
+VOICES=("Ava (Premium)" Daniel Fred Karen)
 # Base local-server port for the fleet (bots use BASE_PORT, BASE_PORT+1, …).
 # Override with VIBECONF_BASE_PORT to run a fleet that WON'T collide with the
 # on-push CI smoke or the nightly (both use the 7901 default) — e.g. the long
@@ -116,18 +122,26 @@ elif (( GOOGLE )); then PROFILE_BASE="test-meet-google"
 else                   PROFILE_BASE="test-meet-guest"
 fi
 
-# Bot names are Alice (-1), Jimmy (-2) across ALL classes. For --google these
-# match the Google accounts signed into the google profiles (test-meet-google-1
-# = alice@spiritprotocol.io, test-meet-google-2 = jimmy@spiritprotocol.io); the
-# --meet-account-email pin below is derived from the same names.
+# Bot names are Alice (-1), Bob (-2), Charlie (-3) across ALL classes. For
+# --google these match the DEDICATED bot Google accounts signed into the google
+# profiles (test-meet-google-1 = alice_test@spiritprotocol.io, test-meet-google-2
+# = bob_test@spiritprotocol.io); the --meet-account-email pin below is derived
+# from the same names. charlie_test@ is reserved for a third bot login if one is
+# ever needed — no test-meet-google-3 profile exists yet.
+#
+# NB the accounts carry a _test SUFFIX (alice_test@, not alice@). They are
+# purpose-made bot logins, deliberately NOT the operator's own addresses, so the
+# derivation below inserts GTEST_EMAIL_SUFFIX rather than using the bare name.
 
 # For --google, deterministically PIN each profile's Google account (#282) so
 # joins use authuser=<email> and can't fall back to a stray default account. The
-# email is <lowercase-bot-name>@$GTEST_EMAIL_DOMAIN — matching the accounts you
-# sign the google profiles into. Override the domain via env if your bot accounts
-# live elsewhere. (Pinning only SELECTS the account; you still sign each profile
-# in once — the single partition starts fresh.)
+# email is <lowercase-bot-name>$GTEST_EMAIL_SUFFIX@$GTEST_EMAIL_DOMAIN — matching
+# the accounts you sign the google profiles into. Override either via env if your
+# bot accounts live elsewhere or drop the suffix with GTEST_EMAIL_SUFFIX=''.
+# (Pinning only SELECTS the account; you still sign each profile in once — the
+# single partition starts fresh.)
 GTEST_EMAIL_DOMAIN="${GTEST_EMAIL_DOMAIN:-spiritprotocol.io}"
+GTEST_EMAIL_SUFFIX="${GTEST_EMAIL_SUFFIX-_test}"
 
 # --kill: stop instances on the test ports (works regardless of how they launched).
 if (( KILL )); then
@@ -309,7 +323,7 @@ fi
 
 # Per-run name suffix (MEET ONLY): a SIGKILL'd bot ghosts in the Meet room until
 # the ~10min presence TTL, so a fresh run reusing the same names collides with the
-# ghost. A unique per-run suffix (e.g. Jimmy-r4af) sidesteps the collision; the
+# ghost. A unique per-run suffix (e.g. Bob-r4af) sidesteps the collision; the
 # graceful-leave above is the primary fix, this is belt-and-suspenders for when a
 # bot crashed and never left. meet-test resolves its per-name scenario by the BASE
 # name (before the last '-'), so the suffixed name still runs the right script.
@@ -344,7 +358,7 @@ for i in $(seq 1 $N); do
   # #282: pin this profile's Google account for --google runs (base name, not the
   # run-tagged display name). ${(L)...} is zsh lowercasing.
   ACCT_FLAG=""
-  (( GOOGLE )) && ACCT_FLAG="--meet-account-email=${(L)NAMES[$i]}@${GTEST_EMAIL_DOMAIN}"
+  (( GOOGLE )) && ACCT_FLAG="--meet-account-email=${(L)NAMES[$i]}${GTEST_EMAIL_SUFFIX}@${GTEST_EMAIL_DOMAIN}"
   WINFLAGS=""
   if (( GRID )); then
     idx=$(( i - 1 ))
@@ -381,7 +395,12 @@ for i in $(seq 1 $N); do
     echo "  ⚠️  voice \"$voice\" not installed — $name keeps the system default"
     voice=""
   fi
-  node -e 'const fs=require("fs");const p=process.argv[1]+"/config.json";const v=process.argv[2]||"";let c={};try{c=JSON.parse(fs.readFileSync(p,"utf8"))}catch{}let d=false;if(c.ttsProvider!=="macos-say"){c.ttsProvider="macos-say";d=true;}if(c.onboardingComplete!==true){c.onboardingComplete=true;d=true;}if(v&&c.macosVoice!==v){c.macosVoice=v;d=true;}if(d)fs.writeFileSync(p,JSON.stringify(c,null,2));' "$PROFDIR" "$voice"
+  # Writes go through profile-pref.mjs, which targets <profile>/agent/config.json
+  # — the store the app actually loads since #305. This used to write the loose
+  # <profile>/config.json directly, which the app stopped reading once its agent
+  # config existed: the voice pinning below looked applied on disk and did
+  # nothing at all in the running bot.
+  node "$REPO/scripts/profile-pref.mjs" "$PROFDIR" ttsProvider=macos-say onboardingComplete=true ${voice:+macosVoice="$voice"}
   # VIBECONF_REQUIRE_TOKEN=0: #201 made the local-server control API require a
   # Bearer token by default. The agent-less harness drives that API directly and
   # has no token, so with auth on every call returns {"error":"unauthorized"} and

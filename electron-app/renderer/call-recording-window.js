@@ -24,6 +24,9 @@
   // Absent means record the raw frame (the pref is off, or this is the
   // whiteboard-share track, which has no Meet chrome to crop).
   const INITIAL_CROP = parseCrop(params.get('crop'));
+  // Meet's fixed chrome height in CSS px (bot-view-layout.js MEET_CHROME_CSS),
+  // passed by main. Absent for capture windows that are not the Meet view.
+  const CHROME_H = Number(params.get('chromeh')) || 0;
   // How long to give main's first MEASURED region (its first tick is
   // asynchronous — it runs a script in the Meet page) before starting the
   // encoder on the query-string one. The canvas size is fixed for the whole
@@ -35,6 +38,9 @@
   // ideal; canvas.captureStream() only emits when the canvas actually
   // changes, so a still Meet view costs nothing extra.
   const CANVAS_FPS = 30;
+  // The shape every recording is written in. Not a guess: the view sizes in
+  // bot-view-layout.js are computed to make the measured region exactly this.
+  const OUTPUT_ASPECT = 16 / 9;
 
   function parseCrop(str) {
     if (!str) return null;
@@ -82,10 +88,19 @@
   // the request outright rather than degrade. Chromium keeps the source's own
   // aspect while fitting inside the box, so a genuinely non-16:9 window still
   // records undistorted — just bounded.
+  //
+  // The box is the VIEW, not the recording. What gets encoded is the cropped
+  // tile region, which is smaller: the view spends a fixed 400x360 CSS px on
+  // Meet's own chrome (bot-view-layout.js MEET_CHROME_CSS), so the largest view
+  // (2320x1440) carries a 1920x1080 region. Bounding the capture at 1920x1080
+  // would shrink that region to 1440x810 before it ever reached the canvas —
+  // 1080p of window, but only 810p of video. The box therefore matches the
+  // largest view size so the region lands at 1080p exactly. Smaller views
+  // capture at their own size (`ideal`, so no upscaling).
   const CAPTURE_CONSTRAINTS = {
     video: {
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
+      width: { ideal: 2320 },
+      height: { ideal: 1440 },
       frameRate: { ideal: 30 },
     },
   };
@@ -218,7 +233,40 @@
 
     const even = (n) => Math.max(2, Math.round(n / 2) * 2);
     const first = currentCrop || INITIAL_CROP;
-    const cw = even(sw * first.w), ch = even(sh * first.h);
+    // OUTPUT SHAPE, fixed for the whole recording, from the crop's WIDTH only.
+    //
+    // This used to be `even(sw * first.w) x even(sh * first.h)`, i.e. whatever
+    // shape Meet's layout happened to be in at FIRST_CROP_WAIT_MS. One sample,
+    // 1.5s in, decided the file's aspect for the entire call — which is why the
+    // same room recorded at 1.89, 1.97, 2.01 and 2.72:1 on different days, and
+    // why a call that opened with a screen share inherited the share's shape
+    // for its whole length.
+    //
+    // The region is now SUPPOSED to be 16:9: bot-view-layout.js sizes the view
+    // so that (width - 400) x (height - 360) is exactly 16:9 (#735). So take the
+    // width, which is the stable dimension — Meet's left inset and People pane
+    // are fixed, so the region's width does not move — and derive the height.
+    // In the ordinary case the region already is 16:9 and this computes the
+    // identical size it always did. In the cases it does not (a share moves the
+    // bottom band), the file is still 16:9 and draw()'s existing scale-to-fit
+    // letterboxes those frames rather than reshaping the whole recording.
+    // Prefer the FRAME over the sample. The region is a fixed inset of the view
+    // (bot-view-layout.js), and the capture box is never smaller than the view,
+    // so `sh - CHROME_H` is the region's height without needing to have
+    // measured it — which matters because the crop available at
+    // FIRST_CROP_WAIT_MS is often still the LOBBY, not the call. Measured
+    // 2026-09-10: the first crop was 2296x1295 (near full frame) and the real
+    // one, a second later, was 1913x1080. Sizing off the former gave a correct
+    // 16:9 file at 2296x1292 that then upscaled the real region into it by 20%.
+    // With the frame: 1920x1080, no upscale.
+    let cw, ch;
+    if (CHROME_H > 0 && sh - CHROME_H > 0) {
+      ch = even(sh - CHROME_H);
+      cw = even(ch * OUTPUT_ASPECT);
+    } else {
+      cw = even(sw * first.w);
+      ch = even(cw / OUTPUT_ASPECT);
+    }
     const canvas = document.createElement('canvas');
     canvas.width = cw; canvas.height = ch;
     const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });

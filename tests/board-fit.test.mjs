@@ -1,12 +1,15 @@
 // board-fit.test.mjs — the board tells the bot how much of it actually fit.
 //
-// The bug this guards against is silent: measure the DOCUMENT instead of the
-// scrolling element and every board ever written reports "fits", including the
-// 2.21-screenful one measured live on 2026-09-06 that had 966px below the fold.
-// A confident wrong answer is worse than no answer, because the bot stops
-// checking. So the first test here runs the real measurement script against a
-// DOM shaped like the actual whiteboard — document 800px, inner .wb-slide
-// scrolling to 1766px — and fails if the answer comes from the document.
+// The bug these guard against is silent, and it shipped twice: report the
+// PREVIOUS board's numbers as if they described the one just written. An author
+// told "3.11 screenfuls, 1687px over" cuts the board again — and the board it is
+// cutting was already fine. A confident wrong answer is worse than none.
+//
+// The app no longer measures the board from outside. The renderer publishes its
+// own measurement stamped with the board version it describes
+// (vibeconferencing#540), and this module reads it and accepts it only when the
+// stamp is NEWER than the one that was there before the write. So the tests that
+// matter are about the version comparison, not about DOM geometry.
 //
 // Run: node --test tests/board-fit.test.mjs
 
@@ -15,227 +18,210 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { MEASURE_SCRIPT, formatFitReport, formatBudget } = require('../electron-app/board-fit.js');
+const {
+  FIT_VERSION_SCRIPT, readFitScriptFor, formatFitReport, formatBudget, FAILSAFE_TIMEOUT_MS,
+} = require('../electron-app/board-fit.js');
 
-// ── A DOM stub shaped like the whiteboard ────────────────────────────────────
-// Only what MEASURE_SCRIPT touches. Real numbers from the 2026-09-06 board.
-function makeDom({ viewport = 800, content = 1766, blocks = [] } = {}) {
-  const mk = (spec, top) => ({
-    tagName: spec.tag,
-    textContent: spec.text,
-    scrollHeight: spec.h,
-    clientHeight: spec.h,
-    scrollTop: 0,
-    parentElement: { closest: () => null },   // all top-level
-    getBoundingClientRect: () => ({ top, height: spec.h }),
-    querySelectorAll: () => [],
-  });
+// ── A published measurement, shaped like the renderer's ──────────────────────
+// Real numbers from the 2026-09-06 board: 800px of viewport, 1766px of content.
+const publishedFit = (version, over = {}) => ({
+  version,
+  measuredAt: 1757000000000,
+  viewportPx: 800,
+  contentPx: 1766,
+  overflowPx: 966,
+  screenfuls: 2.21,
+  fits: false,
+  lastFullyVisible: 'P: the paragraph above the fold',
+  firstCutOff: 'TABLE: the one that got cut',
+  blocks: 6,
+  constants: {
+    P: { count: 2, avgPx: 95, pxPerChar: 0.559 },
+    TABLE: { count: 1, avgPx: 765, pxPerChar: 1.024 },
+    H1: { count: 1, avgPx: 60, pxPerChar: 3.0 },
+  },
+  ...over,
+});
 
-  let y = 0;
-  const els = blocks.map((b) => { const el = mk(b, y); y += b.h; return el; });
-
-  const slide = {
-    tagName: 'DIV',
-    className: 'wb-slide',
-    clientHeight: viewport,
-    scrollHeight: content,
-    scrollTop: 0,
-    getBoundingClientRect: () => ({ top: 0, height: viewport }),
-    querySelectorAll: () => els,
-  };
-
-  // The document reports 800/800 — no overflow — which is the trap.
-  const docEl = { clientHeight: viewport, scrollHeight: viewport };
-  const body = { querySelectorAll: () => els, getBoundingClientRect: () => ({ top: 0 }), scrollTop: 0 };
-
-  return {
-    querySelectorAll: (sel) => (sel === '*' ? [slide, ...els] : els),
-    querySelector: (sel) => (sel === '.wb-slide' ? slide : null),
-    documentElement: docEl,
-    body,
-  };
-}
-
-// The script is async now — it waits for the board to stop reflowing before
-// measuring (see TRAP 2 in board-fit.js). The stub is a STATIC dom, so heights
-// never change and it settles on the second reading.
-async function measure(dom) {
+// Run the reader script the way the share surface would, against a fake window.
+//
+// `window.__vcBoardFit` may be a function of time: `publishAfter` models the
+// renderer landing its measurement N poll ticks after we started looking, which
+// is the normal case (the write is a network round trip away from the pixels).
+//
+// The clock is FAKE and driven by the stubbed setTimeout, so the failsafe test
+// does not sit here for real seconds — and `Date` is injected precisely so the
+// script's own `Date.now()` reads it.
+async function readFit(previousVersion, { fitAt = () => null } = {}) {
+  let clock = 0;
+  const win = { get __vcBoardFit() { return fitAt(clock); } };
+  const setTimeout = (cb, ms) => { clock += ms; cb(); };
+  const FakeDate = { now: () => clock };
   // eslint-disable-next-line no-new-func
-  return new Function('document', 'requestAnimationFrame', 'setTimeout', `return ${MEASURE_SCRIPT}`)(
-    dom,
-    (cb) => cb(),                       // commit the frame immediately
-    (cb) => cb(),                       // and don't really sleep between polls
+  return new Function('window', 'setTimeout', 'Date', `return ${readFitScriptFor(previousVersion)}`)(
+    win, setTimeout, FakeDate,
   );
 }
 
-const BOARD_BLOCKS = [
-  { tag: 'H1', text: 'Bethany — two tracks', h: 60 },
-  { tag: 'H2', text: 'TRACK 1 · Scripty in class — starts in 1-2 weeks', h: 61 },
-  { tag: 'P', text: 'x'.repeat(170), h: 95 },
-  { tag: 'TABLE', text: 'y'.repeat(747), h: 765 },   // pushes past the fold
-  { tag: 'H2', text: 'TRACK 2 · Her cohort installing it themselves', h: 61 },
-  { tag: 'P', text: 'z'.repeat(120), h: 95 },
-];
+// The reader waits for a measurement stamped NEWER than the one there before the
+// write. This is the whole mechanism: no height polling, no settle heuristic.
+test('a measurement with a NEWER version is accepted, and marked settled', async () => {
+  const m = await readFit(41, { fitAt: (t) => publishedFit(t >= 200 ? 42 : 41) });
 
-test('measures the SCROLLING element, not the document — the trap', async () => {
-  const m = await measure(makeDom({ blocks: BOARD_BLOCKS }));
-
-  // If this reads the document it sees 800 vs 800 and says it fits.
-  assert.equal(m.fits, false, 'must not report fits when content overflows the scroller');
-  assert.equal(m.viewportPx, 800);
+  assert.equal(m.settled, true);
+  assert.equal(m.version, 42);
   assert.equal(m.contentPx, 1766);
-  assert.equal(m.overflowPx, 966);
   assert.equal(m.screenfuls, 2.21);
+  assert.equal(m.fits, false);
 });
 
-test('names the block that got cut, which is what the author can act on', async () => {
-  const m = await measure(makeDom({ blocks: BOARD_BLOCKS }));
+// THE STALE-BOARD BUG. The previous board sits there fully rendered and
+// perfectly stable, and its measurement is already published. Anything that
+// accepts what it finds — or accepts an equal version — reports the board that
+// was just overwritten. Delete the `> PREV` comparison in board-fit.js and this
+// test fails: the reader returns settled:true for version 41.
+test('the SAME version is rejected — that is the board we just overwrote', async () => {
+  const m = await readFit(41, { fitAt: () => publishedFit(41) });
 
-  // H1 60 + H2 61 + P 95 = 216; the TABLE runs 216→981, crossing the 800 fold.
-  assert.match(m.firstCutOff, /^TABLE:/);
-  assert.match(m.lastFullyVisible, /^P:/);
+  assert.equal(m.settled, false,
+    'a measurement stamped with the pre-write version describes the OLD board');
+  assert.match(formatFitReport(m), /may describe the previous/);
 });
 
-test('a board that fits says so, and is not scolded', async () => {
-  const short = [
-    { tag: 'H1', text: 'Short board', h: 60 },
-    { tag: 'P', text: 'a'.repeat(100), h: 95 },
-  ];
-  const m = await measure(makeDom({ viewport: 800, content: 800, blocks: short }));
+test('an OLDER version is rejected too', async () => {
+  const m = await readFit(41, { fitAt: () => publishedFit(7) });
 
-  assert.equal(m.fits, true);
-  assert.equal(m.overflowPx, 0);
-  assert.doesNotMatch(formatFitReport(m), /DOES NOT FIT/);
-  assert.match(formatFitReport(m), /Fits/);
+  assert.equal(m.settled, false);
 });
 
-test('the overflow report leads with the lost content, not the pixel count', async () => {
-  const m = await measure(makeDom({ blocks: BOARD_BLOCKS }));
+// GREATER THAN, not equal to: the app's local counter and the sync server's INCR
+// can diverge (another client wrote, or a reconnect resynced), and a measurement
+// newer than the board we replaced is still a correct answer for what is on
+// screen right now. Requiring exact equality would throw good measurements away.
+test('a version that jumped past ours is still accepted', async () => {
+  const m = await readFit(41, { fitAt: () => publishedFit(58) });
+
+  assert.equal(m.settled, true);
+  assert.equal(m.version, 58);
+});
+
+// The whiteboard is rendered by the WEBSITE, so a user on a build older than
+// vibeconferencing#540 never publishes anything. That has to be silence — and
+// silence must not fail the write.
+test('no __vcBoardFit at all → null, so the write reports nothing rather than guessing', async () => {
+  const m = await readFit(41, { fitAt: () => undefined });
+
+  assert.equal(m, null);
+  assert.equal(formatFitReport(m), '', 'null must format to nothing, not to a hedge');
+  assert.equal(formatBudget(m), '');
+});
+
+test('a half-formed publication is treated as absent, not measured', async () => {
+  // No viewportPx means nothing can be divided by it; reporting 0 screenfuls
+  // would be a fabricated number.
+  const m = await readFit(41, { fitAt: () => ({ version: 99 }) });
+
+  assert.equal(m, null);
+});
+
+// The failsafe. The renderer is wedged, or SSE never delivers, so a newer
+// measurement never appears. We must not hold the write open forever, and we
+// must not present the old board's numbers as fact.
+test('the failsafe expires → settled:false, and the caveat fires', async () => {
+  let looks = 0;
+  const m = await readFit(41, { fitAt: () => { looks += 1; return publishedFit(41); } });
+
+  assert.equal(m.settled, false);
+  assert.ok(looks > 1, 'it should have kept looking rather than answering on the first read');
   const report = formatFitReport(m);
-
-  assert.match(report, /DOES NOT FIT/);
-  assert.match(report, /2\.21 screenfuls/);
-  assert.match(report, /Cut from: "TABLE:/);
-  // It must say the room cannot rescue itself — that is WHY this matters.
-  assert.match(report, /cannot scroll/);
-});
-
-test('density constants are measured per element type, not assumed', async () => {
-  const m = await measure(makeDom({ blocks: BOARD_BLOCKS }));
-
-  // A table costs far more height per character than prose; a bot budgeting
-  // with one number for both will overshoot badly on a table-heavy board.
-  assert.ok(m.constants.TABLE.pxPerChar > m.constants.P.pxPerChar,
-    'table should cost more per char than prose');
-  // Headings are a fixed cost — px-per-char is meaningless, so avgPx carries it.
-  assert.equal(m.constants.H1.avgPx, 60);
-});
-
-test('budget only quotes what was actually on the board', async () => {
-  const proseOnly = [
-    { tag: 'H1', text: 'Just prose', h: 60 },
-    { tag: 'P', text: 'p'.repeat(200), h: 110 },
-  ];
-  const m = await measure(makeDom({ viewport: 800, content: 800, blocks: proseOnly }));
-  const budget = formatBudget(m);
-
-  assert.match(budget, /prose ~\d+ chars\/screen/);
-  // No table on this board, so inventing a table figure would be a guess
-  // presented as a measurement.
-  assert.doesNotMatch(budget, /table/);
-});
-
-test('an unmeasurable surface returns null rather than a confident zero', async () => {
-  const empty = {
-    querySelectorAll: () => [],
-    querySelector: () => null,
-    documentElement: { clientHeight: 0, scrollHeight: 0 },
-    body: { querySelectorAll: () => [], getBoundingClientRect: () => ({ top: 0 }), scrollTop: 0 },
-  };
-  assert.equal(await measure(empty), null);
-  assert.equal(formatFitReport(null), '');
-  assert.equal(formatBudget(null), '');
-});
-
-test('the measurement does not change with scroll position', async () => {
-  // Same board, scrolled to the bottom. Note what actually moves: a scrolling
-  // CONTAINER stays where it is — only its content slides up — so the slide's
-  // own rect is unchanged and each block's rect.top drops by scrollTop. (My
-  // first version of this test moved the container instead and failed, which
-  // is a fair reminder that the stub is a model and can be wrong.)
-  // The script adds scrollTop back, so the answer must be identical.
-  const dom = makeDom({ blocks: BOARD_BLOCKS });
-  const before = await measure(dom);
-
-  const slide = dom.querySelector('.wb-slide');
-  const scrolled = 966;
-  slide.scrollTop = scrolled;
-  for (const el of dom.querySelectorAll('block')) {
-    const orig = el.getBoundingClientRect();
-    el.getBoundingClientRect = () => ({ top: orig.top - scrolled, height: orig.height });
-  }
-
-  const after = await measure(dom);
-  assert.equal(after.overflowPx, before.overflowPx);
-  assert.equal(after.firstCutOff, before.firstCutOff,
-    'a scrolled board must not report a different cut point');
-});
-
-// ── TRAP 2: the measurement must not describe the PREVIOUS board ─────────────
-// Live on 2026-09-06, minutes after shipping the fit report: a board cut from
-// ~4,000 chars to ~1,200 still reported "3.11 screenfuls, 1687px over" and
-// quoted the OLD board's last visible line. It had already become 1.04
-// screenfuls. A stale report is worse than none — it tells the author the cut
-// failed, so they cut again, and the board was already fine.
-
-// A DOM that reflows LATE: the scroller reports the old tall height for the
-// first few readings, then settles to the new short one. Measuring eagerly
-// returns the tall (wrong) answer; waiting for it to settle returns the right one.
-function makeReflowingDom({ oldHeight = 2489, newHeight = 836, settleAfter = 3 } = {}) {
-  let reads = 0;
-  const block = {
-    tagName: 'P', textContent: 'x'.repeat(400), scrollHeight: 100, clientHeight: 100,
-    scrollTop: 0, parentElement: { closest: () => null },
-    getBoundingClientRect: () => ({ top: 0, height: 100 }), querySelectorAll: () => [],
-  };
-  const slide = {
-    tagName: 'DIV', className: 'wb-slide', clientHeight: 800, scrollTop: 0,
-    get scrollHeight() { reads += 1; return reads <= settleAfter ? oldHeight : newHeight; },
-    getBoundingClientRect: () => ({ top: 0, height: 800 }),
-    querySelectorAll: () => [block],
-  };
-  return {
-    querySelectorAll: (sel) => (sel === '*' ? [slide, block] : [block]),
-    querySelector: (sel) => (sel === '.wb-slide' ? slide : null),
-    documentElement: { clientHeight: 800, scrollHeight: 800 },
-    body: { querySelectorAll: () => [block], getBoundingClientRect: () => ({ top: 0 }), scrollTop: 0 },
-  };
-}
-
-test('waits for the board to stop reflowing before measuring', async () => {
-  const m = await measure(makeReflowingDom());
-
-  // The eager answer is 2489px (3.11 screenfuls) — the board BEFORE the edit.
-  // Settling must yield the new, shorter board instead.
-  assert.equal(m.settled, true, 'should report having settled');
-  assert.equal(m.contentPx, 836, 'must measure the NEW board, not the previous layout');
-  assert.notEqual(m.screenfuls, 3.11, 'reporting the pre-edit board is the bug');
-});
-
-test('an unsettled measurement is flagged, not presented as fact', () => {
-  // A board that never stops changing hits the timeout. It still reports — the
-  // write must not be held up — but the caller has to say the number is suspect.
-  const unsettled = {
-    settled: false, viewportPx: 800, contentPx: 2489, overflowPx: 1689,
-    screenfuls: 3.11, fits: false, lastFullyVisible: 'P: old content', firstCutOff: null,
-    blocks: 4, constants: {},
-  };
-  const report = formatFitReport(unsettled);
-
-  assert.match(report, /DOES NOT FIT/);
+  assert.match(report, /DOES NOT FIT/, 'the numbers are still reported — the write is not held up');
   assert.match(report, /may describe the previous/,
     'an unsettled reading must be caveated, or it sends the author cutting a board that was fine');
+});
 
-  // And a settled one carries no such hedge.
-  assert.doesNotMatch(formatFitReport({ ...unsettled, settled: true }), /may describe the previous/);
+test('the failsafe is bounded, not open-ended', async () => {
+  // Fake clock ticks POLL ms per sleep, so a bounded loop terminates; an
+  // unbounded one hangs this test rather than passing it.
+  assert.ok(FAILSAFE_TIMEOUT_MS > 0 && FAILSAFE_TIMEOUT_MS <= 10000);
+  const m = await readFit(41, { fitAt: () => publishedFit(41) });
+  assert.equal(m.settled, false);
+});
+
+// Nothing was published before the write (first render of the session, or a
+// board that has never been written). Then anything we find here appeared after
+// the write, so there is nothing to compare against and nothing to hedge.
+test('no prior version → the first measurement to appear is accepted', async () => {
+  const m = await readFit(null, { fitAt: () => publishedFit(1) });
+
+  assert.equal(m.settled, true);
+  assert.equal(m.version, 1);
+});
+
+// ── The version probe taken before the write ─────────────────────────────────
+const probeVersion = (win) =>
+  // eslint-disable-next-line no-new-func
+  new Function('window', `return ${FIT_VERSION_SCRIPT}`)(win);
+
+test('the pre-write probe reads the published version, or null when there is none', () => {
+  assert.equal(probeVersion({ __vcBoardFit: publishedFit(41) }), 41);
+  assert.equal(probeVersion({}), null);
+  assert.equal(probeVersion({ __vcBoardFit: { version: 'nope' } }), null);
+  assert.equal(probeVersion({ __vcBoardFit: publishedFit(0) }), 0,
+    'version 0 is a real version, not a missing one');
+});
+
+// A board on version 0 that is never rewritten would be indistinguishable from
+// "nothing published" if the probe returned null for 0 — and the reader would
+// then accept the OLD board as new. Guard the boundary explicitly.
+test('version 0 before the write still requires a newer measurement after it', async () => {
+  assert.equal((await readFit(0, { fitAt: () => publishedFit(0) })).settled, false);
+  assert.equal((await readFit(0, { fitAt: () => publishedFit(1) })).settled, true);
+});
+
+// ── The report the agent actually reads ──────────────────────────────────────
+test('a board that fits says so, and is not scolded', () => {
+  const m = { ...publishedFit(9), contentPx: 500, overflowPx: 0, screenfuls: 0.63, fits: true, settled: true };
+
+  assert.doesNotMatch(formatFitReport(m), /DOES NOT FIT/);
+  assert.match(formatFitReport(m), /Fits, with about 300px to spare/);
+});
+
+test('a board that overflows names the block that got cut — what the author can act on', () => {
+  const report = formatFitReport({ ...publishedFit(9), settled: true });
+
+  assert.match(report, /DOES NOT FIT: 2\.21 screenfuls, 966px below the fold/);
+  assert.match(report, /Cut from: "TABLE: the one that got cut"/);
+  assert.match(report, /Last fully visible: "P: /);
+  assert.doesNotMatch(report, /may describe the previous/, 'a settled reading carries no hedge');
+});
+
+test('the budget reports only element types the board actually contained', () => {
+  const budget = formatBudget({ ...publishedFit(9), settled: true });
+
+  assert.match(budget, /prose ~1431 chars\/screen/);   // 800 / 0.559
+  assert.match(budget, /table ~781 chars\/screen/);    // 800 / 1.024
+  assert.match(budget, /each heading ~60px of 800/);
+
+  // A board with no table cannot say what a table costs.
+  const noTable = { ...publishedFit(9), constants: { P: { count: 2, avgPx: 95, pxPerChar: 0.5 } } };
+  assert.doesNotMatch(formatBudget(noTable), /table/);
+});
+
+test('nothing measured formats to nothing at all', () => {
+  assert.equal(formatFitReport(null), '');
+  assert.equal(formatBudget(null), '');
+  assert.equal(formatFitReport({ settled: true }), '', 'no viewport means no answer');
+});
+
+// ── The polling is gone ──────────────────────────────────────────────────────
+// Not decoration: the height/signature settle loop is the thing being deleted,
+// and a re-introduction would silently bring the stale reports back with it.
+test('the reader does not measure the DOM or poll for a settle', () => {
+  const src = readFitScriptFor(41);
+
+  assert.match(src, /__vcBoardFit/, 'it reads what the renderer published');
+  assert.doesNotMatch(src, /scrollHeight|clientHeight|getBoundingClientRect/,
+    'measuring geometry from outside is exactly the losing game this replaces');
+  assert.doesNotMatch(src, /data-sig/, 'the content-signature phase is gone');
+  assert.doesNotMatch(src, /\.wb-slide/, 'no reaching into the renderer\'s markup');
 });

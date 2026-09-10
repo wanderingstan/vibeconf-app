@@ -46,6 +46,11 @@
 // slack on the top edge is a pixel of the banner's drop shadow.
 const PAD_CSS_PX = 4;
 
+// What a recording is supposed to come out as. The view sizes in
+// bot-view-layout.js are chosen so the measured region lands here (#735), so
+// this is a yardstick for reporting, not something this module enforces.
+const TARGET_ASPECT = 16 / 9;
+
 // Below this, a change in the measured region is treated as jitter and not
 // re-sent to the capture window (which would otherwise redraw its letterbox
 // for a sub-pixel wobble every tick). Fraction of the viewport per edge.
@@ -78,13 +83,33 @@ const MEASURE_SCRIPT = `(() => {
   for (const el of document.querySelectorAll('[data-participant-id]')) {
     if (inChrome(el)) continue;
     const b = rect(el);
-    if (onScreen(b)) tiles.push(b);
+    if (onScreen(b)) tiles.push({ ...b, id: el.getAttribute('data-participant-id') || null });
   }
   const videos = [];
   for (const el of document.querySelectorAll('video')) {
     if (inChrome(el)) continue;
     const b = rect(el);
-    if (onScreen(b)) videos.push(b);
+    // The id of the TILE this video sits in, so a caller can tell whose stream
+    // it is. Grid tiles carry no marker saying "this one is the presentation"
+    // (measured live 2026-09-03, #673) — the only route is to match this id
+    // against the sharer's, which the People pane does report.
+    if (onScreen(b)) {
+      const owner = el.closest('[data-participant-id]');
+      videos.push({ ...b, id: owner ? owner.getAttribute('data-participant-id') : null });
+    }
+  }
+
+  // WHO IS SHARING, from the People pane, which is the one place Meet says so.
+  // The pane marks a share with the literal word in the tile's status row; the
+  // class is a minified token that changes between builds, the word does not.
+  // Mirrors isPresentationTile() in google-meet-provider.js deliberately: this
+  // script is injected as a self-contained string and cannot import it.
+  const presenting = [];
+  for (const item of document.querySelectorAll('[role="listitem"]')) {
+    const id = item.getAttribute('data-participant-id');
+    if (!id) continue;
+    const row = item.querySelector('.d93U2d');
+    if (row && (row.textContent || '').toLowerCase().includes('presentation')) presenting.push(id);
   }
   const banner = document.getElementById('vibeconf-status-bar');
   const captions = document.querySelector('div[role="region"][aria-label="Captions"]');
@@ -92,7 +117,7 @@ const MEASURE_SCRIPT = `(() => {
     vw, vh,
     banner: banner ? rect(banner) : null,
     captions: captions ? rect(captions) : null,
-    tiles, videos,
+    tiles, videos, presenting,
   };
 })()`;
 
@@ -137,13 +162,23 @@ function computeCropRect(m, { pad = PAD_CSS_PX } = {}) {
   const bannerOverlapPx = (m.banner && validRect(m.banner))
     ? Math.max(0, Math.round(Math.min(y1, m.banner.y + m.banner.h) - Math.max(y0, m.banner.y)))
     : 0;
+  // Reported, never enforced. bot-view-layout.js sizes the view so this lands
+  // at 16:9; logging what it ACTUALLY came out as is how a drift gets noticed
+  // in the session log rather than on YouTube — if Meet changes its chrome, the
+  // insets that law is built on move and every recording quietly goes oblong.
+  // offBy16x9Px is the CSS px of height between here and 16:9, signed: positive
+  // when the region is too wide, negative when too tall, 0 when spot on.
+  const rw = x1 - x0, rh = y1 - y0;
+  const offBy16x9Px = Math.round(rw / TARGET_ASPECT - rh);
   return {
     x: x0 / m.vw,
     y: y0 / m.vh,
-    w: (x1 - x0) / m.vw,
-    h: (y1 - y0) / m.vh,
+    w: rw / m.vw,
+    h: rh / m.vh,
     strategy,
     bannerOverlapPx,
+    aspect: Math.round((rw / rh) * 1000) / 1000,
+    offBy16x9Px,
   };
 }
 
@@ -197,6 +232,7 @@ module.exports = {
   outlineScript,
   fallbackRect,
   PAD_CSS_PX,
+  TARGET_ASPECT,
   CHANGE_EPSILON,
   OUTLINE_ID,
 };

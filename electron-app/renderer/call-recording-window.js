@@ -82,10 +82,19 @@
   // the request outright rather than degrade. Chromium keeps the source's own
   // aspect while fitting inside the box, so a genuinely non-16:9 window still
   // records undistorted — just bounded.
+  //
+  // The box is the VIEW, not the recording. What gets encoded is the cropped
+  // tile region, which is smaller: the view spends a fixed 400x360 CSS px on
+  // Meet's own chrome (bot-view-layout.js MEET_CHROME_CSS), so the largest view
+  // (2320x1440) carries a 1920x1080 region. Bounding the capture at 1920x1080
+  // would shrink that region to 1440x810 before it ever reached the canvas —
+  // 1080p of window, but only 810p of video. The box therefore matches the
+  // largest view size so the region lands at 1080p exactly. Smaller views
+  // capture at their own size (`ideal`, so no upscaling).
   const CAPTURE_CONSTRAINTS = {
     video: {
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
+      width: { ideal: 2320 },
+      height: { ideal: 1440 },
       frameRate: { ideal: 30 },
     },
   };

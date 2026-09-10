@@ -316,22 +316,23 @@ const PREFERENCES = {
   },
   meetViewSize: {
     type: 'string',
-    default: '2560x1440',
-    enum: ['1600x900', '1920x1080', '2560x1440'],
+    default: '2320x1440',
+    enum: ['1360x900', '1680x1080', '2320x1440'],
     enumLabels: {
-      '1600x900': '1600 × 900 — smallest (a shared screen is usually too small to read)',
-      '1920x1080': '1920 × 1080 — roomier (large text on a shared screen only)',
-      '2560x1440': '2560 × 1440 — default (needed to read a shared screen; recording still capped at 1080p)',
+      '1360x900': '1360 × 900 — smallest (records 960 × 540; a shared screen is usually too small to read)',
+      '1680x1080': '1680 × 1080 — roomier (records 1280 × 720; large text on a shared screen only)',
+      '2320x1440': '2320 × 1440 — default (records 1920 × 1080; needed to read a shared screen)',
     },
     label: 'Bot\'s Meet view size',
     description:
       'How big the bot\'s own Google Meet view is, in pixels. Meet lays its grid out ' +
       'for this size, so a bigger view means bigger tiles when three or more people ' +
       'are on the call — which is what the bot sees in its screenshots and what the ' +
-      'call recording keeps. The trade-off is a larger capture: the recording\'s ' +
-      'pixel size grows with it (up to 1920 × 1080, where the capture is capped, so ' +
-      'the largest setting buys layout room rather than recording pixels). Applies ' +
-      'immediately, including mid-call.',
+      'call recording keeps. Each size is chosen so the recorded tile region comes ' +
+      'out exactly 16:9 — Meet\'s own chrome (the People pane, the caption strip, ' +
+      'the toolbar) is a fixed number of pixels, so the window has to be wider than ' +
+      '16:9 for what is recorded to be 16:9. The trade-off is a larger capture. ' +
+      'Applies immediately, including mid-call.',
     requiresRestart: false,
   },
   cropCallRecording: {

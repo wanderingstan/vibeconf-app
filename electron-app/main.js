@@ -11020,7 +11020,9 @@ function setBotViewState(state) {
       // so on a Retina display the captured frame is 2x this. The capture
       // constraint in renderer/call-recording-window.js is what bounds the
       // actual encoded resolution; this only fixes the SHAPE.
-      width: 960, height: 540,
+      // Region 560x315, i.e. 16:9, by the same law the view sizes use. Was
+      // 960x540 (a 16:9 WINDOW), whose region is 560x180 — 3.1:1.
+      width: 960, height: 675,
       title: windowTitle("Bot's view"),
       icon: path.join(__dirname, 'icon.png'),
       // Deliberately NOT `parent: mainWindow`. A child window is dragged around
@@ -11039,7 +11041,15 @@ function setBotViewState(state) {
     // it — nothing here calls setSize on this window). Where it's unavailable
     // it no-ops, and the capture constraint still bounds the encode; the
     // recording is then merely the old arbitrary shape, not broken.
-    try { win.setAspectRatio(16 / 9, { width: 0, height: 0 }); } catch { /* not supported here */ }
+    // extraSize is Meet's own chrome (botViewLayout.MEET_CHROME_CSS): Electron
+    // applies the ratio to (size - extraSize), which is exactly the tile region.
+    // Passing {0,0} — as this did — made the WINDOW 16:9 and left the region at
+    // 2.0:1 to 2.2:1, because the chrome is fixed pixels rather than a share of
+    // the window (measured 2026-09-10, #735). No single window ratio can be
+    // right for every size, so the ratio has to be applied to the region.
+    try {
+      win.setAspectRatio(botViewLayout.RECORDING_ASPECT, { ...botViewLayout.MEET_CHROME_CSS });
+    } catch { /* not supported here */ }
     meetPopoutWindow = win;
     if (meetView && !meetView.webContents.isDestroyed()) win.addBrowserView(meetView);
     const fit = () => {

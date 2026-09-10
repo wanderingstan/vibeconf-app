@@ -193,3 +193,25 @@ test('the measurement script measures the control bar, so the floor is real and 
   assert.match(MEASURE_SCRIPT, /data-tooltip="Leave call"/);
   assert.match(MEASURE_SCRIPT, /controls:/);
 });
+
+test('the caption strip clamps the growth: subtitles never get pulled into frame', () => {
+  // Meet renders captions directly under the grid, only a few px below the
+  // tiles, so it -- not the control bar -- is usually the real floor. Clamping
+  // only to the controls grew straight through the subtitles.
+  const base = {
+    vw: 1600, vh: 900,
+    banner: { x: 0, y: 0, w: 1600, h: 40 },
+    controls: { x: 700, y: 810, w: 200, h: 60 },
+    tiles: [{ x: 88, y: 64, w: 960, h: 532 }, { x: 965, y: 430, w: 232, h: 166 }],
+    videos: [],
+  };
+  const off = computeCropRect({ ...base, captions: null });
+  assert.ok(close(off.w * 1600 / (off.h * 900), TARGET_ASPECT, 1e-3), 'no captions: room to reach 16:9');
+  assert.equal(off.shortOfAspectPx, 0);
+
+  const captions = { x: 100, y: 610, w: 1000, h: 180 };
+  const on = computeCropRect({ ...base, captions });
+  assert.ok((on.y + on.h) * 900 <= captions.y, `must stop above the caption strip at y=${captions.y}, got ${(on.y + on.h) * 900}`);
+  assert.ok(on.h < off.h, 'captions on means less room, so a smaller grow');
+  assert.ok(on.shortOfAspectPx > 0, 'and the shortfall is reported for the encoder');
+});

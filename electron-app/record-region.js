@@ -58,6 +58,10 @@ const TARGET_ASPECT = 16 / 9;
 // catch the strip's upper pixels.
 const CONTROLS_KEEPOUT_CSS_PX = 12;
 
+// Same idea for the caption strip, which sits much closer to the tiles than
+// the control bar does and is therefore usually the real floor.
+const CAPTIONS_KEEPOUT_CSS_PX = 8;
+
 // Below this, a change in the measured region is treated as jitter and not
 // re-sent to the capture window (which would otherwise redraw its letterbox
 // for a sub-pixel wobble every tick). Fraction of the viewport per edge.
@@ -251,13 +255,23 @@ function computeCropRect(m, { pad = PAD_CSS_PX, aspect = TARGET_ASPECT } = {}) {
   // banner when it is up (growing into either would put chrome in the file).
   const tiles0 = { x0, y0, x1, y1 };
   if (aspect > 0) {
+    // The floor is whichever piece of chrome comes first below the tiles.
+    // CAPTIONS ARE THE BINDING ONE in practice: Meet renders the caption strip
+    // directly under the grid, a few px below the tiles, so a growth clamped
+    // only to the control bar grows straight through the subtitles (spotted
+    // 2026-09-10 before it shipped). The strip is only present when captions
+    // are on, which for this bot is nearly always.
     const controlsTop = (m.controls && validRect(m.controls))
       ? m.controls.y - CONTROLS_KEEPOUT_CSS_PX
       : m.vh;
+    const captionsTop = (m.captions && validRect(m.captions))
+      ? m.captions.y - CAPTIONS_KEEPOUT_CSS_PX
+      : m.vh;
+    const floor = Math.min(controlsTop, captionsTop);
     const bannerBottom = (m.banner && validRect(m.banner)) ? m.banner.y + m.banner.h : 0;
     const grown = expandToAspect(tiles0, {
       top: Math.max(0, Math.min(bannerBottom, y0)),
-      bottom: Math.min(m.vh, Math.max(controlsTop, y1)),
+      bottom: Math.min(m.vh, Math.max(floor, y1)),
       left: 0,
       right: m.vw,
     }, aspect);
@@ -339,6 +353,7 @@ module.exports = {
   PAD_CSS_PX,
   TARGET_ASPECT,
   CONTROLS_KEEPOUT_CSS_PX,
+  CAPTIONS_KEEPOUT_CSS_PX,
   CHANGE_EPSILON,
   OUTLINE_ID,
 };

@@ -397,7 +397,7 @@ function startRecordRegionLoop() {
         }
       } catch { /* outline is a courtesy for the human watching; never fatal */ }
       const pct = (n) => (n * 100).toFixed(1) + '%';
-      console.log(`[call-record] recorded region ${first ? 'set' : 'moved'} (${rect.strategy}): x=${pct(rect.x)} y=${pct(rect.y)} w=${pct(rect.w)} h=${pct(rect.h)}${rect.bannerOverlapPx ? ` — status banner overlaps the top by ${rect.bannerOverlapPx}px` : ''}`);
+      console.log(`[call-record] recorded region ${first ? 'set' : 'moved'} (${rect.strategy}): x=${pct(rect.x)} y=${pct(rect.y)} w=${pct(rect.w)} h=${pct(rect.h)}${rect.aspect ? ` — ${rect.aspect}:1` : ''}${rect.shortOfAspectPx ? ` (${rect.shortOfAspectPx}px short of 16:9, encoder will letterbox)` : ''}${rect.bannerOverlapPx ? ` — status banner overlaps the top by ${rect.bannerOverlapPx}px` : ''}`);
       try {
         fs.appendFileSync(path.join(activeRecording.dir, 'crop-region.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...rect }) + '\n');
       } catch { /* the tracks dir is best-effort bookkeeping here */ }

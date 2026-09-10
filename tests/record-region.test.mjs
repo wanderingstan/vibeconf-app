@@ -14,6 +14,8 @@ const {
   outlineScript,
   fallbackRect,
   PAD_CSS_PX,
+  TARGET_ASPECT,
+  expandToAspect,
   OUTLINE_ID,
 } = require('../electron-app/record-region.js');
 
@@ -31,7 +33,8 @@ test('the union of the participant tiles becomes the region, padded, as fraction
     ],
     videos: [],
   };
-  const r = computeCropRect(m);
+  // aspect: null asks for the raw union, before the grow-to-16:9 pass.
+  const r = computeCropRect(m, { aspect: null });
   assert.equal(r.strategy, 'tiles');
   assert.ok(close(r.x, (100 - PAD_CSS_PX) / 1173));
   assert.ok(close(r.y, (80 - PAD_CSS_PX) / 660));
@@ -48,11 +51,11 @@ test('the status banner never moves the region — it overlays Meet — but its 
     tiles: [{ x: 0, y: 30, w: 1173, h: 600 }],
     videos: [],
   };
-  const r = computeCropRect(m, { pad: 0 });
+  const r = computeCropRect(m, { pad: 0, aspect: null });
   assert.ok(close(r.y, 30 / 660), `top must stay on the tile, got ${r.y * 660}px`);
   assert.equal(r.bannerOverlapPx, 90);
   assert.equal(r.strategy, 'tiles');
-  const clear = computeCropRect({ ...m, banner: { x: 0, y: 0, w: 1173, h: 20 } }, { pad: 0 });
+  const clear = computeCropRect({ ...m, banner: { x: 0, y: 0, w: 1173, h: 20 } }, { pad: 0, aspect: null });
   assert.equal(clear.bannerOverlapPx, 0);
 });
 
@@ -108,4 +111,85 @@ test('the outline is drawn outside the box, so it can never be in the recording'
   assert.match(s, new RegExp(OUTLINE_ID));
   const removal = outlineScript(null);
   assert.match(removal, /\.remove\(\)/);
+});
+
+// --- growing the region out to 16:9 (#735) ------------------------------------
+
+test('a region wider than 16:9 grows downward into the background, never into the banner', () => {
+  // The live 1600x900 shape: a 960x540 main tile plus the bot's floating self
+  // tile hanging off the right, which is 2.07:1 rather than 1.78:1.
+  const m = {
+    vw: 1600, vh: 900,
+    banner: { x: 0, y: 0, w: 1600, h: 40 },
+    controls: { x: 700, y: 810, w: 200, h: 60 },
+    tiles: [{ x: 88, y: 64, w: 960, h: 532 }, { x: 965, y: 430, w: 232, h: 166 }],
+    videos: [],
+  };
+  const union = computeCropRect(m, { aspect: null });
+  const r = computeCropRect(m);
+  assert.ok(union.w * 1600 / (union.h * 900) > 2, 'the union really is too wide');
+  assert.ok(close(r.w * 1600 / (r.h * 900), TARGET_ASPECT, 1e-3), `got ${r.w * 1600 / (r.h * 900)}`);
+  assert.equal(r.shortOfAspectPx, 0, 'there was room, so nothing is left for the encoder');
+  assert.ok(close(r.y, union.y), 'the top edge does not move: the banner is up there');
+  assert.ok(r.h > union.h, 'all of the growth went downward');
+});
+
+test('the growth stops clear of Meet\'s control bar', () => {
+  const m = {
+    vw: 1600, vh: 900,
+    banner: null,
+    controls: { x: 700, y: 640, w: 200, h: 60 }, // control bar sitting unusually high
+    tiles: [{ x: 88, y: 64, w: 1400, h: 532 }],
+    videos: [],
+  };
+  const r = computeCropRect(m);
+  const bottomPx = (r.y + r.h) * 900;
+  assert.ok(bottomPx <= 640, `region must not reach the controls at y=640, got ${bottomPx}`);
+  assert.ok(r.shortOfAspectPx > 0, 'and it reports that the encoder must letterbox the rest');
+});
+
+test('a region TALLER than 16:9 grows sideways instead, centred', () => {
+  const m = {
+    vw: 1600, vh: 900,
+    banner: null, controls: null,
+    tiles: [{ x: 700, y: 100, w: 300, h: 600 }], // a portrait 1x2-ish grid
+    videos: [],
+  };
+  const r = computeCropRect(m);
+  assert.ok(close(r.w * 1600 / (r.h * 900), TARGET_ASPECT, 1e-3));
+  assert.ok(close(r.h, computeCropRect(m, { aspect: null }).h), 'height untouched');
+  const leftGap = r.x * 1600 - (700 - PAD_CSS_PX);
+  const rightGap = (1000 + PAD_CSS_PX) - (r.x + r.w) * 1600;
+  assert.ok(Math.abs(leftGap + rightGap) < 1e-6 || Math.abs(leftGap - rightGap) < 1, 'grown evenly either side');
+});
+
+test('a share layout reaches 16:9 too: shorter tiles leave more background below', () => {
+  // Measured live 2026-09-10 with the whiteboard shared: 1103x426, i.e. 2.59:1,
+  // and the space below the tiles grows from 300px to 395px at the same time.
+  const m = {
+    vw: 1600, vh: 900,
+    banner: { x: 0, y: 0, w: 1600, h: 40 },
+    controls: { x: 700, y: 810, w: 200, h: 60 },
+    tiles: [{ x: 20, y: 83, w: 1000, h: 418 }, { x: 1030, y: 340, w: 85, h: 161 }],
+    videos: [],
+  };
+  const r = computeCropRect(m);
+  assert.ok(close(r.w * 1600 / (r.h * 900), TARGET_ASPECT, 1e-3));
+  assert.equal(r.shortOfAspectPx, 0);
+});
+
+test('expandToAspect is a no-op on an already-16:9 region, and never shrinks one', () => {
+  const limits = { top: 0, bottom: 1000, left: 0, right: 2000 };
+  const box = { x0: 100, y0: 100, x1: 1060, y1: 640 }; // 960x540
+  assert.deepEqual(expandToAspect(box, limits), box);
+  for (const b of [{ x0: 0, y0: 0, x1: 500, y1: 200 }, { x0: 0, y0: 0, x1: 200, y1: 500 }]) {
+    const g = expandToAspect(b, limits);
+    assert.ok(g.x1 - g.x0 >= b.x1 - b.x0 && g.y1 - g.y0 >= b.y1 - b.y0, 'only ever grows');
+  }
+});
+
+test('the measurement script measures the control bar, so the floor is real and not a fraction', () => {
+  // #676: every hardcoded fraction was wrong somewhere. The floor is measured.
+  assert.match(MEASURE_SCRIPT, /data-tooltip="Leave call"/);
+  assert.match(MEASURE_SCRIPT, /controls:/);
 });

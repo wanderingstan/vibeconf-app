@@ -46,6 +46,18 @@
 // slack on the top edge is a pixel of the banner's drop shadow.
 const PAD_CSS_PX = 4;
 
+// The aspect ratio the region is grown out to, so recordings are ordinary
+// video. See expandToAspect() for why growing (rather than cropping or
+// letterboxing) is the right move.
+const TARGET_ASPECT = 16 / 9;
+
+// How much clear space to leave above Meet's control bar when growing
+// downward, in CSS px. The `controls` measurement is the Leave call BUTTON,
+// and the strip it sits in is a little taller than the button plus its hover
+// halo, so stopping exactly at the button's top edge would occasionally
+// catch the strip's upper pixels.
+const CONTROLS_KEEPOUT_CSS_PX = 12;
+
 // Below this, a change in the measured region is treated as jitter and not
 // re-sent to the capture window (which would otherwise redraw its letterbox
 // for a sub-pixel wobble every tick). Fraction of the viewport per edge.
@@ -108,10 +120,17 @@ const MEASURE_SCRIPT = `(() => {
   }
   const banner = document.getElementById('vibeconf-status-bar');
   const captions = document.querySelector('div[role="region"][aria-label="Captions"]');
+  // Meet's bottom control bar, measured so expandToAspect() has a real floor to
+  // stop at rather than a guessed fraction. The Leave call button is the one
+  // stable handle on that band (meet-selectors.js keys on the same tooltip);
+  // the other controls sit in the same vertical strip, so the button's top edge
+  // is the top of the strip for our purposes.
+  const leave = document.querySelector('[data-tooltip="Leave call"]');
   return {
     vw, vh,
     banner: banner ? rect(banner) : null,
     captions: captions ? rect(captions) : null,
+    controls: leave ? rect(leave) : null,
     tiles, videos, presenting,
   };
 })()`;
@@ -136,9 +155,74 @@ function fallbackRect() {
   return { x: 0, y: 0, w: 1, h: 1, strategy: 'fallback' };
 }
 
+// Grow a region out to `aspect`, in CSS px, staying inside `limits`.
+//
+// WHY GROW, rather than crop to fit or letterbox in the encoder: Meet lays its
+// tiles out as a grid of 16:9 tiles, so the union of c columns by r rows has
+// aspect (c/r) * 16/9. That is 16:9 only when the grid is square (1x1, 2x2,
+// 3x3) and otherwise off, usually wide: 3x2 is 2.67:1, 2x1 is 3.56:1. On top of
+// that the bot's own floating self tile hangs off the side of the grid, which
+// is the whole of the excess in the common one-remote case (measured live
+// 2026-09-10: a 960x540 main tile plus 153px of self-tile overhang gives
+// 1113x540, i.e. 2.06:1 rather than 1.78:1).
+//
+// Three ways to square that up, and only one is any good:
+//   crop in       — throws away tiles. Never.
+//   letterbox     — black bars baked into the file. Works, looks like a
+//                   mistake, and the canvas already does it as a fallback.
+//   grow out      — take in more of Meet's own background around the grid.
+//                   The pixels are real, the result reads as intentional
+//                   padding around the tiles, and nothing is lost.
+//
+// There is room for it. Measured at three view sizes, Meet's top inset is a
+// fixed 60 CSS px and the space below the tiles a fixed 300, while the height
+// this needs to add is 86 to 116 px. A screen share shortens the tiles and
+// grows that space at the same time (300 -> 395 px against a need of 192), so
+// the headroom scales with the demand. Across all 310 crop samples recorded on
+// this machine, 90% reach 16:9 by growing alone; the rest are layouts already
+// spanning ~98% of the view width, where there is no width to balance against
+// and the encoder's letterbox has to finish the job.
+//
+// Height is taken from BELOW first: the strip above the tiles is Meet's header
+// and, over it, the app's own status banner, and pulling either into the
+// recording is exactly the bug #676 left behind.
+function expandToAspect(box, limits, aspect = TARGET_ASPECT) {
+  let { x0, y0, x1, y1 } = box;
+  const w = x1 - x0, h = y1 - y0;
+  if (!(w > 0) || !(h > 0) || !(aspect > 0)) return { x0, y0, x1, y1 };
+  const current = w / h;
+  if (Math.abs(current - aspect) < 1e-6) return { x0, y0, x1, y1 };
+
+  if (current > aspect) {
+    // Too wide: add height, downward first, then upward with what is left.
+    let need = w / aspect - h;
+    const down = Math.max(0, Math.min(need, limits.bottom - y1));
+    y1 += down; need -= down;
+    if (need > 0) {
+      const up = Math.max(0, Math.min(need, y0 - limits.top));
+      y0 -= up;
+    }
+  } else {
+    // Too tall (a portrait grid, e.g. 1x2): add width, split either side so
+    // the tiles stay centred.
+    let need = h * aspect - w;
+    const right = Math.max(0, Math.min(need / 2, limits.right - x1));
+    const left = Math.max(0, Math.min(need - right, x0 - limits.left));
+    x0 -= left; x1 += right; need -= (left + right);
+    // One side may have had less room than the other; spend the remainder on
+    // whichever side still has any.
+    if (need > 0) {
+      const more = Math.max(0, Math.min(need, limits.right - x1));
+      x1 += more; need -= more;
+    }
+    if (need > 0) x0 -= Math.max(0, Math.min(need, x0 - limits.left));
+  }
+  return { x0, y0, x1, y1 };
+}
+
 // measurement -> { x, y, w, h, strategy } as fractions of the viewport.
 // Never throws; a malformed/absent measurement yields the fallback.
-function computeCropRect(m, { pad = PAD_CSS_PX } = {}) {
+function computeCropRect(m, { pad = PAD_CSS_PX, aspect = TARGET_ASPECT } = {}) {
   if (!m || !(m.vw > 0) || !(m.vh > 0)) return fallbackRect();
   const tiles = Array.isArray(m.tiles) ? m.tiles.filter(validRect) : [];
   const videos = Array.isArray(m.videos) ? m.videos.filter(validRect) : [];
@@ -152,10 +236,33 @@ function computeCropRect(m, { pad = PAD_CSS_PX } = {}) {
   x0 = Math.max(0, x0); y0 = Math.max(0, y0);
   x1 = Math.min(m.vw, x1); y1 = Math.min(m.vh, y1);
   if (!(x1 - x0 >= 40) || !(y1 - y0 >= 30)) return fallbackRect();
+  // Grow the union out to 16:9 within the clear space around it. The floor is
+  // Meet's control bar when we can see it, the ceiling the app's own status
+  // banner when it is up (growing into either would put chrome in the file).
+  const tiles0 = { x0, y0, x1, y1 };
+  if (aspect > 0) {
+    const controlsTop = (m.controls && validRect(m.controls))
+      ? m.controls.y - CONTROLS_KEEPOUT_CSS_PX
+      : m.vh;
+    const bannerBottom = (m.banner && validRect(m.banner)) ? m.banner.y + m.banner.h : 0;
+    const grown = expandToAspect(tiles0, {
+      top: Math.max(0, Math.min(bannerBottom, y0)),
+      bottom: Math.min(m.vh, Math.max(controlsTop, y1)),
+      left: 0,
+      right: m.vw,
+    }, aspect);
+    x0 = grown.x0; y0 = grown.y0; x1 = grown.x1; y1 = grown.y1;
+  }
   // How many CSS px of the app's own banner lie inside the region (0 when it
   // sits entirely above the tiles). Informational — logged, never applied.
   const bannerOverlapPx = (m.banner && validRect(m.banner))
     ? Math.max(0, Math.round(Math.min(y1, m.banner.y + m.banner.h) - Math.max(y0, m.banner.y)))
+    : 0;
+  // How far the growth fell short of 16:9, so the log says when the encoder's
+  // letterbox had to finish the job (0 whenever there was room).
+  const achieved = (x1 - x0) / (y1 - y0);
+  const shortOfAspectPx = aspect > 0
+    ? Math.max(0, Math.round((x1 - x0) / aspect - (y1 - y0)))
     : 0;
   return {
     x: x0 / m.vw,
@@ -164,6 +271,8 @@ function computeCropRect(m, { pad = PAD_CSS_PX } = {}) {
     h: (y1 - y0) / m.vh,
     strategy,
     bannerOverlapPx,
+    aspect: Math.round(achieved * 1000) / 1000,
+    shortOfAspectPx,
   };
 }
 
@@ -213,10 +322,13 @@ function outlineScript(rect) {
 module.exports = {
   MEASURE_SCRIPT,
   computeCropRect,
+  expandToAspect,
   cropRectChanged,
   outlineScript,
   fallbackRect,
   PAD_CSS_PX,
+  TARGET_ASPECT,
+  CONTROLS_KEEPOUT_CSS_PX,
   CHANGE_EPSILON,
   OUTLINE_ID,
 };

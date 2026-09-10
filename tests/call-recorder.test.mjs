@@ -214,3 +214,33 @@ test('a near-cap warning fires exactly once, before the track actually caps', ()
     console.warn = originalWarn;
   }
 });
+
+// --- the output shape is fixed, not sampled (#735) ---------------------------
+
+test('the recording canvas is 16:9 by construction, not whatever the first crop sampled', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../electron-app/renderer/call-recording-window.js', import.meta.url), 'utf8');
+  // Was `even(sw * first.w) x even(sh * first.h)`: one sample 1.5s in decided
+  // the file's aspect for the whole call, so the same room recorded at 1.89,
+  // 1.97, 2.01 and 2.72:1 on different days.
+  assert.match(src, /const OUTPUT_ASPECT = 16 \/ 9;/, 'the target shape is a named constant');
+  assert.match(src, /const ch = even\(cw \/ OUTPUT_ASPECT\);/, 'height is DERIVED from width, not sampled');
+  assert.doesNotMatch(src, /const cw = even\(sw \* first\.w\), ch = even\(sh \* first\.h\);/,
+    'the old sampled-height form must be gone');
+  // Width stays sampled on purpose: Meet's left inset and People pane are fixed,
+  // so the region's width is the stable dimension to key off.
+  assert.match(src, /const cw = even\(sw \* first\.w\);/);
+});
+
+test('the capture box matches the largest view, so a 1080p region is not silently downscaled', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../electron-app/renderer/call-recording-window.js', import.meta.url), 'utf8');
+  const L = require('../electron-app/bot-view-layout.js');
+  const biggest = Object.values(L.MEET_VIEW_SIZES).reduce((a, b) => (a.width * a.height > b.width * b.height ? a : b));
+  const w = /width: \{ ideal: (\d+) \}/.exec(src);
+  const h = /height: \{ ideal: (\d+) \}/.exec(src);
+  assert.ok(w && h, 'capture constraints present');
+  assert.ok(Number(w[1]) >= biggest.width && Number(h[1]) >= biggest.height,
+    `capture box ${w[1]}x${h[1]} must not be smaller than the largest view ${biggest.width}x${biggest.height}, ` +
+    'or the region is downscaled before the canvas ever sees it');
+});

@@ -397,7 +397,14 @@ function startRecordRegionLoop() {
         }
       } catch { /* outline is a courtesy for the human watching; never fatal */ }
       const pct = (n) => (n * 100).toFixed(1) + '%';
-      console.log(`[call-record] recorded region ${first ? 'set' : 'moved'} (${rect.strategy}): x=${pct(rect.x)} y=${pct(rect.y)} w=${pct(rect.w)} h=${pct(rect.h)}${rect.bannerOverlapPx ? ` — status banner overlaps the top by ${rect.bannerOverlapPx}px` : ''}`);
+      // The aspect is the headline number: the view sizes exist to make it
+      // 16:9 (#735), so a non-zero offBy16x9Px in the log is the early warning
+      // that Meet's chrome moved under us.
+      const offBy = rect.offBy16x9Px;
+      const aspectNote = rect.aspect
+        ? ` — ${rect.aspect}:1${offBy ? ` (${offBy > 0 ? '+' : ''}${offBy}px off 16:9)` : ' ✓ 16:9'}`
+        : '';
+      console.log(`[call-record] recorded region ${first ? 'set' : 'moved'} (${rect.strategy}): x=${pct(rect.x)} y=${pct(rect.y)} w=${pct(rect.w)} h=${pct(rect.h)}${aspectNote}${rect.bannerOverlapPx ? ` — status banner overlaps the top by ${rect.bannerOverlapPx}px` : ''}`);
       try {
         fs.appendFileSync(path.join(activeRecording.dir, 'crop-region.jsonl'), JSON.stringify({ at: new Date().toISOString(), ...rect }) + '\n');
       } catch { /* the tracks dir is best-effort bookkeeping here */ }

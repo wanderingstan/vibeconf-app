@@ -67,7 +67,10 @@ test('joinMeetUrl accepts calendarEvent and forwards it to setCalendarEventConte
 test('performScheduledCalendarJoin passes the matched event through as calendarEvent', () => {
   const start = main.indexOf('function performScheduledCalendarJoin(');
   assert.ok(start > 0);
-  const body = main.slice(start, start + 600);
+  // Window widened from 600 in #588, which added the "already in this room"
+  // stand-down ahead of the join. Only the slice grew — the assertion below is
+  // unchanged, and it is still scoped to this one function's body.
+  const body = main.slice(start, start + 1400);
   assert.match(body, /joinMeetUrl\(meetUrl, \{ spawnAgent: true, calendarEvent: event \}\);/);
 });
 

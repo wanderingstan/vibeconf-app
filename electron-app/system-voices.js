@@ -1,9 +1,10 @@
 // system-voices.js — the OS's built-in ("out of the box") TTS voices.
 //
 // macOS has `say`; Windows has no `say`, but every install ships SAPI 5, which
-// PowerShell reaches via System.Speech with nothing to install (#18). Both can
-// render to a file, which is what the app actually needs — synthesized audio is
-// played into the virtual mic, never straight to the speakers.
+// PowerShell reaches via System.Speech with nothing to install (#18); Linux has
+// espeak-ng (#21, #575). All three can render to a file, which is what the app
+// actually needs — synthesized audio is played into the virtual mic, never
+// straight to the speakers.
 //
 // This module is PURE (no fs / child_process / electron): it builds the command
 // text and parses the output. The I/O lives in tts.js (render) and main.js
@@ -14,20 +15,23 @@
 // packaged standalone (extraResources) and cannot require() into electron-app/.
 // Keep the two in sync, same as the existing WHITELISTED_MACOS_STANDARD dupe.
 
-// Platforms whose voices can be ENUMERATED, which is not the same as platforms
-// that can speak. Linux speaks via espeak-ng (tts.js `_linuxEspeak`) but is
-// absent here: espeak errors on an unknown voice name rather than substituting
-// like `say`/SAPI, so we never pass `-v` and the picker has nothing to offer.
-// Adding Linux means parsing `espeak-ng --voices` first — #21.
-const SYSTEM_VOICE_PLATFORMS = ['darwin', 'win32'];
+// Platforms whose voices can be ENUMERATED. Linux joined macOS/Windows in #575
+// by parsing `espeak-ng --voices` (the follow-up #21 deferred): before that the
+// picker had nothing to offer there, so espeak-ng could speak but its voice
+// could never be chosen. espeak still errors on an unknown voice name rather
+// than substituting like `say`/SAPI — so tts.js `_linuxEspeak` retries without
+// `-v` when it is handed a name espeak does not know (the shared voice pref
+// still defaults to macOS's 'Daniel').
+const SYSTEM_VOICE_PLATFORMS = ['darwin', 'win32', 'linux'];
 
-// Quality tiers, shared by both platforms so the pickers can sort one list:
-// 0 = macOS Premium, 1 = macOS Enhanced *and* every Windows SAPI voice,
-// 2 = plain/legacy (macOS standard voices, which are mostly robotic).
+// Quality tiers, shared by every platform so the pickers can sort one list:
+// 0 = macOS Premium, 1 = macOS Enhanced *and* every Windows SAPI / Linux espeak
+// voice, 2 = plain/legacy (macOS standard voices, which are mostly robotic).
 //
-// Windows voices land in tier 1 rather than 2 deliberately: David/Zira are all
-// most Windows machines have, so demoting them to the picker's "lower quality"
-// group would leave the main built-in group empty.
+// Windows and Linux voices land in tier 1 rather than 2 deliberately: David/Zira
+// (and espeak's languages) are all those machines have, so demoting them to the
+// picker's "lower quality" group would leave the main built-in group empty. The
+// tier is "this is what you get here", not a claim that espeak sounds good.
 function macosTier(name) {
   if (/\(Premium\)/i.test(name)) return 0;
   if (/\(Enhanced\)/i.test(name)) return 1;
@@ -86,6 +90,54 @@ function parseSapiVoices(stdout) {
       name,
       locale,
       sample: gender && gender !== 'NotSet' ? gender : '',
+      tier: 1,
+    });
+  }
+  return sortVoices(dedupeByName(voices));
+}
+
+// `espeak-ng --voices` lists every language it can speak, one per line, under a
+// "Pty Language Age/Gender VoiceName File Other Languages" header. It is the
+// only enumeration espeak offers, and it is what the picker needs.
+const ESPEAK_LIST_ARGS = ['--voices'];
+
+// espeak prints its language codes lowercase and hyphenated ("en-gb"); the
+// pickers render one column for every platform, so reshape to the macOS form
+// ("en_GB"). Only a 2-letter region is uppercased — espeak also emits numeric
+// ("en-029") and word ("en-gb-scotland") tails, which stay as they are.
+function espeakLocale(code) {
+  const parts = String(code || '').split('-');
+  if (parts.length > 1 && /^[a-z]{2}$/.test(parts[1])) parts[1] = parts[1].toUpperCase();
+  return parts.join('_');
+}
+
+// Parse `espeak-ng --voices` output → [{ name, locale, sample, tier }] (#575).
+//
+// A row is whitespace-delimited and the VoiceName column never contains a space
+// (espeak writes "English_(Great_Britain)"), so a plain split is enough:
+//
+//   Pty Language       Age/Gender VoiceName            File          Other Languages
+//    5  en-gb          --/M       English_(Great_Britain) gmw/en      (en 2)
+//
+// `name` is deliberately the VoiceName VERBATIM, underscores and all: that is
+// the string espeak's own SelectVoiceByName matches, so a name taken from this
+// list can be handed straight back as `-v` without a lookup table. The header
+// and any other stray line is dropped by requiring a numeric priority column.
+function parseEspeakVoices(stdout) {
+  const voices = [];
+  for (const line of String(stdout || '').split('\n')) {
+    const cols = line.trim().split(/\s+/);
+    if (cols.length < 5) continue;
+    if (!/^\d+$/.test(cols[0])) continue; // header row, or not a voice line
+    const [, language, ageGender, name] = cols;
+    // "--/M", "22/F", "--/-" — the half after the slash is the gender, when
+    // espeak knows one. SAPI puts its gender hint in `sample` too, so the
+    // pickers already know what to do with it.
+    const g = (ageGender.split('/')[1] || '').toUpperCase();
+    voices.push({
+      name,
+      locale: espeakLocale(language),
+      sample: g === 'M' ? 'Male' : g === 'F' ? 'Female' : '',
       tier: 1,
     });
   }
@@ -159,16 +211,19 @@ function powerShellArgs(script) {
 function systemVoiceLabel(platform) {
   if (platform === 'darwin') return 'macOS';
   if (platform === 'win32') return 'Windows';
+  if (platform === 'linux') return 'Linux';
   return 'system';
 }
 
 module.exports = {
   SYSTEM_VOICE_PLATFORMS,
   SAPI_LIST_SCRIPT,
+  ESPEAK_LIST_ARGS,
   macosTier,
   sortVoices,
   parseSayVoices,
   parseSapiVoices,
+  parseEspeakVoices,
   psQuote,
   sapiRenderScript,
   encodePowerShellCommand,

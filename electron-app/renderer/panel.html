@@ -50,7 +50,7 @@
              Over the avatar they're unmissable and cost no space. One shared
              stack so two at once sit under each other instead of colliding. -->
         <div class="hero-notices">
-          <div class="error-bar hero-notice" id="errorBar" style="display:none"><span id="errorText"></span><button class="error-close" id="errorClose">&times;</button></div>
+          <div class="error-bar hero-notice" id="errorBar" style="display:none"><span id="errorText"></span><!-- #346: an error that names a fix you have to go and find leaves people stuck (see #446 for the same lesson on the calendar banner). When main sends an action with the error, this button IS the fix. --><button class="notice-action" id="errorAction" style="display:none"></button><button class="error-close" id="errorClose">&times;</button></div>
 
           <!-- #381: shown only when the bot genuinely cannot make a sound —
                a platform with no built-in voice (Linux, #21) and neither an

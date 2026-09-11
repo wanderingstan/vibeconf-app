@@ -98,6 +98,15 @@
           <button class="btn" id="signInBtn">Sign in with Google</button>
           <button class="btn ghost" id="signOutBtn" style="display:none">Log out</button>
         </div>
+        <!-- #754: same opt-in as the website's sign-in page and App Settings.
+             This is the FIRST-RUN sign-in, so without it a new user lands
+             signed-in-without-calendar and the App Settings checkbox is
+             already hidden (it only shows while signed out). Unchecked by
+             default, per #299. -->
+        <label id="calendarRow" style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="calendarChk" style="cursor:pointer">
+          <span>Also let bots read my calendar, so they can join scheduled meetings on their own</span>
+        </label>
       </div>
     </section>
 

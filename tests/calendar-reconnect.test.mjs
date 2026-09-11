@@ -33,9 +33,22 @@ test('it reuses the existing sign-in rather than inventing a second route', () =
   // The credential that expired IS the website's, so this is the same flow the
   // ordinary sign-in uses. A second path to the site could drift from it.
   assert.match(panelJs,
-    /calendarReconnectBtn'\)\?\.addEventListener\('click', \(\) => api\.invoke\('login'\)\)/);
+    /calendarReconnectBtn'\)\?\.addEventListener\('click', \(\) => api\.invoke\('login', \{ calendar: true \}\)\)/);
   assert.match(readFileSync(join(root, 'electron-app/main.js'), 'utf8'),
     /ipcMain\.handle\('login'/, 'the IPC it calls has to exist');
+});
+
+// #754: same flow, but it must not lose the scope on the way through.
+test('the reconnect asks for calendar scope again, not a bare sign-in', () => {
+  // This banner only ever shows on google-api-error — someone who HAD calendar
+  // and whose grant died. The website makes calendar opt-in via ?calendar=1
+  // (api/auth/google.ts), so a bare `login` here would sign them back in with
+  // no calendar.readonly: the button completes, the banner clears on the next
+  // successful /api/auth/me, and auto-join stays exactly as dead as it was.
+  assert.match(panelJs, /api\.invoke\('login', \{ calendar: true \}\)/);
+  assert.match(readFileSync(join(root, 'electron-app/main.js'), 'utf8'),
+    /opts && opts\.calendar \? '&calendar=1' : ''/,
+    'and main has to actually put it on the URL');
 });
 
 test('the button appears only on the error path', () => {

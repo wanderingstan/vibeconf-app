@@ -38,6 +38,13 @@
       <button type="button" id="userSignInBtn" style="display:none;background:#8ab4f8;color:#202124;border:none;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Sign in with Google</button>
       <button type="button" id="userSignOutBtn" style="display:none;background:#2a2d31;color:#e8eaed;border:1px solid #5f6368;border-radius:6px;padding:8px 14px;font-size:13px;cursor:pointer">Log out</button>
     </div>
+    <!-- #754: the website's sign-in page has this checkbox; the app bypassed
+         that page, so an app-only user could never reach a calendar consent
+         screen at all. Unchecked by default — opt-in, per #299. -->
+    <label id="userCalendarRow" style="display:none;margin-top:8px;align-items:center;gap:7px;font-size:13px;cursor:pointer">
+      <input type="checkbox" id="userCalendarChk" style="cursor:pointer">
+      <span>Also let bots read my calendar, so they can join scheduled meetings on their own</span>
+    </label>
     <div class="desc">Your login for the shared whiteboard rooms. One sign-in covers every profile on this machine.</div>
   </div>
 

@@ -51,7 +51,12 @@ for (const [label, js, html, chk, row] of [
   test(`${label} offers the opt-in and passes it through`, () => {
     assert.match(html, new RegExp(`type="checkbox" id="${chk}"`),
       'a checkbox, matching the website sign-in page it stands in for');
-    assert.ok(!/checked/.test(html.slice(html.indexOf(chk) - 200, html.indexOf(chk) + 200)),
+    // Read the actual <input> tag, not a byte window around the id: the
+    // surrounding comment says "Unchecked by default", so a window wide enough
+    // to catch a real `checked` attribute also catches that word, and the test
+    // fails on a comment edit while saying the checkbox defaults to on.
+    const tag = html.slice(html.indexOf(`<input type="checkbox" id="${chk}"`));
+    assert.doesNotMatch(tag.slice(0, tag.indexOf('>') + 1), /\schecked\b/,
       'unchecked by default — #299 decided calendar is opt-in, not a default grant');
     assert.match(js, new RegExp(`invoke\\('login', \\{ calendar: .*${chk}.*\\.checked \\}\\)`),
       'the checkbox has to reach the IPC, or it is decoration');

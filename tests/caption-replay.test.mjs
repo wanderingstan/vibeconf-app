@@ -405,3 +405,154 @@ test('#389: losing the anchor entirely raises a visible error, not just a warnin
   assert.ok(errs.some((m) => m.includes('#389')),
     'a silently-missed gap must surface through addError, not only console.warn');
 });
+
+// ── #389 → #12: an anchor loss must not replay the pane ──────────────────────
+//
+// Found live on eec-hqcw-wbm-20260911T125930Z, 2026-09-11:
+//
+//   08:13:55.772 ⚠️  [caption] lost anchor for Stan James (24 -> 23)
+//                — ingesting the visible rows as new speech
+//   08:13:56.828 🔁 [#12] REPLAY DELIVERED: 22 entries the agent had already
+//                been given (reason=silence, session total 22)
+//
+// One second apart, same speaker, one occurrence of each in the whole call.
+// The anchor-loss recovery set `rebased = 0`, so every visible row for that
+// speaker was re-ingested as new speech with a fresh lastUpdated — passing the
+// `since` filter legitimately and re-delivering most of the call to the agent.
+//
+// The fix anchors on a second source of truth: _deliveredFps, the record of
+// what has actually been handed to the agent. Rows already delivered are
+// rebased past instead of replayed.
+test('#389: losing the anchor re-delivers only genuinely new rows, not the whole pane', async () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+
+  // A stretch of call, all of it already handed to the agent.
+  const said = [
+    'Can you resolve issue seventy three on the app for me please',
+    'So do we know what happened, did it lose track of which bots were in the call',
+    'So then what explains the times when the bots were talking over each other',
+    'Yeah let us think about this, one approach would be that the winner acts',
+  ];
+  for (const text of said) { feed.say('Stan', text, 1); await tick(); }
+  s._auditDelivery(
+    said.map((text) => ({ participantName: 'Stan', text })),
+    'silence',
+  );
+  assert.equal(s.turns.size, 4);
+
+  const cursor = new Date().toISOString();
+  await tick();
+
+  // The snapshot SHRINKS and, in the same batch, the open turn is replaced by
+  // unrelated text — so re-anchoring on the held turn fails. That is the branch
+  // that used to set rebased = 0 and replay everything still on screen.
+  // Sent directly rather than through makeFeed: both changes must land in ONE
+  // snapshot, which is what makes the anchor unrecoverable.
+  const shrunk = [
+    { turnId: 900, speaker: 'Stan', text: said[1] },
+    { turnId: 901, speaker: 'Stan', text: said[2] },
+    { turnId: 902, speaker: 'Stan', text: 'Something else entirely, unrelated to the held turn' },
+  ];
+  s.updateTurns(shrunk);
+
+  const fresh = s._entriesSince(cursor);
+  const texts = fresh.map((e) => e.text);
+  assert.equal(
+    fresh.length, 1,
+    `anchor loss must surface only the new row, surfaced ${fresh.length}: ${JSON.stringify(texts)}`,
+  );
+  assert.match(texts[0], /Something else entirely/);
+
+  // And nothing the agent already heard came back.
+  for (const old of said) {
+    assert.ok(!texts.includes(old), `re-delivered an already-heard line: ${old}`);
+  }
+});
+
+// ── #389 → #12: the delivered-row anchor must not match on a short line ──────
+//
+// _deliveredFps holds EVERY delivered utterance: the `auditable` length gate in
+// _auditDelivery guards its REPEAT warning, not the insertion. So "Yeah",
+// "Right?" and friends sit in the map for the whole call, and a fingerprint
+// match on one identifies nothing.
+//
+// That turns the anchor-loss recovery inside out. The scan runs from the END,
+// so a FRESH short line at the bottom of the pane anchors at the last row,
+// rebases past everything visible, and the genuinely new speech above it is
+// dropped without a word — #389's own failure mode, minus the warning that
+// would have revealed it. Caught reviewing the fix for it.
+//
+// Mutation-checked: drop the length gate and this fails with ["Yeah"] as the
+// only entry to surface.
+test('#389: a repeated short utterance must not anchor away genuinely new speech', async () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+
+  // "Yeah" goes out to the agent early, among ordinary long turns.
+  const early = [
+    'Can you resolve issue seventy three on the app for me please',
+    'Yeah',
+    'So do we know what happened, did it lose track of which bots were in the call',
+    'Right, that makes sense now that you have explained it that way to me',
+  ];
+  for (const text of early) { feed.say('Stan', text, 1); await tick(); }
+  s._auditDelivery(early.map((text) => ({ participantName: 'Stan', text })), 'silence');
+
+  const cursor = new Date().toISOString();
+  await tick();
+
+  // The pane shrinks (4 -> 3) and the held open turn is gone, so re-anchoring
+  // fails: the lossy branch. It happens to END on a brand-new "Yeah", the same
+  // normalized text delivered minutes ago. Above it sits real, never-delivered
+  // speech, which is what has to survive.
+  s.updateTurns([
+    { turnId: 900, speaker: 'Stan', text: 'So then what explains the times the bots talked over each other' },
+    { turnId: 901, speaker: 'Stan', text: 'This is brand new speech the agent has never been given' },
+    { turnId: 902, speaker: 'Stan', text: 'Yeah' },
+  ]);
+
+  const texts = s._entriesSince(cursor).map((e) => e.text);
+  assert.ok(texts.some((t) => /talked over each other/.test(t)),
+    `new speech was swallowed by a stale short-utterance match; surfaced ${JSON.stringify(texts)}`);
+  assert.ok(texts.some((t) => /brand new speech/.test(t)),
+    `new speech was swallowed by a stale short-utterance match; surfaced ${JSON.stringify(texts)}`);
+});
+
+// The other half of the same review. Finding a delivered row MID-pane says
+// nothing about the rows pruned off the TOP: those are gone, and if the agent
+// never polled them they are gone unheard. Suppressing #389's addError on that
+// evidence restores the exact silence #389 was filed about.
+//
+// Only the OLDEST visible row being delivered settles it, because delivery is
+// cumulative against a monotonic cursor: if row 0 reached the agent, everything
+// older than row 0 reached it too.
+test('#389: rebasing mid-pane still raises the alarm when the top was pruned unheard', async () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+
+  const said = [
+    'The first thing they said, which the agent never actually received at all',
+    'The second thing they said, also never handed over to the agent anywhere',
+    'The third thing they said, likewise never delivered to the agent at all',
+    'A line that genuinely did reach the agent before the pane pruned itself',
+    'And the open turn, still being typed when the pane pruned underneath it',
+  ];
+  for (const text of said) { feed.say('Stan', text, 1); await tick(); }
+  // ONLY said[3] ever reached the agent. said[0..2] scrolled past unheard.
+  s._auditDelivery([{ participantName: 'Stan', text: said[3] }], 'silence');
+  await tick();
+
+  // Pane shrinks 5 -> 3 and the open turn (said[4]) is gone, so the held-turn
+  // anchor fails. said[3] is visible and delivered, so the rebase succeeds —
+  // but said[0..2] are gone from the pane and were never heard.
+  s.updateTurns([
+    { turnId: 900, speaker: 'Stan', text: said[2] },
+    { turnId: 901, speaker: 'Stan', text: said[3] },
+    { turnId: 902, speaker: 'Stan', text: 'Something else entirely, unrelated to the held turn' },
+  ]);
+
+  const errs = (s.errors || []).map((e) => (typeof e === 'string' ? e : e.message || ''));
+  assert.ok(errs.some((m) => m.includes('#389')),
+    'a gap above the rebase point must still surface through addError, not vanish quietly');
+});

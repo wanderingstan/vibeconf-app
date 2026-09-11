@@ -3192,21 +3192,87 @@ class LocalServer {
           // corrupting the transcript. We forfeit anything said while the
           // pane was empty, but hearing resumes with this very batch instead
           // of deadlocking forever.
-          rebased = 0;
+          // Second anchor attempt, using a different source of truth: the
+          // record of what has actually been HANDED TO THE AGENT this call
+          // (_deliveredFps, kept by _auditDelivery). The open-turn anchor is
+          // gone, but most of the rows still on screen have already been
+          // delivered — re-ingesting those is what turns one anchor loss into
+          // a full-transcript replay (#12).
+          //
+          // Measured on eec-hqcw-wbm-20260911T125930Z: one anchor loss
+          // (24 -> 23 rows) at 08:13:55.772 produced, 1.06s later,
+          // "REPLAY DELIVERED: 22 entries the agent had already been given".
+          // 41 re-anchors succeeded on that same call; this branch ran once.
+          //
+          // Rows are oldest-first, so scan from the END for the newest row we
+          // have already delivered and rebase past it. A row whose captions
+          // have grown since delivery fingerprints differently and is
+          // correctly treated as new.
+          //
+          // A fingerprint only identifies a row if the utterance is long
+          // enough to be unique. _deliveredFps holds EVERY delivered line —
+          // the `auditable` length gate in _auditDelivery guards its repeat
+          // WARNING, not the insertion — so short recurring utterances
+          // ("Yeah", "Right?") sit in the map for the whole call. Matching on
+          // one is worse than not matching at all: a fresh "Yeah" at the END
+          // of the pane anchors at i = n-1, rebases past EVERYTHING visible,
+          // and genuinely new speech is silently dropped. That is #389's own
+          // failure mode, minus the warning that would reveal it. So reuse
+          // _auditDelivery's 40-char threshold, for exactly its reason.
+          const MIN_ANCHOR_CHARS = 40;
+          const wasDelivered = (text) => String(text).trim().length >= MIN_ANCHOR_CHARS
+            && !!this._deliveredFps
+            && this._deliveredFps.has(this._turnFp(speaker, text));
+
+          let deliveredAnchor = -1;
+          for (let i = n - 1; i >= 0; i--) {
+            if (wasDelivered(texts[i])) {
+              deliveredAnchor = i + 1;
+              break;
+            }
+          }
+          rebased = deliveredAnchor > 0 ? deliveredAnchor : 0;
+          // Whether we can SHOW nothing was missed, which is a stricter
+          // question than whether we found an anchor. Finding a delivered row
+          // mid-pane says nothing about the rows pruned off the TOP: those are
+          // gone, and if the agent never polled them they are gone unheard.
+          //
+          // The oldest visible row settles it. Delivery is cumulative against a
+          // monotonic cursor, so if row 0 reached the agent, everything older
+          // than row 0 reached it in that same round or an earlier one. Only
+          // then is the #389 alarm genuinely not worth raising.
+          //
+          // A short-but-delivered row 0 fails this check and warns anyway. That
+          // false positive is the right way round: #389 exists because a missed
+          // gap was SILENT, so an extra warning costs far less than a real gap
+          // that never surfaces.
+          const coveredToStart = n > 0 && wasDelivered(texts[0]);
+          if (deliveredAnchor > 0) {
+            console.log(ts(), 'ℹ️  [caption] anchor lost for', speaker,
+              '(' + knownCount + ' -> ' + n + ') but', deliveredAnchor,
+              'visible row(s) were already delivered — rebasing past them instead of',
+              'replaying the pane (#12/#389)');
+          }
           if (open && !open.settled) {
             open.settled = true; // the pre-gap turn is definitively over
             changed = true;
             this._logHeard(open.speaker, open.text);
           }
           this._openTurnBySpeaker.delete(speaker);
-          console.warn(ts(), '⚠️  [caption] lost anchor for', speaker,
-            '(' + knownCount + ' -> ' + n + ') — ingesting the visible rows as new speech;',
-            'anything they said in the gap is unrecoverable');
-          this.addError(
-            `Caption anchor lost for ${speaker} (#389): the caption pane shrank past ` +
-            `the last turn we held, so anything they said in the gap was missed. ` +
-            `Hearing resumes with the captions on screen now.`,
-          );
+          if (!coveredToStart) {
+            console.warn(ts(), '⚠️  [caption] lost anchor for', speaker,
+              '(' + knownCount + ' -> ' + n + ') —',
+              deliveredAnchor > 0
+                ? 'rebased past ' + deliveredAnchor + ' delivered row(s), but the pane had already'
+                  + ' pruned past them, so an earlier gap may have gone unheard'
+                : 'ingesting the visible rows as new speech;'
+                  + ' anything they said in the gap is unrecoverable');
+            this.addError(
+              `Caption anchor lost for ${speaker} (#389): the caption pane shrank past ` +
+              `the last turn we held, so anything they said in the gap was missed. ` +
+              `Hearing resumes with the captions on screen now.`,
+            );
+          }
         }
         this._speakerTurnCount.set(speaker, rebased);
         knownCount = rebased;

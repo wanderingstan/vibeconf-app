@@ -5873,6 +5873,26 @@ class LocalServer {
     const silence = Number.isFinite(silenceRaw) ? silenceRaw : 1.4;
     const bot = url.searchParams.get('bot');
 
+    // #12: a long-poll with NO cursor, on a call that has already delivered
+    // transcript, is the snowballing bug's signature — and until now it was
+    // completely silent. _entriesSince applies no filter at all when `since`
+    // is falsy (`if (since) { ...filter... }`), so a lost cursor is
+    // indistinguishable from a legitimate first poll: it just returns the
+    // whole call. That silence is why #12 has survived since July.
+    //
+    // Deliberately not an error. A genuine first poll of a call hits this
+    // same branch, and refusing it would break the join path. The point is
+    // only to make the moment findable in the log afterwards, next to the
+    // 🔁 [#12] REPLAY DELIVERED line it is about to cause.
+    if (wait && !since && this._deliveredFps && this._deliveredFps.size > 0) {
+      console.warn(
+        ts(), '🔁 [#12] LONG-POLL WITH NO CURSOR —', this._deliveredFps.size,
+        'utterance(s) have already been delivered this call, so this round will',
+        're-deliver the entire transcript. The caller lost its `since` bookmark',
+        '(mcp-server lastPollTime). Expect a REPLAY DELIVERED line next.',
+      );
+    }
+
     // Non-blocking: return immediately
     if (!wait) {
       res.writeHead(200, { 'Content-Type': 'application/json' });

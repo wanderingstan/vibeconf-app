@@ -1101,12 +1101,40 @@ async function readChatFlow() {
 // mashed together with two partial copies of itself).
 let chatSendChain = Promise.resolve();
 function sendChatSerial(text) {
-  const run = chatSendChain.then(() => sendChatFlow(text));
+  // TWO clocks, deliberately (#572). The caller's answer rides `settled`, which
+  // sendChatFlow resolves the instant the send outcome is known. The QUEUE
+  // rides `run`, which also covers the People-pane restore that follows the
+  // send — so the next send still can't start typing while this one is still
+  // clicking panes (the whole point of the chain, see above), but the caller is
+  // no longer held behind housekeeping it can do nothing with.
+  let settle;
+  let fail;
+  const settled = new Promise((resolve, reject) => { settle = resolve; fail = reject; });
+  const run = chatSendChain.then(() => sendChatFlow(text, settle));
+  // If the flow throws BEFORE it ever reported an outcome (chat pane never
+  // opened, input never appeared), the caller has to hear that failure rather
+  // than hang until the main process's 15s timeout. A throw AFTER the outcome
+  // was reported — a restore that blew up — lands on an already-settled
+  // promise and is correctly a no-op: the message went out either way.
+  run.then(settle, fail);
   chatSendChain = run.catch(() => {}); // a failed send must not wedge the queue
-  return run;
+  return settled;
 }
 
-async function sendChatFlow(text) {
+// `onSent` is called with the send outcome the moment it is known, BEFORE the
+// pane housekeeping below. It used to be that this function simply returned
+// after awaiting restorePeoplePane(), so the main process didn't hear "sent"
+// until the restore had finished too. The restore is not part of the send: it
+// swaps the side panel back to People so the speaker tracker can read speaking
+// indicators again, and it needed a retry on nearly every send in the
+// 2026-08-27 call — ~1.4s of DOM churn AFTER the message was already posted.
+// That was enough to push slow sends past chatRequest's 15s budget, so the
+// caller was told "Chat operation timed out" for five messages that were sitting
+// in the chat. The agent's correct response to a failed send is to send again,
+// so one assessment went into the call chat three times, in front of everyone
+// (#572). The restore's outcome is housekeeping the caller cannot act on, so it
+// no longer gets a vote on whether the send succeeded.
+async function sendChatFlow(text, onSent = () => {}) {
   chatPaneBusy = true; // pause the people-pane self-heal while chat is open
   try {
   const opened = await openChatPane();
@@ -1120,6 +1148,7 @@ async function sendChatFlow(text) {
   // draft, interleaved keystrokes), fail the send rather than click Send on it.
   if (!typed || inputText(input).trim() !== text.trim()) {
     console.warn('[electron-meet] sendChat aborted — input does not match intended text');
+    onSent(false); // a real failure, and the caller can act on it — report it now
     await restorePeoplePane();
     return false;
   }
@@ -1153,6 +1182,7 @@ async function sendChatFlow(text) {
     if (i === 7) via = trySend();
   }
   console.log('[electron-meet] sendChat via ' + via + ' — sent: ' + sent);
+  onSent(sent); // #572: answer the caller HERE, at `sent:` — not after the restore
   await restorePeoplePane(); // close chat, restore speech tracking
   return sent;
   } finally {

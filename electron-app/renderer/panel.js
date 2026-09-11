@@ -2457,22 +2457,51 @@ api.on('slack-huddle-detected', (data) => {
 //
 // Keeping the whole stack means a keyless message can sit on top of a keyed one
 // and, when it goes, the keyed one is still known about.
-const _errorStack = [];   // [{ message, key }], newest last
+const _errorStack = [];   // [{ message, key, action }], newest last
+
+// #346: the fixes an error can offer. An error that says "go and sign the bot
+// back in" is only half a fix — the sentence names a place the reader now has
+// to find, which is exactly what #446 found for the calendar banner. Main
+// names one of these ids alongside the message and the bar grows a button.
+//
+// Keyed by id rather than shipping a function from main, because the payload
+// crosses IPC: the renderer decides what a given id is allowed to do.
+const ERROR_ACTIONS = {
+  // The bot's own browser view is already parked on Google's sign-in page (the
+  // join landed there); this only puts it on screen. Deliberately NOT
+  // 'meet-sign-in-as-bot', which NAVIGATES the Meet view — that would hang up
+  // the guest-fallback call the bot may be sitting in.
+  'reveal-bot-view': () => api.invoke('reveal-bot-view'),
+};
+
+const errorActionBtn = document.getElementById('errorAction');
 function _renderErrorBar() {
   const top = _errorStack[_errorStack.length - 1];
   if (!top) { errorBar.style.display = 'none'; return; }
   document.getElementById('errorText').textContent = top.message;
+  if (errorActionBtn) {
+    const act = top.action && ERROR_ACTIONS[top.action.id] ? top.action : null;
+    errorActionBtn.textContent = act ? act.label : '';
+    errorActionBtn.style.display = act ? '' : 'none';
+  }
   errorBar.style.display = 'flex';
 }
 
-function showError(message, key) {
+errorActionBtn?.addEventListener('click', async () => {
+  const top = _errorStack[_errorStack.length - 1];
+  const run = top?.action && ERROR_ACTIONS[top.action.id];
+  if (!run) return;
+  try { await run(); } catch (err) { console.warn('[panel] error action failed', err); }
+});
+
+function showError(message, key, action) {
   // Re-raising the same condition replaces it in place rather than stacking a
   // duplicate — otherwise a flapping bot leaves N copies to retract.
   if (key) {
     const i = _errorStack.findIndex((e) => e.key === key);
     if (i >= 0) _errorStack.splice(i, 1);
   }
-  _errorStack.push({ message, key: key || null });
+  _errorStack.push({ message, key: key || null, action: action || null });
   console.log('[panel] error shown', key ? `(${key})` : '(no key)', '—', String(message).slice(0, 80));
   _renderErrorBar();
 }
@@ -2785,15 +2814,23 @@ function refreshAccountEmail(mode) {
     if (r && r.signedIn && r.email) {
       meetAccountEmail.textContent = '✓ Signed in as ' + r.email;
       meetAccountEmail.className = 'account-email email-ok';
+      if (meetSignInBtn) meetSignInBtn.style.display = 'none';
       lockCalendarIdentityToAccount(r.email);
     } else if (r && r.signedIn) {
       // Auth cookies present but we couldn't read the email — signed in for sure.
       meetAccountEmail.textContent = '✓ Signed in to Google (could not read which account)';
       meetAccountEmail.className = 'account-email email-ok';
+      if (meetSignInBtn) meetSignInBtn.style.display = 'none';
       unlockCalendarIdentity();
     } else {
-      meetAccountEmail.textContent = '⚠ Mode is "account" but no Google session detected. The bot may not be signed in. If joins require admission, click "Sign in to Google as bot".';
+      meetAccountEmail.textContent = '⚠ Mode is "account" but no Google session detected. The bot may not be signed in. Use "Sign in to Google as bot" below to fix it.';
       meetAccountEmail.className = 'account-email email-bad';
+      // #346: that sentence named a button applyMeetMode had just hidden —
+      // account mode hides "Sign in to Google as bot" because a signed-in bot
+      // doesn't need it, and this is precisely the account-mode case where it
+      // does. Un-hide it rather than rewording, so the warning ends at a
+      // control instead of a dead end.
+      if (meetSignInBtn) meetSignInBtn.style.display = '';
       unlockCalendarIdentity();
     }
   }).catch(() => {
@@ -3842,7 +3879,7 @@ const seenEntryIds = new Set();
 
 api.on('extension-message', (message) => {
   if (message.action === 'error') {
-    showError(message.message, message.key);
+    showError(message.message, message.key, message.errorAction);
     if (/microphone|mic/i.test(message.message)) {
       micWarn.textContent = message.message;
       micWarn.style.display = 'block';

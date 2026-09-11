@@ -61,7 +61,9 @@ test('a clear only takes down its OWN message', () => {
     'an unkeyed clear must do nothing at all');
   assert.match(fn.slice(0, 500), /_errorStack\[i\]\.key === key/,
     'only entries under this key come down');
-  assert.match(panel, /showError\(message\.message, message\.key\)/,
+  // Tolerant of later arguments (#346 added an optional action): what this
+  // asserts is that the key travels, not how many parameters showError takes.
+  assert.match(panel, /showError\(message\.message, message\.key\b/,
     'the key has to reach the renderer for the comparison to mean anything');
 });
 
@@ -82,7 +84,7 @@ test('an unkeyed error cannot disarm a keyed retraction', () => {
     'keep every raised error, so a keyless one on top cannot lose a keyed one under it');
 
   // showError must not be able to drop a keyed entry it does not own.
-  const show = panel.slice(panel.indexOf('function showError(message, key)'));
+  const show = panel.slice(panel.indexOf('function showError(message, key'));
   assert.doesNotMatch(show.slice(0, 600), /_errorStack\.length = 0/,
     'raising an error must never clear the ones already known about');
 

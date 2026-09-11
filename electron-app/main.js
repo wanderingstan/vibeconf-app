@@ -7146,8 +7146,16 @@ function broadcastAuthChanged() {
 // one-shot failure ("could not start a call") and wrong for a running state
 // ("the agent has gone quiet") that stops being true on its own. See
 // clearBroadcastError below and #533.
-function broadcastError(message, key) {
-  broadcastToRenderers('extension-message', { action: 'error', message, key });
+// #346: the one action the identity-challenge errors offer. The bot's view is
+// already sitting on Google's sign-in page when a join lands there, so showing
+// it IS the whole fix: type the password and Google's own `continue=` redirect
+// carries that view into the meeting.
+const SIGN_BOT_IN_ACTION = { id: 'reveal-bot-view', label: 'Sign the bot in →' };
+
+function broadcastError(message, key, errorAction) {
+  // `errorAction` (#346): { id, label } naming a fix the panel can run from the
+  // error bar itself — see ERROR_ACTIONS in panel.js for the ids it honours.
+  broadcastToRenderers('extension-message', { action: 'error', message, key, errorAction });
 
   // If the app isn't in the foreground, surface the error as a system
   // notification so the user finds out without checking the app. We treat
@@ -13535,6 +13543,14 @@ function setupIPC() {
     setBotViewState(botViewLayout.nextState(botViewState, { restingState: restingBotViewState() }));
     return { state: botViewState, resting: restingBotViewState() };
   });
+  // #346: show the bot's own browser view without touching where it is
+  // pointed — the actionable half of the "Google is asking the bot to confirm
+  // its identity" error. Unlike 'meet-sign-in-as-bot' this NEVER navigates, so
+  // it is safe to offer while the bot is sitting in a guest-fallback call.
+  ipcMain.handle('reveal-bot-view', () => {
+    revealBotViewForSignIn();
+    return { ok: true, state: botViewState };
+  });
   ipcMain.handle('get-bot-view', () => ({ state: botViewState, visible: botViewInCall, resting: restingBotViewState() }));
 
   // --- Share window visibility ---
@@ -14564,16 +14580,16 @@ function setupIPC() {
         guestFallbackTriedFor = currentMeetUrl;
         const message = `Google is asking ${botLabel} to confirm its identity, so it is joining as a guest instead. `
           + 'It may be waiting to be let in, so admit it from the meeting if you see it. '
-          + "To fix this properly, open the bot's view and sign it back in to Google.";
-        broadcastError(message);
+          + "To fix this properly, sign the bot back in to Google in its own view.";
+        broadcastError(message, null, SIGN_BOT_IN_ACTION);
         localServer.addError(message);
         loadMeetURL(currentMeetUrl, { guestFallback: true });
         return;
       }
 
       const message = `Google is asking ${botLabel} to confirm its identity, so it could not join the call. `
-        + "Open the bot's view and sign it back in to Google, and it will join automatically once you do.";
-      broadcastError(message);
+        + 'Sign it back in to Google and it will join automatically once you do.';
+      broadcastError(message, null, SIGN_BOT_IN_ACTION);
       localServer.addError(message);
       return;
     }

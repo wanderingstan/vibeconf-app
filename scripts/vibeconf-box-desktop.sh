@@ -12,7 +12,7 @@
 # was no way to restart the app when it wedged.
 #
 # WHAT THIS ADDS:
-#   * tint2 — a panel pinned to the bottom of the screen with four launchers.
+#   * tint2 — a panel pinned to the bottom of the screen with five launchers.
 #     A panel rather than only a menu because a menu you have to know about is
 #     not a control anyone finds under pressure.
 #   * an openbox root menu with the same entries, for when the panel is covered.
@@ -20,6 +20,11 @@
 #   * "Restart Vibeconferencing" — the one people will need most. It runs in a
 #     VISIBLE terminal and prints the resulting status, rather than firing
 #     silently, because a restart that quietly failed is worse than no button.
+#   * "Vibeconferencing" — bring the app's own window back. Closing the app
+#     window on a box does NOT stop the app: a never-shown helper window keeps
+#     'window-all-closed' from firing, so the process carries on polling the
+#     calendar with no UI and no way back to it. See the wrapper below for why
+#     this launcher cannot just exec the binary.
 #
 # openbox.service runs bare `/usr/bin/openbox`, not `openbox-session`, so
 # ~/.config/openbox/autostart is NEVER read. That is why tint2 gets its own
@@ -43,14 +48,14 @@ echo "--- installing packages"
 # The boxes are not identical; anything referenced below gets installed here.
 sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
-  tint2 thunar xfce4-terminal >/dev/null 2>&1
+  tint2 thunar xfce4-terminal wmctrl curl >/dev/null 2>&1
 
 echo "--- checking every binary the menu will reference"
 # Assert BEFORE writing any config. A menu that points at a missing binary
 # looks perfectly fine until someone clicks it, which is the worst time to
 # find out.
 MISSING=""
-for b in tint2 thunar xfce4-terminal google-chrome; do
+for b in tint2 thunar xfce4-terminal google-chrome wmctrl curl; do
   if command -v "$b" >/dev/null 2>&1; then
     printf '  %-16s %s\n' "$b" "$(command -v $b)"
   else
@@ -80,7 +85,91 @@ read -r _
 SH
 chmod +x ~/.local/bin/vibeconf-restart-app.sh
 
+echo "--- show-app helper (get the window back)"
+cat > ~/.local/bin/vibeconf-show-app.sh <<'SH'
+#!/bin/bash
+# Bring the app's window back, whatever state the app is in.
+#
+# This CANNOT just be `Exec=/opt/Vibeconferencing/vibeconferencing-agent`, which
+# is the obvious thing and is a dead button in the one case you need it:
+#
+#   * The app holds a single-instance lock, so a second launch exits instead of
+#     opening a window. It hands off to the running process's 'second-instance'
+#     handler, which does restore() + focus() — and NOT show().
+#   * Closing the app window does not quit the app. A never-shown helper window
+#     (meetHiddenWindow, "Bot's view (hidden)") survives it, so
+#     'window-all-closed' never fires. The process keeps running — still
+#     polling the calendar, still answering on 127.0.0.1:7865 — with no window
+#     and no handler that can create one again.
+#
+# So there are genuinely two cases, and only one of them is a focus:
+#   window exists  -> raise it.
+#   no window      -> the process is unreachable from the desktop; restarting
+#                     the service is the only way back. Say so, don't restart
+#                     silently: it drops a call in progress.
+#
+# wmctrl lists only MAPPED, managed windows, so the invisible helper windows do
+# not show up here — which is exactly what makes it a reliable test.
+export DISPLAY=:99
+WIN=$(wmctrl -lx 2>/dev/null | grep -i 'Vibeconferencing' | grep -vi "Bot's view" | head -1 | awk '{print $1}')
+if [ -n "$WIN" ]; then
+  wmctrl -i -a "$WIN" && exit 0
+  echo "Found the window ($WIN) but could not raise it." >&2
+fi
+
+# Everything past here talks to the user, so it needs a terminal. The launcher
+# runs us WITHOUT one (Terminal=false) so that the common case above — raise the
+# window — doesn't flash a terminal open and shut. Re-exec into one only now.
+if [ ! -t 0 ]; then
+  exec xfce4-terminal --title="Vibeconferencing" -e "/home/ubuntu/.local/bin/vibeconf-show-app.sh"
+fi
+
+if ! systemctl is-active --quiet vibeconf-app; then
+  echo "Vibeconferencing is not running. Starting it..."
+  sudo systemctl start vibeconf-app
+  sleep 3
+  systemctl status vibeconf-app --no-pager | head -8
+  echo; echo "Press Enter to close."; read -r _
+  exit 0
+fi
+
+echo "Vibeconferencing is RUNNING but has no window."
+echo
+echo "That happens when the app window was closed: the process keeps going"
+echo "(calendar polling, MCP on 127.0.0.1:7865) but nothing can re-open its UI."
+echo "Restarting the app is the only way to get the window back."
+echo
+if curl -s --max-time 3 http://127.0.0.1:7865/api/sync/no-room 2>/dev/null | grep -q '"callStatus":"idle"'; then
+  echo "It is idle — not in a call — so a restart costs nothing."
+else
+  echo "WARNING: it may be IN A CALL. Restarting will drop it."
+fi
+echo
+read -r -p "Restart Vibeconferencing now? [y/N] " ans
+case "$ans" in
+  [yY]*)
+    sudo systemctl restart vibeconf-app
+    sleep 3
+    systemctl status vibeconf-app --no-pager | head -10
+    ;;
+  *) echo "Left alone." ;;
+esac
+echo; echo "Press Enter to close."; read -r _
+SH
+chmod +x ~/.local/bin/vibeconf-show-app.sh
+
 echo "--- .desktop entries (used by both the panel and the menu)"
+cat > ~/.local/share/applications/vibeconf-app.desktop <<'D'
+[Desktop Entry]
+Type=Application
+Name=Vibeconferencing
+Comment=Show the app window (restores it if the window was closed)
+Exec=/home/ubuntu/.local/bin/vibeconf-show-app.sh
+Icon=vibeconferencing-agent
+Terminal=false
+Categories=AudioVideo;
+D
+
 cat > ~/.local/share/applications/vibeconf-restart.desktop <<'D'
 [Desktop Entry]
 Type=Application
@@ -184,6 +273,12 @@ cat > ~/.config/openbox/menu.xml <<'X'
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_menu xmlns="http://openbox.org/3.4/menu">
 <menu id="root-menu" label="Vibeconferencing">
+  <item label="Vibeconferencing">
+    <action name="Execute">
+      <command>/home/ubuntu/.local/bin/vibeconf-show-app.sh</command>
+    </action>
+  </item>
+  <separator />
   <item label="Terminal">
     <action name="Execute"><command>xfce4-terminal</command></action>
   </item>
@@ -213,7 +308,7 @@ cat > ~/.config/openbox/menu.xml <<'X'
 X
 
 echo "--- tint2 panel"
-# Bottom strip, always on top, with the four launchers and a taskbar so a
+# Bottom strip, always on top, with the five launchers and a taskbar so a
 # minimised or buried app window can be got back.
 cat > ~/.config/tint2/tint2rc <<'T'
 # Vibeconferencing box panel — launchers + taskbar.
@@ -263,6 +358,7 @@ task_font_color = #ffffff 100
 launcher_padding = 6 4 6
 launcher_icon_size = 32
 launcher_tooltip = 1
+launcher_item_app = /home/ubuntu/.local/share/applications/vibeconf-app.desktop
 launcher_item_app = /home/ubuntu/.local/share/applications/vibeconf-terminal.desktop
 launcher_item_app = /home/ubuntu/.local/share/applications/vibeconf-chrome.desktop
 launcher_item_app = /home/ubuntu/.local/share/applications/vibeconf-files.desktop

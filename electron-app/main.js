@@ -9,6 +9,7 @@ const vm = require('vm');
 const Store = require('./store.js');
 const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
 const profileManager = require('./profile-manager.js');
+const { profileLaunchCommand } = require('./profile-launch.js');
 const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
@@ -13332,22 +13333,41 @@ function setupIPC() {
     } catch { /* ignore — fall back to Electron's default centering */ }
 
     const { execFile } = require('child_process');
+    // #746: the spawn failure arrives asynchronously, LONG after we have returned
+    // { launched: true }. With nowhere to put it, the caller polls for a window
+    // that was never coming and blames the deadline — which is how an instant,
+    // fully-diagnosable `xdg-open: unexpected option '-n'` reached the user as
+    // "New profile window did not come up in time". Give it somewhere to go; the
+    // switch-profile handler watches this and reports the real cause.
+    // A string, not the Error: this object crosses IPC to the renderer.
+    const launchFailure = { message: null };
+    const onSpawnError = (err) => {
+      if (!err) return;
+      launchFailure.message = err.message;
+      console.error('[electron] profile launch failed:', err.message);
+    };
     try {
-      if (app.isPackaged) {
-        // Resolve the .app bundle from the exe path and open a new instance.
-        const exe = app.getPath('exe'); // …/Vibeconferencing.app/Contents/MacOS/Vibeconferencing
-        const appBundle = exe.replace(/\/Contents\/MacOS\/[^/]+$/, '');
-        const openArgs = args.length ? ['-n', appBundle, '--args', ...args] : ['-n', appBundle];
-        execFile('open', openArgs, (err) => {
-          if (err) console.error('[electron] profile launch failed:', err.message);
-        });
-      } else {
-        // Dev: relaunch this Electron binary with the same app dir + profile args.
-        execFile(process.execPath, [app.getAppPath(), ...args], { detached: true, stdio: 'ignore' })
-          .on('error', (err) => console.error('[electron] profile dev launch failed:', err.message));
-      }
-      console.log('[electron] Launching profile', isDefault ? '(default)' : name, port ? 'on port ' + port : '', app.isPackaged ? '(packaged)' : '(dev)');
-      return { ok: true, launched: true, port, runningKey };
+      // Per-platform argv lives in profile-launch.js so it can be tested without
+      // an Electron main process — see #746 for what shipped when it could not be.
+      const { cmd, argv, detached } = profileLaunchCommand({
+        platform: process.platform,
+        isPackaged: app.isPackaged,
+        exePath: app.getPath('exe'),
+        appPath: app.isPackaged ? null : app.getAppPath(),
+        args,
+      });
+      // Detached (direct exec): 'error' catches a failure to spawn at all, and we
+      // unref because we are about to quit — switch-profile calls app.quit() once
+      // the new instance binds, and the replacement must not die with us.
+      // Non-detached (macOS open(1)): the callback is what catches open exiting
+      // non-zero, which is the shape the #746 failure actually took.
+      const child = detached
+        ? execFile(cmd, argv, { detached: true, stdio: 'ignore' })
+        : execFile(cmd, argv, onSpawnError);
+      child.on('error', onSpawnError);
+      if (detached) child.unref();
+      console.log('[electron] Launching profile', isDefault ? '(default)' : name, port ? 'on port ' + port : '', app.isPackaged ? '(packaged)' : '(dev)', `via ${cmd}`);
+      return { ok: true, launched: true, port, runningKey, launchFailure };
     } catch (err) {
       return { ok: false, error: err.message };
     }
@@ -13370,6 +13390,12 @@ function setupIPC() {
       const deadline = Date.now() + 8000;
       let up = false;
       while (Date.now() < deadline) {
+        // #746: a spawn that failed outright is never going to bind a port, so
+        // waiting out the deadline only delays the report and replaces a precise
+        // cause with a vague one. Bail the moment we know.
+        if (r.launchFailure?.message) {
+          return { ok: false, error: `Could not start the new bot: ${r.launchFailure.message}` };
+        }
         const running = await scanRunningInstances();
         if (running[r.runningKey]) { up = true; break; }
         await new Promise((res) => setTimeout(res, 250));

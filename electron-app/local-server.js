@@ -596,6 +596,16 @@ class LocalServer {
     this._autoLeaveTriggered = false;
     this.autoLeaveGraceMs = 10_000;
 
+    // #757: the separate, much longer timer for the no-show — a call nobody
+    // else EVER joins. The grace timer above deliberately never arms in that
+    // case (see _evaluateAutoLeave), so without this a bot that is stood up
+    // waits forever: 25 hours in the reported incident, and since it still
+    // counted as in-call it never auto-joined the next day's meeting either.
+    // Armed on the transition into 'in-call' rather than from a participants
+    // update, because a room that stays empty produces no participant changes
+    // to be notified about.
+    this._noShowTimer = null;
+
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
     this.lastWaitForSpeechAt = null; // ms timestamp of the most recent wait_for_speech call
@@ -1021,6 +1031,13 @@ class LocalServer {
       }
     }
 
+    // #757: start the no-show countdown as soon as the bot is actually in the
+    // call. Doing it here rather than only from setParticipants matters: the
+    // participants event is edge-triggered on a change to the list, so a room
+    // that stays empty may never produce a second update — and in the case
+    // this guards against, nothing about the room ever changes at all.
+    if (status === 'in-call') this._armNoShowLeave();
+
     // Drop pending speech if we never made it in (call failed / cleared).
     // Pending flush itself is gated on first-participants-seen, not in-call —
     // 'in-call' fires when Meet's UI is up, but the bot's mic track isn't
@@ -1104,8 +1121,39 @@ class LocalServer {
       clearTimeout(this._autoLeaveTimer);
       this._autoLeaveTimer = null;
     }
+    this._clearNoShowTimer();
     this._sawOtherParticipant = false;
     this._autoLeaveTriggered = false;
+  }
+
+  _clearNoShowTimer() {
+    if (this._noShowTimer) {
+      clearTimeout(this._noShowTimer);
+      this._noShowTimer = null;
+    }
+  }
+
+  // #757: arm the no-show countdown, once, when the bot lands in a call it is
+  // alone in. Cancelled the moment anyone else appears (_evaluateAutoLeave),
+  // at which point the ordinary alone-grace timer takes over the job.
+  _armNoShowLeave() {
+    if (this._noShowTimer || this._sawOtherParticipant || this._autoLeaveTriggered) return;
+    const minutes = Number(this._pref('noShowLeaveMinutes'));
+    if (!Number.isFinite(minutes) || minutes <= 0) {
+      console.log(ts(), '⏳ [no-show] waiting indefinitely — noShowLeaveMinutes is 0');
+      return;
+    }
+    console.log(ts(), '⏳ [no-show] nobody else here yet — leaving in', minutes, 'min if nobody joins');
+    this._noShowTimer = setTimeout(() => {
+      this._noShowTimer = null;
+      if (this._sawOtherParticipant) return;
+      console.log(ts(), '👋 [no-show] nobody joined in', minutes, 'min — leaving');
+      // Silently: there is nobody in the room to hear a sign-off, and the
+      // goodbye line ("I'm the only one here") would be spoken to an empty
+      // room and land in the recording. Same reasoning as handleCallEnded.
+      this._triggerAutoLeave({ silent: true, reason: `nobody joined within ${minutes} min` });
+    }, minutes * 60_000);
+    if (this._noShowTimer.unref) this._noShowTimer.unref();
   }
 
   // How long to hold a reply before audio starts, to keep two bots from
@@ -2578,7 +2626,11 @@ class LocalServer {
     }
     const others = this.participants.filter(p => !p.isSelf && p.name !== 'You');
     if (others.length > 0) {
+      if (!this._sawOtherParticipant && this._noShowTimer) {
+        console.log(ts(), '🤝 [no-show] cancelled — somebody joined');
+      }
       this._sawOtherParticipant = true;
+      this._clearNoShowTimer();
       if (this._autoLeaveTimer) {
         clearTimeout(this._autoLeaveTimer);
         this._autoLeaveTimer = null;
@@ -2586,8 +2638,17 @@ class LocalServer {
       }
       return;
     }
-    // Alone. Only arm the timer once we've ever seen company in this call.
-    if (!this._sawOtherParticipant || this._autoLeaveTimer) return;
+    // Alone. The short grace timer only arms once we've ever seen company in
+    // this call — it exists to ride out brief Meet re-renders, and arming it on
+    // admission would auto-leave while the people pane is still populating.
+    // The never-had-company case is the no-show, and it gets its own far longer
+    // countdown instead (#757), armed here as well as on the in-call
+    // transition since whichever happens first should start the clock.
+    if (!this._sawOtherParticipant) {
+      this._armNoShowLeave();
+      return;
+    }
+    if (this._autoLeaveTimer) return;
     console.log(ts(), '⏳ [auto-leave] alone in call — leaving in', this.autoLeaveGraceMs, 'ms');
     this._autoLeaveTimer = setTimeout(() => {
       this._autoLeaveTimer = null;
@@ -2604,6 +2665,7 @@ class LocalServer {
   handleCallEnded(reason = 'call ended') {
     if (this._autoLeaveTriggered || this.callStatus !== 'in-call') return;
     this._autoLeaveTriggered = true;
+    this._clearNoShowTimer();
     console.log(ts(), '👋 [call-ended] firing —', reason, '— resolving waiters + leaving');
     for (const w of [...this.waiters]) {
       if (w.resolved) continue;
@@ -2617,14 +2679,18 @@ class LocalServer {
     try { this.onLeaveCall(); } catch (err) { console.warn(ts(), '[call-ended] onLeaveCall failed:', err.message); }
   }
 
-  _triggerAutoLeave() {
+  // `silent` skips the spoken sign-off entirely — used by the no-show path
+  // (#757), where the line would be delivered to a room that has been empty
+  // the whole time.
+  _triggerAutoLeave({ silent = false, reason = 'bot is alone' } = {}) {
     if (this._autoLeaveTriggered || this.callStatus !== 'in-call') return;
     this._autoLeaveTriggered = true;
-    console.log(ts(), '👋 [auto-leave] firing — bot is alone, signing off');
+    this._clearNoShowTimer();
+    console.log(ts(), '👋 [auto-leave] firing —', reason + (silent ? ', leaving quietly' : ', signing off'));
 
     // Speak a brief sign-off line in active mode only. Passive/silent leave
     // quietly.
-    if (this.mode === 'active') {
+    if (!silent && this.mode === 'active') {
       try {
         // #493 decision 1: the goodbye is just an ack — `exempt`, not a
         // special case. It was the only emit site that set no state at all,
@@ -2656,7 +2722,7 @@ class LocalServer {
 
     // Give the goodbye line time to play before tearing the call down (rough
     // estimate; not awaiting TTS-end yet).
-    const playDelayMs = this.mode === 'active' ? 3000 : 0;
+    const playDelayMs = (!silent && this.mode === 'active') ? 3000 : 0;
     setTimeout(() => {
       try {
         this.onLeaveCall();

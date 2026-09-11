@@ -139,6 +139,24 @@ const PREFERENCES = {
       + 'is driving the bot, since there would be nobody to do the work. Set 0 to turn the phase '
       + 'off and tear down the moment the bot leaves.',
   },
+  noShowLeaveMinutes: {
+    type: 'number',
+    default: 10,
+    min: 0,
+    max: 720,
+    description:
+      'How long the bot waits in a call that nobody else ever joins, in minutes, before '
+      + 'it gives up and leaves. This is the no-show case specifically: the ordinary '
+      + '"everyone left, so I will too" auto-leave only arms once the bot has seen '
+      + 'company, which is right for its own case and left a bot that was stood up '
+      + 'sitting there forever. (#757: one waited 25 hours, and because it still counted '
+      + 'as being in a call it never auto-joined its next meeting the following day.) '
+      + 'It leaves silently — there is nobody to hear a goodbye — and anyone can invite '
+      + 'it back. Ten minutes is the ordinary social limit for waiting on someone who '
+      + 'has not turned up; raise it if you deliberately park a bot in a room well '
+      + 'ahead of the people. 0 means wait indefinitely, which is what the app used to '
+      + 'do and is only reasonable if you are watching the bot yourself.',
+  },
   captionLanguage: {
     type: 'string',
     default: '',

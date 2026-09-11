@@ -809,6 +809,49 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
     // person per hour automatically would spend a gigabyte a call to save one
     // command. attribution.json and the label tracks come to ~10MB and answer
     // every question asked of the corpus so far.
+    // Subtitles: captions.jsonl -> call-recording<suffix>.srt / .vtt, beside
+    // the mp4. Runs HERE, before the keepCallRecordingTracks branch below can
+    // delete the tracks dir that captions.jsonl lives in — and only when a
+    // merge actually produced a file, since a sidecar for an mp4 that doesn't
+    // exist is just litter.
+    //
+    // One pair of files covers both outputs: call-recording-share.mp4 pads its
+    // picture by exactly (shareStart - videoStart), which puts it on the same
+    // t=0 as call-recording.mp4, so the same cues fit either file. Players
+    // match a sidecar by filename stem, so the share mp4 gets its own copy
+    // rather than a differently-timed build.
+    if (mainMerge?.ok) {
+      try {
+        const { writeSubtitleSidecars } = require('./call-subtitles-write.js');
+        let subOffset = 0;
+        try { subOffset = Number(prefValue('subtitleOffsetMs')) || 0; } catch { /* default 0 */ }
+        const subs = writeSubtitleSidecars({
+          tracksDir: dir,
+          outDir: callDir,
+          baseName: path.basename(mainOutputName, '.mp4'),
+          manifest,
+          offsetMs: subOffset,
+          title: manifest?.callId || manifest?.room || null,
+        });
+        if (subs.ok) {
+          console.log(`[subtitles] ${subs.cues} cues -> ${path.basename(subs.srt)} + ${path.basename(subs.vtt)}`);
+          if (shareMerge?.ok) {
+            const shareStem = path.basename(`call-recording-share${outputSuffix}.mp4`, '.mp4');
+            for (const ext of ['srt', 'vtt']) {
+              try { fs.copyFileSync(subs[ext], path.join(callDir, `${shareStem}.${ext}`)); }
+              catch (err) { console.warn(`[subtitles] share ${ext} copy failed:`, err.message); }
+            }
+          }
+        } else {
+          console.log(`[subtitles] skipped: ${subs.reason}`);
+        }
+      } catch (err) {
+        // Same contract as speaker-extract below: a nicety must never be why
+        // a recording's cleanup path fails.
+        console.warn('[subtitles] failed:', err.message);
+      }
+    }
+
     let keepTracksPref = false;
     try { keepTracksPref = !!prefValue('keepCallRecordingTracks'); } catch { /* default off */ }
     if (keepTracksPref) {
@@ -14422,6 +14465,17 @@ function setupIPC() {
     // #424: real caption text is proof we're hearing again — drop the 🥴.
     if (turns.some((t) => t && String(t.text || '').trim())) setImpaired(false);
     localServer.updateTurns(turns);
+    // Mirror the (now normalized, de-duplicated, wall-clock stamped) turn
+    // state into the recording's captions.jsonl, the source for the .srt/.vtt
+    // subtitle sidecars. Reads back from localServer rather than using the raw
+    // scraper payload on purpose: updateTurns is what resolves a growing
+    // utterance into one turn with a stable id and a firstSeen/lastUpdated
+    // span, and that span is exactly what a cue needs. Best-effort — a
+    // subtitle must never be able to disturb the caption path.
+    if (activeRecording) {
+      try { activeRecording.captionTurns([...localServer.turns.values()]); }
+      catch (err) { console.warn('[subtitles] caption capture failed:', err.message); }
+    }
     // Mirror the live caption state into the troubleshooting panel — the
     // "bot's-eye view" of exactly what captions the bot is receiving, so you
     // can compare it in real time against the bot's Meet view.

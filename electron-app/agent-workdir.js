@@ -212,6 +212,8 @@ today, and transcripts and recordings as those arrive. When call recording is
 on, this is where \`call-recording-tracks/\` (one audio file per
 participant, plus the bot's own \`video.webm\` and, if a whiteboard share
 happened, \`share.webm\`) and the merged \`call-recording.mp4\` / \`call-recording-share.mp4\` land.
+Each merged video also gets \`.srt\` and \`.vtt\` subtitles built from the call's
+captions — same stem as the video, so players pick them up on their own.
 One folder per call keeps a call's artifacts together and makes it obvious
 what to delete. \`get_call_log({ call_id })\` returns just this call's slice of
 the session log (no earlier or later calls mixed in) — worth saving as

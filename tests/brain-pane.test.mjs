@@ -39,7 +39,9 @@ test('the 🧠 button sits beside 👀, and uses the drawn icon set', () => {
     'the brain button belongs to the left of the eyes');
   const row = panelHtml.slice(panelHtml.indexOf('openBrainBtn'), panelHtml.indexOf('openTroubleshootingBtn'));
   assert.match(row, /botview-toggle-btn/, 'and adjacent to it, in the same row');
-  assert.match(panelHtml, /<button id="openBrainBtn" class="join-more"/);
+  // .brain-open-btn is what panel.js binds on (#547) — the id is now just the
+  // in-call instance's name, not the hook.
+  assert.match(panelHtml, /<button id="openBrainBtn" class="join-more brain-open-btn"/);
 });
 
 test('it opens as its own window, so it can sit beside the call', () => {

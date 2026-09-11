@@ -568,13 +568,29 @@ server.tool(
         }],
       };
     }
-    // Auto-leave: the bot was alone in the call (everyone else left) and
-    // signed off on its own (#145). Exit the loop — leave_call already fired.
+    // Auto-leave: the bot ended up alone and signed off on its own (#145).
+    // Exit the loop — leave_call already fired.
+    //
+    // #757: say WHICH ending this was. This used to report "everyone else left
+    // and the bot was alone" for every autoLeft, which was already loose for the
+    // call-ended path and is flatly untrue for a meeting nobody came to — an
+    // agent told that goes off and writes up a discussion that never happened.
+    // The after-call work is genuinely different work in each case, so the
+    // distinction has to survive the trip.
     if (data.autoLeft) {
+      const mins = Number.isFinite(data.aloneMinutes) ? data.aloneMinutes : null;
+      const waited = mins === null ? "" : ` after about ${mins} minute${mins === 1 ? "" : "s"} alone`;
+      const what = {
+        "no-show": "Auto-left the call: NOBODY ELSE EVER JOINED" + waited + ". "
+          + "There was no meeting — you have no transcript and nothing was discussed, so do not "
+          + "write one up. If there is a follow-up to do, it is with whoever did not come.",
+        "left-alone": "Auto-left the call: everyone else left and the bot was alone" + waited + ".",
+        "call-ended": "Auto-left the call: it ended (the room emptied out or the call was closed).",
+      }[data.autoLeftReason] || "Auto-left the call: everyone else left and the bot was alone.";
       return {
         content: [{
           type: "text",
-          text: "Auto-left the call: everyone else left and the bot was alone. The app has already hung up. "
+          text: what + " The app has already hung up. "
             + "Do not retry wait_for_speech and do not call leave_call."
             + afterCallWorkNote(data.afterCallWork),
         }],

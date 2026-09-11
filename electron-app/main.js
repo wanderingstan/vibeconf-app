@@ -8682,6 +8682,11 @@ if (isDefaultInstance) {
   app.on('second-instance', () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) mainWindow.restore();
+      // #752: show(), not just focus(). focus() on a HIDDEN window is a no-op,
+      // so relaunching the app — the thing everyone tries first — silently did
+      // nothing and looked like the new process failing to start. onFocusRequest
+      // (the /api/focus handler) has always had this right; this path had not.
+      mainWindow.show();
       mainWindow.focus();
     }
   });
@@ -10939,6 +10944,26 @@ function ensureHiddenMeetHost() {
   return win;
 }
 
+// #752: tearing this down is not optional bookkeeping, it is what lets the app
+// QUIT. meetHiddenWindow is a real BrowserWindow, so while it lives
+// 'window-all-closed' cannot fire and app.quit() is never reached. Closing the
+// main window used to leave it behind, and the app went on running with no
+// window and no way to open one — while the confirmation dialog had just
+// promised "Closing this window quits the app".
+//
+// Extracted from the "Leaving 'hidden'" path rather than copied, so the leak
+// cannot come back through one call site and not the other. removeBrowserView
+// before destroy: meetView may be shared with another window and must not be
+// torn down along with its host.
+function destroyHiddenMeetHost() {
+  if (!meetHiddenWindow || meetHiddenWindow.isDestroyed()) { meetHiddenWindow = null; return; }
+  try {
+    if (meetView && !meetView.webContents.isDestroyed()) meetHiddenWindow.removeBrowserView(meetView);
+  } catch { /* gone */ }
+  try { meetHiddenWindow.destroy(); } catch { /* gone */ }
+  meetHiddenWindow = null;
+}
+
 // #103: attach the CURRENT meetView to whichever window the current state says
 // owns it. Every path that (re)creates meetView — first launch, activateMeetProvider,
 // a partition/provider swap — must go through this instead of
@@ -11024,11 +11049,7 @@ function setBotViewState(state) {
   }
 
   // Leaving 'hidden' — tear the host down so we don't leak a window per toggle.
-  if (meetHiddenWindow && !meetHiddenWindow.isDestroyed()) {
-    try { meetHiddenWindow.removeBrowserView(meetView); } catch { /* gone */ }
-    meetHiddenWindow.destroy();
-    meetHiddenWindow = null;
-  }
+  destroyHiddenMeetHost();
 
   if (state === 'popped' && !meetPopoutWindow) {
     if (meetView && !meetView.webContents.isDestroyed() && mainWindow && !mainWindow.isDestroyed()) {
@@ -12159,6 +12180,21 @@ function createMainWindow() {
     // 'window-all-closed' — and so the quit — from ever firing.
     if (meetPopoutWindow && !meetPopoutWindow.isDestroyed()) meetPopoutWindow.destroy();
     meetPopoutWindow = null;
+    // #752: and the hidden host, for exactly the same reason. This was missed,
+    // and unlike the popout it is not an opt-in state anyone has to choose:
+    // 'hidden' is the DEFAULT bot-view state and its host window persists in and
+    // out of a call, so on every platform closing the window left the app
+    // running with no window, holding its single-instance lock and its port,
+    // right after telling the user it was quitting.
+    destroyHiddenMeetHost();
+    // #752: and the share/whiteboard window, which is the SAME hazard for the
+    // same reason — show:false, skipTaskbar:true, no parent. It is closed on
+    // stop-sharing, title-bar rebuild, the menu item and call teardown, but
+    // nothing closed it when the app window went away, so quitting mid-share
+    // left the app running. closeWhiteboardWindow is a no-op when there is no
+    // share window, and both of its callbacks are null-safe with mainWindow
+    // already gone.
+    closeWhiteboardWindow('main window closed');
     sync.stopPolling();
   });
 }

@@ -139,23 +139,30 @@ const PREFERENCES = {
       + 'is driving the bot, since there would be nobody to do the work. Set 0 to turn the phase '
       + 'off and tear down the moment the bot leaves.',
   },
-  noShowLeaveMinutes: {
+  botAloneLimitMinutes: {
     type: 'number',
     default: 10,
     min: 0,
     max: 720,
     description:
-      'How long the bot waits in a call that nobody else ever joins, in minutes, before '
-      + 'it gives up and leaves. This is the no-show case specifically: the ordinary '
-      + '"everyone left, so I will too" auto-leave only arms once the bot has seen '
-      + 'company, which is right for its own case and left a bot that was stood up '
-      + 'sitting there forever. (#757: one waited 25 hours, and because it still counted '
-      + 'as being in a call it never auto-joined its next meeting the following day.) '
-      + 'It leaves silently — there is nobody to hear a goodbye — and anyone can invite '
-      + 'it back. Ten minutes is the ordinary social limit for waiting on someone who '
-      + 'has not turned up; raise it if you deliberately park a bot in a room well '
-      + 'ahead of the people. 0 means wait indefinitely, which is what the app used to '
-      + 'do and is only reasonable if you are watching the bot yourself.',
+      'The longest the bot may sit in a call with nobody else in it, in minutes, '
+      + 'before it leaves on its own. This is a ceiling on being alone in general, not '
+      + 'one particular way of ending up that way: it covers a meeting nobody ever turns '
+      + 'up to, and equally a call everyone drifts out of without ever formally ending. '
+      + 'Measured from the last moment company was actually seen (or from joining, if it '
+      + 'never was), so a roster that flickers in and out does not keep resetting it. '
+      + 'Not to be confused with the ten-second "everyone just left, so will I" exit, '
+      + 'which handles the ordinary end of a call and is the one that normally fires. '
+      + 'This is the backstop for when that one cannot: it only arms once the bot has '
+      + 'seen company, so before #757 a bot that was stood up waited forever — one waited '
+      + '25 hours, and since it still counted as being in a call it never auto-joined its '
+      + 'next meeting the following day. The bot leaves quietly (there is nobody to hear a '
+      + 'goodbye) and its agent is told which of the two happened, so after-call work can '
+      + 'say something true about it — following up with someone who no-showed reads very '
+      + 'differently from writing up a meeting that did happen. Ten minutes is the '
+      + 'ordinary social limit for waiting on someone; raise it if you deliberately park a '
+      + 'bot in a room well ahead of the people. 0 means wait indefinitely, which is what '
+      + 'the app used to do and is only reasonable if you are watching the bot yourself.',
   },
   captionLanguage: {
     type: 'string',

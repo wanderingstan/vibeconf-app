@@ -596,15 +596,22 @@ class LocalServer {
     this._autoLeaveTriggered = false;
     this.autoLeaveGraceMs = 10_000;
 
-    // #757: the separate, much longer timer for the no-show — a call nobody
-    // else EVER joins. The grace timer above deliberately never arms in that
-    // case (see _evaluateAutoLeave), so without this a bot that is stood up
-    // waits forever: 25 hours in the reported incident, and since it still
-    // counted as in-call it never auto-joined the next day's meeting either.
-    // Armed on the transition into 'in-call' rather than from a participants
-    // update, because a room that stays empty produces no participant changes
-    // to be notified about.
-    this._noShowTimer = null;
+    // #757: the ceiling on being alone, whatever route the bot took to get
+    // there. The grace timer above only arms once company has been SEEN — right
+    // for its own case, and it leaves a bot that was stood up waiting forever
+    // (25 hours in the reported incident, and since it still counted as being
+    // in a call it never auto-joined the next day's meeting either).
+    //
+    // Kept as a timestamp polled on an interval rather than a cancellable
+    // timer, for two reasons. A roster that flickers would keep restarting a
+    // timer and never reach the limit, and the participants event is
+    // edge-triggered on a CHANGE to the list — so a room that stays empty,
+    // which is exactly the case being guarded against, delivers no updates to
+    // hang a timer off at all. A clock that is only ever moved FORWARD by
+    // evidence of company has neither problem.
+    this._lastCompanyAt = 0;   // ms; 0 until somebody is actually seen
+    this._aloneSince = 0;      // ms; when the current stretch of being alone began
+    this._aloneWatchdog = null;
 
     // Long-poll waiters
     this.waiters = [];           // { resolve, since, bot, silence, timer }
@@ -1031,12 +1038,11 @@ class LocalServer {
       }
     }
 
-    // #757: start the no-show countdown as soon as the bot is actually in the
-    // call. Doing it here rather than only from setParticipants matters: the
-    // participants event is edge-triggered on a change to the list, so a room
-    // that stays empty may never produce a second update — and in the case
-    // this guards against, nothing about the room ever changes at all.
-    if (status === 'in-call') this._armNoShowLeave();
+    // #757: the alone clock starts the moment the bot is actually in the call.
+    // From here the watchdog runs on its own schedule and needs nothing from
+    // the room — see the note on _lastCompanyAt for why it cannot rely on
+    // participant updates arriving.
+    if (status === 'in-call') this._startAloneWatchdog();
 
     // Drop pending speech if we never made it in (call failed / cleared).
     // Pending flush itself is gated on first-participants-seen, not in-call —
@@ -1121,39 +1127,73 @@ class LocalServer {
       clearTimeout(this._autoLeaveTimer);
       this._autoLeaveTimer = null;
     }
-    this._clearNoShowTimer();
+    this._stopAloneWatchdog();
+    this._lastCompanyAt = 0;
+    this._aloneSince = 0;
     this._sawOtherParticipant = false;
     this._autoLeaveTriggered = false;
   }
 
-  _clearNoShowTimer() {
-    if (this._noShowTimer) {
-      clearTimeout(this._noShowTimer);
-      this._noShowTimer = null;
+  _stopAloneWatchdog() {
+    if (this._aloneWatchdog) {
+      clearInterval(this._aloneWatchdog);
+      this._aloneWatchdog = null;
     }
   }
 
-  // #757: arm the no-show countdown, once, when the bot lands in a call it is
-  // alone in. Cancelled the moment anyone else appears (_evaluateAutoLeave),
-  // at which point the ordinary alone-grace timer takes over the job.
-  _armNoShowLeave() {
-    if (this._noShowTimer || this._sawOtherParticipant || this._autoLeaveTriggered) return;
-    const minutes = Number(this._pref('noShowLeaveMinutes'));
+  // How long the bot has been alone right now, in ms — 0 when it has company.
+  // Counted from the last sighting of anyone else, or from joining if there
+  // has never been one.
+  aloneForMs(now = Date.now()) {
+    if (this.callStatus !== 'in-call' || !this._aloneSince) return 0;
+    return Math.max(0, now - this._aloneSince);
+  }
+
+  // #757: the ceiling on being alone. Polls rather than arming a one-shot,
+  // because the two failure shapes this exists for — a room nobody ever joins,
+  // and a roster that flickers — are respectively "no events at all" and "so
+  // many events that a cancellable timer never matures".
+  _startAloneWatchdog() {
+    if (this._aloneWatchdog) return;
+    if (!this._aloneSince) this._aloneSince = Date.now();
+    const minutes = Number(this._pref('botAloneLimitMinutes'));
     if (!Number.isFinite(minutes) || minutes <= 0) {
-      console.log(ts(), '⏳ [no-show] waiting indefinitely — noShowLeaveMinutes is 0');
+      console.log(ts(), '⏳ [alone] no limit — botAloneLimitMinutes is 0, the bot will wait indefinitely');
       return;
     }
-    console.log(ts(), '⏳ [no-show] nobody else here yet — leaving in', minutes, 'min if nobody joins');
-    this._noShowTimer = setTimeout(() => {
-      this._noShowTimer = null;
-      if (this._sawOtherParticipant) return;
-      console.log(ts(), '👋 [no-show] nobody joined in', minutes, 'min — leaving');
-      // Silently: there is nobody in the room to hear a sign-off, and the
-      // goodbye line ("I'm the only one here") would be spoken to an empty
-      // room and land in the recording. Same reasoning as handleCallEnded.
-      this._triggerAutoLeave({ silent: true, reason: `nobody joined within ${minutes} min` });
-    }, minutes * 60_000);
-    if (this._noShowTimer.unref) this._noShowTimer.unref();
+    const limitMs = minutes * 60_000;
+    console.log(ts(), '⏳ [alone] limit is', minutes, 'min without company');
+    // A coarse tick: this measures a wait of minutes, and the ordinary end of a
+    // call is handled seconds after the fact by the grace timer, not here.
+    this._aloneWatchdog = setInterval(() => {
+      // Re-read every tick so set_preference takes effect on the call in
+      // progress, like every other live knob.
+      const live = Number(this._pref('botAloneLimitMinutes'));
+      if (!Number.isFinite(live) || live <= 0) return;
+      const alone = this.aloneForMs();
+      if (alone < live * 60_000) return;
+      this._stopAloneWatchdog();
+      // Which way the bot ended up alone is the whole point of reporting it:
+      // following up with someone who never showed reads nothing like writing
+      // up a meeting that happened and emptied out.
+      const neverCame = !this._sawOtherParticipant;
+      const mins = Math.round(alone / 60_000);
+      console.log(ts(), '👋 [alone]', neverCame
+        ? `nobody ever joined — ${mins} min alone, leaving`
+        : `alone for ${mins} min since the last person left — leaving`);
+      // Quietly: there is nobody in the room to hear a sign-off, and the
+      // goodbye line would only land in the recording. Same reasoning as
+      // handleCallEnded.
+      this._triggerAutoLeave({
+        silent: true,
+        why: neverCame ? 'no-show' : 'left-alone',
+        aloneMinutes: mins,
+        reason: neverCame
+          ? `nobody joined within ${mins} min`
+          : `alone for ${mins} min after everyone left`,
+      });
+    }, Math.min(30_000, Math.max(1_000, Math.floor(limitMs / 4))));
+    if (this._aloneWatchdog.unref) this._aloneWatchdog.unref();
   }
 
   // How long to hold a reply before audio starts, to keep two bots from
@@ -2626,11 +2666,13 @@ class LocalServer {
     }
     const others = this.participants.filter(p => !p.isSelf && p.name !== 'You');
     if (others.length > 0) {
-      if (!this._sawOtherParticipant && this._noShowTimer) {
-        console.log(ts(), '🤝 [no-show] cancelled — somebody joined');
+      // The only thing that moves the alone clock: evidence of company, now.
+      if (!this._sawOtherParticipant) {
+        console.log(ts(), '🤝 [alone] somebody is here — the alone limit no longer applies');
       }
       this._sawOtherParticipant = true;
-      this._clearNoShowTimer();
+      this._lastCompanyAt = Date.now();
+      this._aloneSince = 0;
       if (this._autoLeaveTimer) {
         clearTimeout(this._autoLeaveTimer);
         this._autoLeaveTimer = null;
@@ -2638,16 +2680,17 @@ class LocalServer {
       }
       return;
     }
-    // Alone. The short grace timer only arms once we've ever seen company in
-    // this call — it exists to ride out brief Meet re-renders, and arming it on
+    // Alone. Start the clock the ceiling reads, if it isn't already running —
+    // it keeps counting across a flicker, since only a genuine sighting above
+    // resets it.
+    if (!this._aloneSince) this._aloneSince = Date.now();
+    this._startAloneWatchdog();
+
+    // The short grace timer only arms once we've ever seen company in this
+    // call — it exists to ride out brief Meet re-renders, and arming it on
     // admission would auto-leave while the people pane is still populating.
-    // The never-had-company case is the no-show, and it gets its own far longer
-    // countdown instead (#757), armed here as well as on the in-call
-    // transition since whichever happens first should start the clock.
-    if (!this._sawOtherParticipant) {
-      this._armNoShowLeave();
-      return;
-    }
+    // The never-had-company case is left to the ceiling above (#757).
+    if (!this._sawOtherParticipant) return;
     if (this._autoLeaveTimer) return;
     console.log(ts(), '⏳ [auto-leave] alone in call — leaving in', this.autoLeaveGraceMs, 'ms');
     this._autoLeaveTimer = setTimeout(() => {
@@ -2665,7 +2708,7 @@ class LocalServer {
   handleCallEnded(reason = 'call ended') {
     if (this._autoLeaveTriggered || this.callStatus !== 'in-call') return;
     this._autoLeaveTriggered = true;
-    this._clearNoShowTimer();
+    this._stopAloneWatchdog();
     console.log(ts(), '👋 [call-ended] firing —', reason, '— resolving waiters + leaving');
     for (const w of [...this.waiters]) {
       if (w.resolved) continue;
@@ -2673,7 +2716,7 @@ class LocalServer {
       clearTimeout(w.timer);
       clearTimeout(w.silenceTimer);
       clearTimeout(w.tickTimer);
-      w.resolve({ success: true, autoLeft: true, afterCallWork: this.afterCallWorkPlan(), asOf: new Date().toISOString(), transcript: { entries: [] } });
+      w.resolve({ success: true, autoLeft: true, autoLeftReason: 'call-ended', autoLeftDetail: reason, afterCallWork: this.afterCallWorkPlan(), asOf: new Date().toISOString(), transcript: { entries: [] } });
     }
     this.waiters = [];
     try { this.onLeaveCall(); } catch (err) { console.warn(ts(), '[call-ended] onLeaveCall failed:', err.message); }
@@ -2682,10 +2725,17 @@ class LocalServer {
   // `silent` skips the spoken sign-off entirely — used by the no-show path
   // (#757), where the line would be delivered to a room that has been empty
   // the whole time.
-  _triggerAutoLeave({ silent = false, reason = 'bot is alone' } = {}) {
+  //
+  // `why` is the machine-readable shape of the ending, and it reaches the agent
+  // (see the autoLeft branch in mcp-server/server.js). It matters because the
+  // after-call work is different work: a bot that was stood up should be
+  // chasing the person who never came, not writing minutes. That branch used to
+  // tell every auto-leave "everyone else left and the bot was alone", which for
+  // a no-show is simply untrue.
+  _triggerAutoLeave({ silent = false, reason = 'bot is alone', why = 'left-alone', aloneMinutes = null } = {}) {
     if (this._autoLeaveTriggered || this.callStatus !== 'in-call') return;
     this._autoLeaveTriggered = true;
-    this._clearNoShowTimer();
+    this._stopAloneWatchdog();
     console.log(ts(), '👋 [auto-leave] firing —', reason + (silent ? ', leaving quietly' : ', signing off'));
 
     // Speak a brief sign-off line in active mode only. Passive/silent leave
@@ -2716,7 +2766,7 @@ class LocalServer {
       clearTimeout(w.timer);
       clearTimeout(w.silenceTimer);
       clearTimeout(w.tickTimer);
-      w.resolve({ success: true, autoLeft: true, afterCallWork: this.afterCallWorkPlan(), asOf: new Date().toISOString(), transcript: { entries: [] } });
+      w.resolve({ success: true, autoLeft: true, autoLeftReason: why, autoLeftDetail: reason, aloneMinutes, afterCallWork: this.afterCallWorkPlan(), asOf: new Date().toISOString(), transcript: { entries: [] } });
     }
     this.waiters = [];
 

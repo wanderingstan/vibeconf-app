@@ -5827,7 +5827,18 @@ function authResultPage(ok) {
 // Open Google OAuth in the system browser
 // Google blocks embedded webviews, so we must use the real browser.
 // We start a local HTTP server to catch the session cookie after login.
-function openGoogleLogin() {
+// #754: `calendar` opts through to the website's ?calendar=1 opt-in.
+//
+// Without it the app's sign-in could NEVER request calendar scope: the website
+// makes calendar opt-in via that query param (api/auth/google.ts), the sign-in
+// PAGE has a checkbox for it, and the app bypasses that page by building the
+// URL itself. So an app-only user got no calendar consent screen, no error,
+// and calendar auto-join that silently did nothing forever.
+//
+// Deliberately still opt-in rather than always-on: bundling calendar into every
+// sign-in would undo the decision in #299 that plenty of people just want to
+// sign in, not grant a bot read access to their calendar.
+function openGoogleLogin(opts = {}) {
   const baseUrl = getWebsiteUrl();
   const http = require('http');
   const { shell } = require('electron');
@@ -5899,7 +5910,8 @@ function openGoogleLogin() {
   server.listen(0, '127.0.0.1', () => {
     const port = server.address().port;
     const callbackUrl = `http://127.0.0.1:${port}/auth-complete`;
-    const loginUrl = `${baseUrl}/api/auth/google?electron_callback=${encodeURIComponent(callbackUrl)}`;
+    const calendarParam = opts && opts.calendar ? '&calendar=1' : '';
+    const loginUrl = `${baseUrl}/api/auth/google?electron_callback=${encodeURIComponent(callbackUrl)}${calendarParam}`;
     console.log('[electron] Opening Google login in system browser:', loginUrl);
     shell.openExternal(loginUrl);
 
@@ -13607,8 +13619,8 @@ function setupIPC() {
   });
 
   // --- Login ---
-  ipcMain.handle('login', () => {
-    openGoogleLogin();
+  ipcMain.handle('login', (_event, opts) => {
+    openGoogleLogin(opts || {});
     return { opening: true };
   });
 

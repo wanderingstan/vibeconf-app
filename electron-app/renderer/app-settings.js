@@ -42,6 +42,8 @@ api.on('flush-settings', async () => {
 const userStatus = document.getElementById('userStatus');
 const userSignInBtn = document.getElementById('userSignInBtn');
 const userSignOutBtn = document.getElementById('userSignOutBtn');
+const userCalendarRow = document.getElementById('userCalendarRow');   // #754
+const userCalendarChk = document.getElementById('userCalendarChk');   // #754
 async function refreshUser() {
   try {
     const data = await api.invoke('check-auth');
@@ -51,6 +53,9 @@ async function refreshUser() {
     userStatus.style.color = signedIn ? '#81c995' : '#fdd663';
     userSignInBtn.style.display = signedIn ? 'none' : 'inline-block';
     userSignOutBtn.style.display = signedIn ? 'inline-block' : 'none';
+    // #754: only meaningful alongside the sign-in button — the scope is chosen
+    // at consent time, so it cannot be toggled for an existing session.
+    userCalendarRow.style.display = signedIn ? 'none' : 'flex';
   } catch {
     userStatus.textContent = 'Auth check failed';
     userStatus.style.color = '#f28b82';
@@ -58,7 +63,10 @@ async function refreshUser() {
 }
 userSignInBtn.addEventListener('click', async () => {
   userSignInBtn.disabled = true; userSignInBtn.textContent = 'Opening…';
-  try { await api.invoke('login'); } catch { /* ignore */ }
+  // #754: pass the calendar opt-in through to ?calendar=1. Without it the
+  // website never adds calendar.readonly to the scope set, so the consent
+  // screen never offers it and calendar auto-join silently does nothing.
+  try { await api.invoke('login', { calendar: userCalendarChk.checked }); } catch { /* ignore */ }
   setTimeout(() => { userSignInBtn.disabled = false; userSignInBtn.textContent = 'Sign in with Google'; refreshUser(); }, 3000);
 });
 userSignOutBtn.addEventListener('click', async () => {

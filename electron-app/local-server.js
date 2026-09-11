@@ -3076,21 +3076,52 @@ class LocalServer {
           // corrupting the transcript. We forfeit anything said while the
           // pane was empty, but hearing resumes with this very batch instead
           // of deadlocking forever.
-          rebased = 0;
+          // Second anchor attempt, using a different source of truth: the
+          // record of what has actually been HANDED TO THE AGENT this call
+          // (_deliveredFps, kept by _auditDelivery). The open-turn anchor is
+          // gone, but most of the rows still on screen have already been
+          // delivered — re-ingesting those is what turns one anchor loss into
+          // a full-transcript replay (#12).
+          //
+          // Measured on eec-hqcw-wbm-20260911T125930Z: one anchor loss
+          // (24 -> 23 rows) at 08:13:55.772 produced, 1.06s later,
+          // "REPLAY DELIVERED: 22 entries the agent had already been given".
+          // 41 re-anchors succeeded on that same call; this branch ran once.
+          //
+          // Rows are oldest-first, so scan from the END for the newest row we
+          // have already delivered and rebase past it. A row whose captions
+          // have grown since delivery fingerprints differently and is
+          // correctly treated as new.
+          let deliveredAnchor = -1;
+          for (let i = n - 1; i >= 0; i--) {
+            if (this._deliveredFps && this._deliveredFps.has(this._turnFp(speaker, texts[i]))) {
+              deliveredAnchor = i + 1;
+              break;
+            }
+          }
+          rebased = deliveredAnchor >= 0 ? deliveredAnchor : 0;
+          if (deliveredAnchor >= 0) {
+            console.log(ts(), 'ℹ️  [caption] anchor lost for', speaker,
+              '(' + knownCount + ' -> ' + n + ') but', deliveredAnchor,
+              'visible row(s) were already delivered — rebasing past them instead of',
+              'replaying the pane (#12/#389)');
+          }
           if (open && !open.settled) {
             open.settled = true; // the pre-gap turn is definitively over
             changed = true;
             this._logHeard(open.speaker, open.text);
           }
           this._openTurnBySpeaker.delete(speaker);
-          console.warn(ts(), '⚠️  [caption] lost anchor for', speaker,
-            '(' + knownCount + ' -> ' + n + ') — ingesting the visible rows as new speech;',
-            'anything they said in the gap is unrecoverable');
-          this.addError(
-            `Caption anchor lost for ${speaker} (#389): the caption pane shrank past ` +
-            `the last turn we held, so anything they said in the gap was missed. ` +
-            `Hearing resumes with the captions on screen now.`,
-          );
+          if (deliveredAnchor < 0) {
+            console.warn(ts(), '⚠️  [caption] lost anchor for', speaker,
+              '(' + knownCount + ' -> ' + n + ') — ingesting the visible rows as new speech;',
+              'anything they said in the gap is unrecoverable');
+            this.addError(
+              `Caption anchor lost for ${speaker} (#389): the caption pane shrank past ` +
+              `the last turn we held, so anything they said in the gap was missed. ` +
+              `Hearing resumes with the captions on screen now.`,
+            );
+          }
         }
         this._speakerTurnCount.set(speaker, rebased);
         knownCount = rebased;

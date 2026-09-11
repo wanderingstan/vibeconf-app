@@ -405,3 +405,67 @@ test('#389: losing the anchor entirely raises a visible error, not just a warnin
   assert.ok(errs.some((m) => m.includes('#389')),
     'a silently-missed gap must surface through addError, not only console.warn');
 });
+
+// ── #389 → #12: an anchor loss must not replay the pane ──────────────────────
+//
+// Found live on eec-hqcw-wbm-20260911T125930Z, 2026-09-11:
+//
+//   08:13:55.772 ⚠️  [caption] lost anchor for Stan James (24 -> 23)
+//                — ingesting the visible rows as new speech
+//   08:13:56.828 🔁 [#12] REPLAY DELIVERED: 22 entries the agent had already
+//                been given (reason=silence, session total 22)
+//
+// One second apart, same speaker, one occurrence of each in the whole call.
+// The anchor-loss recovery set `rebased = 0`, so every visible row for that
+// speaker was re-ingested as new speech with a fresh lastUpdated — passing the
+// `since` filter legitimately and re-delivering most of the call to the agent.
+//
+// The fix anchors on a second source of truth: _deliveredFps, the record of
+// what has actually been handed to the agent. Rows already delivered are
+// rebased past instead of replayed.
+test('#389: losing the anchor re-delivers only genuinely new rows, not the whole pane', async () => {
+  const s = makeServer();
+  const feed = makeFeed(s);
+
+  // A stretch of call, all of it already handed to the agent.
+  const said = [
+    'Can you resolve issue seventy three on the app for me please',
+    'So do we know what happened, did it lose track of which bots were in the call',
+    'So then what explains the times when the bots were talking over each other',
+    'Yeah let us think about this, one approach would be that the winner acts',
+  ];
+  for (const text of said) { feed.say('Stan', text, 1); await tick(); }
+  s._auditDelivery(
+    said.map((text) => ({ participantName: 'Stan', text })),
+    'silence',
+  );
+  assert.equal(s.turns.size, 4);
+
+  const cursor = new Date().toISOString();
+  await tick();
+
+  // The snapshot SHRINKS and, in the same batch, the open turn is replaced by
+  // unrelated text — so re-anchoring on the held turn fails. That is the branch
+  // that used to set rebased = 0 and replay everything still on screen.
+  // Sent directly rather than through makeFeed: both changes must land in ONE
+  // snapshot, which is what makes the anchor unrecoverable.
+  const shrunk = [
+    { turnId: 900, speaker: 'Stan', text: said[1] },
+    { turnId: 901, speaker: 'Stan', text: said[2] },
+    { turnId: 902, speaker: 'Stan', text: 'Something else entirely, unrelated to the held turn' },
+  ];
+  s.updateTurns(shrunk);
+
+  const fresh = s._entriesSince(cursor);
+  const texts = fresh.map((e) => e.text);
+  assert.equal(
+    fresh.length, 1,
+    `anchor loss must surface only the new row, surfaced ${fresh.length}: ${JSON.stringify(texts)}`,
+  );
+  assert.match(texts[0], /Something else entirely/);
+
+  // And nothing the agent already heard came back.
+  for (const old of said) {
+    assert.ok(!texts.includes(old), `re-delivered an already-heard line: ${old}`);
+  }
+});

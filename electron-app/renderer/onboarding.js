@@ -180,10 +180,16 @@ async function loadAuth() {
     : 'Not signed in. The whiteboard is disabled until you sign in.';
   $('signInBtn').style.display = signedIn ? 'none' : '';
   $('signOutBtn').style.display = signedIn ? '' : 'none';
+  // #754: only meaningful alongside the sign-in button — the scope is chosen
+  // at consent time, so it cannot be toggled for an existing session.
+  $('calendarRow').style.display = signedIn ? 'none' : 'flex';
   if (signedIn) stopAuthPoll();
 }
 $('signInBtn').addEventListener('click', async () => {
-  try { await api.invoke('login'); } catch {}
+  // #754: pass the calendar opt-in through to ?calendar=1. Without it the
+  // website never adds calendar.readonly to the scope set, so the consent
+  // screen never offers it and calendar auto-join silently does nothing.
+  try { await api.invoke('login', { calendar: $('calendarChk').checked }); } catch {}
   stopAuthPoll();
   let tries = 0;
   authPollTimer = setInterval(async () => { tries += 1; await loadAuth(); if (tries > 60) stopAuthPoll(); }, 2000);

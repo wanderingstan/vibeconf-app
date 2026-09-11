@@ -2077,7 +2077,13 @@ function refreshVoiceBanner() {
 document.getElementById('openAppSettingsFromBanner')?.addEventListener('click', () => api.invoke('open-app-settings'));
 // Re-authorize Google Calendar (#446). Reuses the existing website login IPC —
 // the credential that expired is the website's, so this is the same sign-in.
-document.getElementById('calendarReconnectBtn')?.addEventListener('click', () => api.invoke('login'));
+//
+// #754: `calendar: true` is NOT a policy choice here, it's what the button IS.
+// This banner only appears on google-api-error, i.e. someone who ALREADY
+// granted calendar and whose grant broke. Signing back in without ?calendar=1
+// would drop the scope on the way through, so the "Reconnect" button would
+// quietly complete and leave calendar just as dead as before.
+document.getElementById('calendarReconnectBtn')?.addEventListener('click', () => api.invoke('login', { calendar: true }));
 // The key lives in the separate App Settings window, so re-check on focus.
 window.addEventListener('focus', refreshVoiceBanner);
 
@@ -2401,6 +2407,12 @@ async function checkAuthStatus() {
   }
 }
 
+// #754: deliberately a plain sign-in, with no calendar opt-in. This lives in
+// the one-line app footer, which has no room for a checkbox, and the panel
+// already has a dedicated calendar path right above (calendarReconnectBtn).
+// Someone who wants calendar scope at sign-in time uses App Settings, which
+// has the checkbox. Passing `calendar: true` from here instead would grant the
+// scope to everyone who ever signs in from the footer, undoing #299's opt-in.
 userSignInMainBtn?.addEventListener('click', async () => {
   userSignInMainBtn.disabled = true;
   userSignInMainBtn.textContent = 'Opening…';

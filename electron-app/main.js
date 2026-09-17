@@ -31,7 +31,7 @@ const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
 const recordRegion = require('./record-region.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
-const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, msUntilPreCallWork, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl, meetCodeFromUrl, shouldSkipCalendarJoin, DEFAULT_PRECALL_LEAD_MS } = require('./calendar-auto-join.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, msUntilPreCallWork, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl, meetCodeFromUrl, shouldSkipCalendarJoin, DEFAULT_LOOKAHEAD_MS, DEFAULT_PRECALL_LEAD_MS } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 const {
@@ -10383,7 +10383,7 @@ allURLs`;
         const upcoming = isEventUpcoming(e, now);
         const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, eventDedupeKey(e)));
         const confirmed = ownerHasConfirmed(e);
-        const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : !confirmed ? `owner has not accepted (selfResponseStatus=${e && e.selfResponseStatus})` : 'MATCH';
+        const reason = already ? 'already handled/scheduled' : !upcoming ? `outside ${Math.round(DEFAULT_LOOKAHEAD_MS / 60000)}m window` : !matched ? 'no identity/tag match' : !confirmed ? `owner has not accepted (selfResponseStatus=${e && e.selfResponseStatus})` : 'MATCH';
         return `"${(e && e.summary) || (e && e.id) || '(untitled)'}" (raw start="${e && e.start}", starts ${minutesUntil == null ? '?' : minutesUntil + 'm'} from now, ${reason})`;
       });
       console.log(`[calendar] Poll saw ${events.length} event(s): ${summaries.join('; ')}`);

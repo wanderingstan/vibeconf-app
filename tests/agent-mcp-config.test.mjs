@@ -23,6 +23,13 @@ const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 // The block that builds the pinned config.
 const spawn = main.slice(main.indexOf('async function launchClaudeTerminal'));
 const block = spawn.slice(spawn.indexOf('const inherited = {}'), spawn.indexOf('const cfgPath = path.join'));
+// The whole profile-pin section, start to end. The tests below used a fixed
+// `spawn.slice(0, 9000)` window, which is a character count standing in for
+// "the part of launchClaudeTerminal that does MCP pinning" — every unrelated
+// edit above it walks the target closer to the edge, and #639 adding one
+// parameter to the signature is what finally pushed the assertion out of range.
+// Scoped to the code it is about instead, so it cannot drift again.
+const pinBlock = spawn.slice(spawn.indexOf('if (!isDefaultInstance)'), spawn.indexOf('// Position terminal'));
 
 test('the pinned config starts from the user\'s own servers', () => {
   assert.match(block, /\.claude\.json/, 'must read the user config');
@@ -73,11 +80,11 @@ test('the launch log says what the agent actually got', () => {
 test('--strict-mcp-config is still passed', () => {
   // Dropping it would "fix" the missing tools by letting the user-scoped
   // vibeconferencing entry load too — pointing the agent at the wrong app.
-  assert.match(spawn.slice(0, 9000), /mcpFlags = ` --mcp-config .* --strict-mcp-config`/);
+  assert.match(pinBlock, /mcpFlags = ` --mcp-config .* --strict-mcp-config`/);
 });
 
 test('the default profile is left alone', () => {
   // It uses the global config and never had this problem; the pin exists only
   // to disambiguate NAMED profiles from the primary app.
-  assert.match(spawn.slice(0, 9000), /if \(!isDefaultInstance\)/);
+  assert.match(spawn.slice(0, 12000), /if \(!isDefaultInstance\)/);
 });

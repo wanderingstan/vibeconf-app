@@ -20,7 +20,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { buildAgentArgs, buildInteractiveAgentArgs, headlessBlockedReason } = require('../electron-app/agent-spawn.js');
+const { buildAgentArgs, buildInteractiveAgentArgs, headlessBlockedReason, agentSlashCommand } = require('../electron-app/agent-spawn.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
 const args = (over = {}) => buildAgentArgs({
@@ -268,6 +268,37 @@ test('the slash command is the trailing positional, one element', () => {
 
 test('onboarding runs the onboarding slash command instead', () => {
   assert.match(iargs({ onboardingCall: true }).at(-1), /^\/onboarding-call /);
+});
+
+// ── #639: the pre-call spawn ───────────────────────────────────────────────
+// The failure being guarded against is specific and bad: if a launcher misses
+// the preCall flag it falls through to /join-call, and the agent JOINS the
+// meeting at the moment it was only supposed to start preparing for it — a
+// silent bot sitting in an empty room five minutes early.
+test('pre-call spawns run /pre-call-work, on both launchers', () => {
+  // Interactive: trailing positional. Headless: the value of -p, with more
+  // flags after it, so .at(-1) would read whatever happens to be last.
+  assert.match(iargs({ preCall: true }).at(-1), /^\/pre-call-work abc-defg-hij Jimmy$/);
+  const h = args({ preCall: true });
+  assert.equal(h[h.indexOf('-p') + 1], '/pre-call-work abc-defg-hij Jimmy');
+});
+
+test('agentSlashCommand: one rule, and onboarding beats pre-call', () => {
+  assert.equal(agentSlashCommand(), 'join-call');
+  assert.equal(agentSlashCommand({}), 'join-call');
+  assert.equal(agentSlashCommand({ preCall: true }), 'pre-call-work');
+  assert.equal(agentSlashCommand({ onboardingCall: true }), 'onboarding-call');
+  // A brand-new bot has nothing to prepare and everything to set up.
+  assert.equal(agentSlashCommand({ onboardingCall: true, preCall: true }), 'onboarding-call');
+});
+
+test('main.js uses the shared rule rather than a fourth copy of the ternary', () => {
+  // Three launchers build a `claude` invocation. Two live in agent-spawn.js and
+  // are covered above; the macOS Terminal path is in main.js and is the one
+  // that would silently drift.
+  assert.match(main, /agentSlashCommand\(\{ onboardingCall, preCall \}\)/);
+  assert.equal(/onboardingCall \? 'onboarding-call' : 'join-call'/.test(main), false,
+    'main.js still has its own copy of the slash-command ternary');
 });
 
 test('interactive carries the same pinning flags as the Terminal path', () => {

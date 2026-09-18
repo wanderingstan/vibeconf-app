@@ -2957,6 +2957,10 @@ const localServer = new globalThis.LocalServer({
     // entry is denied, since that 15s grace window leaves the button visible
     // while we wait for the denial page to be detected.
     broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : 'meet' });
+    // #639: after-call work is the other "busy but not in a call" state, and it
+    // is expressed as a callStatus rather than a flag — so this transition is
+    // where the panel learns about it. Same event, one rule at the far end.
+    broadcastAgentBusy();
     // Rebuild the menu bar for the same reason: Call Now and Hang Up are a
     // pair, and exactly one of them should be available. A handful of rebuilds
     // per call (idle → joining → in-call → idle), not a poll.
@@ -7786,6 +7790,42 @@ function notifyClaudeSignInNeeded() {
   }).catch(() => { /* dismissed */ });
 }
 
+// #639: one answer to "is the bot busy even though it is not in a call?", so
+// the panel does not have to assemble it from two unrelated signals.
+//
+// TWO states qualify, and they bracket a call rather than being part of one:
+//
+//   pre-call   an agent is preparing for a meeting that has not started
+//   after-call the bot has left, and its agent is still writing things up
+//
+// Both look identical from callStatus's point of view — the bot is in no
+// meeting — which is exactly why "Call <bot> now" stayed enabled through both.
+// Pressing it during after-call work has always been able to cut a wrap-up
+// short; the pre-call window just made the same hole wider and more likely.
+// Stan asked for both to be covered, 2026-09-18.
+//
+// Returns null when the bot is genuinely free.
+function agentBusyState() {
+  const pre = localServer.preCallWork;
+  if (pre) {
+    return {
+      kind: 'pre-call',
+      summary: pre.summary || null,
+      start: pre.start || null,
+      since: pre.since || null,
+    };
+  }
+  if (localServer.callStatus === 'after-call-work') {
+    return { kind: 'after-call', summary: null, start: null, since: null };
+  }
+  return null;
+}
+
+function broadcastAgentBusy() {
+  try { broadcastToRenderers('agent-busy', agentBusyState()); }
+  catch (err) { console.warn('[electron] agent-busy broadcast failed:', err.message); }
+}
+
 // #639: the lead time, in ms, from the preference. 0 disables pre-call work
 // entirely — the agent then spawns at join time exactly as it always did,
 // which is the right behaviour for anyone who doesn't want a Terminal window
@@ -8026,9 +8066,12 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
   //
   // Shared with the headless and Linux launchers (agent-spawn.js) rather than a
   // third copy of the same ternary — see agentSlashCommand's header.
-  const { agentSlashCommand } = require('./agent-spawn.js');
+  const { agentSlashCommand, agentSlashPrompt } = require('./agent-spawn.js');
   const slashCmd = agentSlashCommand({ onboardingCall, preCall });
-  const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  const slashPrompt = agentSlashPrompt({
+    slashCmd, meetCode, botName: botName.replace(/"/g, ''), preCall,
+  });
+  const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"${slashPrompt}\\"`;
 
   // #242: run the agent as our own child instead, when asked to. Everything
   // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
@@ -10163,6 +10206,11 @@ allURLs`;
     // so a parked pre-call agent sees 'in-call' and carries on regardless) but
     // it is a set that only ever grows, which is how a leak starts.
     const agentAlreadyRunning = preCallAgentsStarted.delete(key);
+    // The pre-call window is over the moment the join runs, on every exit from
+    // this function — including the #588 stand-down below, where the bot is
+    // already in the room and is therefore no longer merely "preparing".
+    localServer.setPreCallWork(null);
+    broadcastAgentBusy();
     const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
     store.set('joinedCalendarEventIds', { ...joinedIds, [key]: Date.now() });
     // #588 — see the note above this function.
@@ -10196,6 +10244,10 @@ allURLs`;
   function performPreCallWork(event, meetUrl) {
     const key = eventDedupeKey(event);
     scheduledPreCallWork.delete(key);
+    // Any stand-down below leaves the bot NOT busy; only the spawn at the end
+    // sets it. Cleared up front so an earlier window's state cannot survive a
+    // skipped spawn and leave the panel permanently refusing to make a call.
+    localServer.setPreCallWork(null);
 
     // Conditions can have changed in the minutes since this was armed. Each of
     // these means the spawn is now wrong, and each is quiet rather than an
@@ -10234,6 +10286,12 @@ allURLs`;
     // clears it) and then sets it again from the same event, so this is the same
     // value arriving sooner, not a second source of truth.
     localServer.setCalendarEventContext(event);
+    // Mark the bot busy (#639). callStatus stays 'idle' — correctly, the bot has
+    // joined nothing — so without this the panel offers "Call now" into a window
+    // where an agent is already working and a second one would be spawned on top
+    // of it. Stan, 2026-09-18, after watching the first live run.
+    localServer.setPreCallWork({ summary: event.summary || null, start: event.start || null });
+    broadcastAgentBusy();
     // No activateMeetProvider(), no loadMeetURL, no setRoom: none of the call
     // is set up yet, and deliberately so — an early JOIN would put a silent bot
     // in an empty room. The agent is told which room it is FOR via the slash

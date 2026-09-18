@@ -20,12 +20,22 @@ five minutes ago. Don't.
 
 ## Step 1: Work out what you're preparing for
 
-`get_room_info` — with no call in progress it reports detected URLs and, when this session
-came from a calendar event, a **Calendar context** block: the meeting's title, description,
-start and end, and who is invited. That is what you are getting ready for.
+**Call `get_room_info` with NO arguments.** Not with a `room_id` — not with any room code you
+find anywhere, including in the calendar context it returns.
 
-The room code was also passed to this command, e.g. `/pre-call-work abc-defg-hij Jimmy`.
-Hold on to it; you will need it as `room_id` once the call starts.
+This matters more than it looks. Any request naming a room the app isn't in makes the app
+**adopt that room and start joining it**. On 2026-09-18 a pre-call agent called
+`get_room_info({room_id})` as its second action; the bot entered the meeting five minutes
+early and greeted an empty room. It never called `join_call` and never believed it was
+joining. You will not get a warning, so the rule is simply: no room ids during the pre-call
+window, to any tool.
+
+You are not given the room code for this reason. You don't need it: `wait_for_call_start`
+hands back the room the app actually joined, which is the authoritative answer anyway.
+
+With no call in progress, `get_room_info` reports detected URLs and — when this session came
+from a calendar event — a **Upcoming call** block with the meeting's title, description,
+start and end. That is what you are getting ready for.
 
 ## Step 2: Do the preparation
 
@@ -64,7 +74,7 @@ When you're ready, call `wait_for_call_start`. It blocks until the app actually 
 returns after about a minute if it hasn't — that's the normal outcome, not an error.
 
 ```
-wait_for_call_start({ room_id: "<the code from step 1>" })
+wait_for_call_start()
 ```
 
 If it returns "not started yet", either do a little more preparation or call it again.
@@ -79,8 +89,11 @@ looping and end the session rather than polling forever.
 
 Once `wait_for_call_start` returns that the app is joining, **you are now in an ordinary
 call**. Follow the `/join-call` skill from its conversation loop onward, using the room code
-that tool reported (it is authoritative — if it says the app joined a different room than
-you were started for, believe it, not your argument).
+that tool reported — that is the first moment a room code is safe to use, because the app is
+already in that room and naming it can no longer cause a join.
+
+If instead it tells you the app was **already** in a call before your wait began, that is a
+fault, not a start. Don't greet anyone. Say what you found and stop.
 
 Concretely:
 

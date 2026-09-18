@@ -91,6 +91,30 @@ function agentSlashCommand({ onboardingCall = false, preCall = false } = {}) {
   return 'join-call';
 }
 
+// The opening prompt for a spawned session: the slash command plus the
+// arguments that command takes.
+//
+// Pre-call is the one case that does NOT get the meet code, and that omission
+// is load-bearing rather than tidiness (#639, found live 2026-09-18). ANY
+// request to /api/sync/<unknown-room> adopts that room and flips the app to
+// 'navigating' — local-server.js says so in its own words: "Adopting an
+// unknown room (handleRequest) calls setRoom, which sets callStatus to
+// 'navigating'". So an agent merely HOLDING a room code can join a call by
+// asking an innocent-looking question about it. In the first live test the
+// pre-call agent called get_room_info({room_id}) as its second act, the bot
+// entered the meeting five minutes early, and it greeted an empty room.
+//
+// Blocking join_call in the skill's whitelist did not help, because join_call
+// was never called. Telling the agent "do not join" in prose would not have
+// helped either: it did not believe it was joining. The reliable fix is to not
+// give it the code — it has nothing to prepare that needs one, and
+// wait_for_call_start hands back the room the app actually joined, which is
+// the authoritative answer anyway.
+function agentSlashPrompt({ slashCmd, meetCode, botName, preCall = false }) {
+  const args = preCall ? [botName] : [meetCode, botName];
+  return `/${slashCmd} ${args.filter(Boolean).join(' ')}`.trim();
+}
+
 function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false, preCall = false }) {
   const args = [];
   // Before -p, so the prompt stays the trailing value of its own flag. Empty
@@ -107,7 +131,7 @@ function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, re
   // — so this is "no UI", not "one shot". onboardingCall runs /onboarding-call
   // instead, which walks the user through setup rather than free conversation.
   const slashCmd = agentSlashCommand({ onboardingCall, preCall });
-  args.push('-p', `/${slashCmd} ${meetCode} ${botName}`.trim());
+  args.push('-p', agentSlashPrompt({ slashCmd, meetCode, botName, preCall }));
   // The whole point: NDJSON events instead of rendered terminal output.
   // --verbose is not optional here; the CLI rejects stream-json without it
   // ("When using --print, --output-format=stream-json requires --verbose").
@@ -162,7 +186,7 @@ function buildInteractiveAgentArgs({ meetCode, botName, dangerous, model, mcpCon
   const slashCmd = agentSlashCommand({ onboardingCall, preCall });
   // Trailing positional, after the flags — one element however many spaces or
   // quotes the bot name contains.
-  args.push(`/${slashCmd} ${meetCode} ${botName}`.trim());
+  args.push(agentSlashPrompt({ slashCmd, meetCode, botName, preCall }));
   return args;
 }
 
@@ -237,6 +261,7 @@ function spawnHeadlessAgent({ claudePath, args, cwd, env, source, onExit, log = 
 
 module.exports = {
   agentSlashCommand,
+  agentSlashPrompt,
   buildAgentArgs, buildInteractiveAgentArgs, headlessBlockedReason, spawnHeadlessAgent,
   cleanAgentEnv, PARENT_SESSION_VARS,
 };

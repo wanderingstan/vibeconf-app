@@ -119,6 +119,19 @@ h2 {
   border-color: #fdd663;
 }
 
+/* #639: "the bot is busy but not in a call" — the pre-call window, and the
+   after-call wrap-up. Matches .session-mismatch's metrics (11px, 6px top) so
+   the two read as the same class of aside, but in the dim grey of a status
+   rather than that one's warning yellow: nothing is wrong here, the bot is
+   simply working and the button above is disabled for a reason worth stating. */
+.agent-busy-notice {
+  font-size: 11px;
+  color: #9aa0a6;
+  margin-top: 6px;
+  line-height: 1.4;
+  text-align: center;
+}
+
 .session-mismatch {
   font-size: 11px;
   color: #fdd663;

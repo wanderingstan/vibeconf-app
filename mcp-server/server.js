@@ -541,6 +541,21 @@ server.tool(
   async ({ room_id, timeout_seconds }) => {
     const budgetMs = Math.min(55, Number(timeout_seconds) || 55) * 1000;
     const startedAt = Date.now();
+    // #639, found live 2026-09-18: this used to return the moment it saw ANY
+    // active status, without asking whether that status was already true before
+    // the wait began. In the first real test the agent had already tipped the
+    // app into 'navigating' by asking about a room, so the very first poll
+    // reported "the call has started" at T-4m35s and the bot greeted an empty
+    // meeting. The immediate cause (an agent holding a room code) is fixed in
+    // agentSlashPrompt, but a tool that cannot tell "it just started" from "it
+    // was already like that" is wrong on its own terms, and would have
+    // mis-answered for a bot manually joined to some other call as well.
+    //
+    // So: take a baseline on the first poll and return only on a TRANSITION
+    // into an active status. The one exception is 'in-call' — if the app is
+    // genuinely in the meeting when the agent starts waiting, there is nothing
+    // left to wait for and parking would be absurd.
+    let baseline = null;
     // 2s: fast enough that the agent is moving within a couple of seconds of
     // the join, slow enough to be invisible. The join fires off a timer in the
     // app, so there is nothing to race — only a short wait to notice it.
@@ -559,7 +574,23 @@ server.tool(
         data = null;
       }
       const status = data && data.status && data.status.callStatus;
-      if (status && PRECALL_ACTIVE_STATUSES.includes(status)) {
+      if (baseline === null && status) {
+        baseline = status;
+        if (PRECALL_ACTIVE_STATUSES.includes(status) && status !== 'in-call') {
+          // Already mid-join before we started waiting. Say so rather than
+          // claiming the meeting has begun: something put the bot into a call
+          // early, and the agent should not open with a greeting.
+          return { content: [{ type: "text", text:
+            `The app was ALREADY "${status}" in ${(data && data.roomId) || 'a room'} before this wait began.\n\n`
+            + `That is not the scheduled join — it means something put the bot into a call early. `
+            + `Do NOT greet the room or start the conversation loop on the strength of this. `
+            + `Check get_room_info (with NO room_id — passing one makes the app adopt that room) `
+            + `and tell the user what you find.` }] };
+        }
+      }
+      // A transition INTO an active status, or an app already in the meeting.
+      if (status && PRECALL_ACTIVE_STATUSES.includes(status)
+          && (status !== baseline || status === 'in-call')) {
         const joined = (data && data.roomId) || "";
         const mismatch = room_id && joined && joined !== room_id
           ? `\n\nNOTE: you were started for ${room_id}, but the app joined ${joined}. `

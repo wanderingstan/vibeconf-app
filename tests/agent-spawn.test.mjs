@@ -20,7 +20,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { buildAgentArgs, buildInteractiveAgentArgs, headlessBlockedReason, agentSlashCommand } = require('../electron-app/agent-spawn.js');
+const { buildAgentArgs, buildInteractiveAgentArgs, headlessBlockedReason, agentSlashCommand, agentSlashPrompt } = require('../electron-app/agent-spawn.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
 const args = (over = {}) => buildAgentArgs({
@@ -278,9 +278,37 @@ test('onboarding runs the onboarding slash command instead', () => {
 test('pre-call spawns run /pre-call-work, on both launchers', () => {
   // Interactive: trailing positional. Headless: the value of -p, with more
   // flags after it, so .at(-1) would read whatever happens to be last.
-  assert.match(iargs({ preCall: true }).at(-1), /^\/pre-call-work abc-defg-hij Jimmy$/);
+  assert.match(iargs({ preCall: true }).at(-1), /^\/pre-call-work Jimmy$/);
   const h = args({ preCall: true });
-  assert.equal(h[h.indexOf('-p') + 1], '/pre-call-work abc-defg-hij Jimmy');
+  assert.equal(h[h.indexOf('-p') + 1], '/pre-call-work Jimmy');
+});
+
+test('a pre-call agent is never handed the meet code', () => {
+  // The 2026-09-18 live failure, and the reason this is structural rather than
+  // an instruction in the skill. Any request naming a room the app is not in
+  // makes the app adopt it and start joining — so an agent that merely HOLDS a
+  // room code can put the bot in a meeting five minutes early by asking an
+  // innocent question about it. It did exactly that, via get_room_info, and
+  // greeted an empty room. join_call was never called and no prose would have
+  // stopped it, because the agent did not believe it was joining.
+  for (const a of [iargs({ preCall: true }), args({ preCall: true })]) {
+    assert.equal(a.some((x) => String(x).includes('abc-defg-hij')), false,
+      'the meet code must not reach a pre-call agent, in any argument');
+  }
+  // Every other path still gets it — this is a pre-call carve-out, not a
+  // general removal.
+  assert.ok(iargs().some((x) => String(x).includes('abc-defg-hij')));
+  assert.ok(iargs({ onboardingCall: true }).some((x) => String(x).includes('abc-defg-hij')));
+});
+
+test('agentSlashPrompt: one rule for what the opening prompt says', () => {
+  const p = (o) => agentSlashPrompt({ slashCmd: 'x', meetCode: 'abc-defg-hij', botName: 'Jimmy', ...o });
+  assert.equal(p(), '/x abc-defg-hij Jimmy');
+  assert.equal(p({ preCall: true }), '/x Jimmy');
+  // A missing bot name must not leave a double space or a trailing one — the
+  // whole string is interpolated into an AppleScript-wrapped shell command.
+  assert.equal(agentSlashPrompt({ slashCmd: 'x', meetCode: 'abc-defg-hij', botName: '' }), '/x abc-defg-hij');
+  assert.equal(agentSlashPrompt({ slashCmd: 'x', meetCode: '', botName: 'Jimmy' }), '/x Jimmy');
 });
 
 test('agentSlashCommand: one rule, and onboarding beats pre-call', () => {

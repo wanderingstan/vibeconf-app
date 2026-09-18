@@ -71,7 +71,51 @@ function cleanAgentEnv(env) {
 // Code installed. An ARRAY, never a string — the bot name is user-supplied and
 // arrives here unescaped, which through the Terminal path meant stripping quotes
 // out of it and hoping.
-function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false }) {
+// Which skill the spawned session opens with. THREE launchers build a `claude`
+// invocation — headless (buildAgentArgs), Linux/tmux (buildInteractiveAgentArgs)
+// and the macOS Terminal path in main.js — and before #639 each carried its own
+// copy of this ternary. Two of the three would have been updated and the third
+// would have silently kept spawning /join-call, which on the pre-call path means
+// a bot that JOINS the meeting five minutes early instead of preparing for it.
+//
+// Exported so main.js's Terminal path uses the same rule rather than a fourth copy.
+//
+//   onboardingCall — walk the user through name/voice/emoji live (#first-run)
+//   preCall        — prepare now, join when the meeting actually starts (#639)
+//
+// onboarding wins if both are somehow set: a brand-new bot has nothing to
+// prepare and everything to be set up.
+function agentSlashCommand({ onboardingCall = false, preCall = false } = {}) {
+  if (onboardingCall) return 'onboarding-call';
+  if (preCall) return 'pre-call-work';
+  return 'join-call';
+}
+
+// The opening prompt for a spawned session: the slash command plus the
+// arguments that command takes.
+//
+// Pre-call is the one case that does NOT get the meet code, and that omission
+// is load-bearing rather than tidiness (#639, found live 2026-09-18). ANY
+// request to /api/sync/<unknown-room> adopts that room and flips the app to
+// 'navigating' — local-server.js says so in its own words: "Adopting an
+// unknown room (handleRequest) calls setRoom, which sets callStatus to
+// 'navigating'". So an agent merely HOLDING a room code can join a call by
+// asking an innocent-looking question about it. In the first live test the
+// pre-call agent called get_room_info({room_id}) as its second act, the bot
+// entered the meeting five minutes early, and it greeted an empty room.
+//
+// Blocking join_call in the skill's whitelist did not help, because join_call
+// was never called. Telling the agent "do not join" in prose would not have
+// helped either: it did not believe it was joining. The reliable fix is to not
+// give it the code — it has nothing to prepare that needs one, and
+// wait_for_call_start hands back the room the app actually joined, which is
+// the authoritative answer anyway.
+function agentSlashPrompt({ slashCmd, meetCode, botName, preCall = false }) {
+  const args = preCall ? [botName] : [meetCode, botName];
+  return `/${slashCmd} ${args.filter(Boolean).join(' ')}`.trim();
+}
+
+function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false, preCall = false }) {
   const args = [];
   // Before -p, so the prompt stays the trailing value of its own flag. Empty
   // means "start a new session"; the SessionStart hook records the id the CLI
@@ -86,8 +130,8 @@ function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, re
   // agent keeps working — the /join-call loop only ends when it calls leave_call
   // — so this is "no UI", not "one shot". onboardingCall runs /onboarding-call
   // instead, which walks the user through setup rather than free conversation.
-  const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
-  args.push('-p', `/${slashCmd} ${meetCode} ${botName}`.trim());
+  const slashCmd = agentSlashCommand({ onboardingCall, preCall });
+  args.push('-p', agentSlashPrompt({ slashCmd, meetCode, botName, preCall }));
   // The whole point: NDJSON events instead of rendered terminal output.
   // --verbose is not optional here; the CLI rejects stream-json without it
   // ("When using --print, --output-format=stream-json requires --verbose").
@@ -132,17 +176,17 @@ function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, re
 // user-supplied and arrives unescaped. The macOS path interpolates it into an
 // AppleScript-wrapped shell string and copes by stripping quotes out of it
 // (`botName.replace(/"/g, '')`). Nothing here needs to strip anything.
-function buildInteractiveAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false }) {
+function buildInteractiveAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false, preCall = false }) {
   const args = [];
   if (resumeSessionId) args.push('--resume', resumeSessionId);
   if (sessionName) args.push('--name', sessionName);
   if (dangerous) args.push('--dangerously-skip-permissions');
   if (model) args.push('--model', model);
   if (mcpConfigPath) args.push('--mcp-config', mcpConfigPath, '--strict-mcp-config');
-  const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
+  const slashCmd = agentSlashCommand({ onboardingCall, preCall });
   // Trailing positional, after the flags — one element however many spaces or
   // quotes the bot name contains.
-  args.push(`/${slashCmd} ${meetCode} ${botName}`.trim());
+  args.push(agentSlashPrompt({ slashCmd, meetCode, botName, preCall }));
   return args;
 }
 
@@ -216,6 +260,8 @@ function spawnHeadlessAgent({ claudePath, args, cwd, env, source, onExit, log = 
 }
 
 module.exports = {
+  agentSlashCommand,
+  agentSlashPrompt,
   buildAgentArgs, buildInteractiveAgentArgs, headlessBlockedReason, spawnHeadlessAgent,
   cleanAgentEnv, PARENT_SESSION_VARS,
 };

@@ -139,6 +139,26 @@ const PREFERENCES = {
       + 'is driving the bot, since there would be nobody to do the work. Set 0 to turn the phase '
       + 'off and tear down the moment the bot leaves.',
   },
+  preCallWorkLeadMinutes: {
+    type: 'number',
+    default: 5,
+    min: 0,
+    max: 30,
+    description:
+      'How many minutes before a scheduled call the bot\'s agent is started, so it can get '
+      + 'ready while nobody is waiting (#639). The bot does NOT join early — only the agent '
+      + 'starts; the join still happens at the meeting\'s real start time. This is what moves '
+      + 'the expensive work out of the call: compacting a session that is near its context '
+      + 'limit, reading documents, warming anything slow. Before this, a session that needed '
+      + 'compacting did it mid-conversation, and the bot went quiet for a minute while people '
+      + 'were talking to it. An upper limit, not a reservation: the agent signals when it is '
+      + 'ready and the rest of the window is simply not used, which matters on a cloud box '
+      + 'where an idling bot costs real money. Only applies to calendar auto-joins, since '
+      + 'nothing else knows a call is coming. Set 0 to turn it off and go back to starting '
+      + 'the agent at join time. Raising it above ten minutes also needs the calendar '
+      + 'lookahead widened to match (DEFAULT_LOOKAHEAD_MS in calendar-auto-join.js), or the '
+      + 'poller will not have noticed the meeting yet and the extra lead time does nothing.',
+  },
   botAloneLimitMinutes: {
     type: 'number',
     default: 10,

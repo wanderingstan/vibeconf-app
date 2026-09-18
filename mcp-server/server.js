@@ -511,6 +511,110 @@ server.tool(
   }
 );
 
+// --- wait_for_call_start (#639) ---
+//
+// The pre-call agent's parking spot. It is spawned a few minutes BEFORE its
+// meeting to do slow work — compacting a near-full session above all — and then
+// has to sit still until the app actually enters the room, at which point it
+// carries on into the ordinary /join-call loop.
+//
+// A CLIENT-SIDE poll, not a server-side long-poll, and deliberately so. The app
+// already has long-poll waiter machinery, but every bit of it is wired to
+// speech: agent-liveness infers attachment from a waiter being open, and
+// displacement logic treats a second waiter on a room as a rival agent. Parking
+// a pre-call agent in that machinery would make a bot that has not joined
+// anything read as live and attached, and would put this session in the path of
+// the displacement check for a call it is not in yet. Polling a status endpoint
+// every couple of seconds on loopback costs nothing and touches none of it.
+//
+// Capped at 55s per call for the same reason wait_for_speech is: something the
+// agent must return from often enough that a killed session is noticed.
+const PRECALL_ACTIVE_STATUSES = ["in-call", "joining", "navigating", "waiting-to-be-admitted"];
+
+server.tool(
+  "wait_for_call_start",
+  "Block until the app actually enters the scheduled call, then return so you can begin the conversation loop. This is ONLY for the pre-call window (#639): your session was started a few minutes early so you could prepare, and the bot has not joined anything yet. Finish your preparation FIRST, then call this — it returns as soon as the app starts joining, or after about a minute so you can call it again. Do not use it inside a call; wait_for_speech is the in-call loop.",
+  {
+    room_id: z.string().optional().describe("The Meet code this session was started for. Used only to notice if the app joins a DIFFERENT room instead; omit to accept whatever call starts."),
+    timeout_seconds: z.number().optional().describe("How long to block before returning 'not yet' so you can call again. Default and maximum 55."),
+  },
+  async ({ room_id, timeout_seconds }) => {
+    const budgetMs = Math.min(55, Number(timeout_seconds) || 55) * 1000;
+    const startedAt = Date.now();
+    // #639, found live 2026-09-18: this used to return the moment it saw ANY
+    // active status, without asking whether that status was already true before
+    // the wait began. In the first real test the agent had already tipped the
+    // app into 'navigating' by asking about a room, so the very first poll
+    // reported "the call has started" at T-4m35s and the bot greeted an empty
+    // meeting. The immediate cause (an agent holding a room code) is fixed in
+    // agentSlashPrompt, but a tool that cannot tell "it just started" from "it
+    // was already like that" is wrong on its own terms, and would have
+    // mis-answered for a bot manually joined to some other call as well.
+    //
+    // So: take a baseline on the first poll and return only on a TRANSITION
+    // into an active status. The one exception is 'in-call' — if the app is
+    // genuinely in the meeting when the agent starts waiting, there is nothing
+    // left to wait for and parking would be absurd.
+    let baseline = null;
+    // 2s: fast enough that the agent is moving within a couple of seconds of
+    // the join, slow enough to be invisible. The join fires off a timer in the
+    // app, so there is nothing to race — only a short wait to notice it.
+    const POLL_MS = 2000;
+
+    while (Date.now() - startedAt < budgetMs) {
+      let data = null;
+      try {
+        const resp = await vfetch(`${BASE_URL}/api/sync/no-room`);
+        data = await resp.json();
+      } catch {
+        // The app is not answering. Do NOT treat this as "no call" and do not
+        // abandon the wait: the common cause is the app restarting, and the
+        // meeting is still coming. Keep polling; the timeout below is what
+        // eventually hands control back.
+        data = null;
+      }
+      const status = data && data.status && data.status.callStatus;
+      if (baseline === null && status) {
+        baseline = status;
+        if (PRECALL_ACTIVE_STATUSES.includes(status) && status !== 'in-call') {
+          // Already mid-join before we started waiting. Say so rather than
+          // claiming the meeting has begun: something put the bot into a call
+          // early, and the agent should not open with a greeting.
+          return { content: [{ type: "text", text:
+            `The app was ALREADY "${status}" in ${(data && data.roomId) || 'a room'} before this wait began.\n\n`
+            + `That is not the scheduled join — it means something put the bot into a call early. `
+            + `Do NOT greet the room or start the conversation loop on the strength of this. `
+            + `Check get_room_info (with NO room_id — passing one makes the app adopt that room) `
+            + `and tell the user what you find.` }] };
+        }
+      }
+      // A transition INTO an active status, or an app already in the meeting.
+      if (status && PRECALL_ACTIVE_STATUSES.includes(status)
+          && (status !== baseline || status === 'in-call')) {
+        const joined = (data && data.roomId) || "";
+        const mismatch = room_id && joined && joined !== room_id
+          ? `\n\nNOTE: you were started for ${room_id}, but the app joined ${joined}. `
+            + `The app is authoritative — use ${joined} as your room_id from here on.`
+          : "";
+        return { content: [{ type: "text", text:
+          `The call has started — the app is "${status}" in ${joined || "the room"}.${mismatch}\n\n`
+          + `Your pre-call window is over. Go straight into the normal conversation loop now: `
+          + `greet the room briefly if you are in active mode, then wait_for_speech. `
+          + `Do NOT call join_call — the app has already joined.` }] };
+      }
+      await new Promise((r) => setTimeout(r, POLL_MS));
+    }
+
+    const waitedS = Math.round((Date.now() - startedAt) / 1000);
+    return { content: [{ type: "text", text:
+      `Not started yet — still waiting after ${waitedS}s (the app is not joining anything).\n\n`
+      + `This is the normal outcome, not an error: call wait_for_call_start again to keep waiting. `
+      + `If you still have preparation left, do a little more of it first. `
+      + `If you have been waiting far longer than the meeting's lead time, the join may have been `
+      + `cancelled — check get_room_info before assuming it is coming.` }] };
+  }
+);
+
 // --- wait_for_speech ---
 server.tool(
   "wait_for_speech",
@@ -1227,6 +1331,27 @@ server.tool(
     }
   },
 );
+
+// The meeting's own details, when this session was matched to a Google Calendar
+// event (#299). Rendered in TWO places and therefore factored out: inside a call,
+// and — since #639 — in the pre-call window, where "not in a call" is the
+// expected state rather than a dead end.
+//
+// `lead` is the one difference between them, and it carries real meaning: in a
+// call the invite explains why the bot is here; before one it explains what the
+// bot is about to be here for, and must not imply a join has happened.
+//
+// Returns '' (not null) with a leading blank line when there is something to
+// say, so callers can concatenate it into a template unconditionally.
+function formatCalendarContext(cal, { lead = 'Calendar context: this call was auto-joined from a calendar invite.' } = {}) {
+  if (!cal || !(cal.summary || cal.description)) return '';
+  const lines = [lead];
+  if (cal.summary) lines.push(`  Title: ${cal.summary}`);
+  if (cal.start) lines.push(`  Start: ${cal.start}`);
+  if (cal.end) lines.push(`  End: ${cal.end}`);
+  if (cal.description) lines.push(`  Description: ${cal.description}`);
+  return `\n\n${lines.join('\n')}`;
+}
 
 // "Screen sharing:" line for get_room_info.
 //
@@ -3096,10 +3221,20 @@ server.tool(
         const localServerHint = data.status?.localServerUrl
           ? `\n\nLocal server: ${data.status.localServerUrl} (MCP base URL for this app instance)${data.status.localProfile ? `\nProfile: ${data.status.localProfile}` : ''}`
           : '';
+        // #639: the pre-call window is the one time "not in a call" is the
+        // EXPECTED state and the agent still needs to know what is coming. The
+        // app sets the calendar context when it spawns a pre-call agent, minutes
+        // before any join, so render it here too — otherwise the skill's first
+        // instruction ("get_room_info for the Calendar context block") returns a
+        // bare "Not in a call" and the agent prepares for a meeting it cannot
+        // see the title of.
+        const preCal = formatCalendarContext(data.status?.calendarEventContext, {
+          lead: 'Upcoming call (this session was started early to prepare for it — the bot has NOT joined yet):',
+        });
         if (urls.length > 0) {
-          return { content: [{ type: "text", text: `Not in a call. Detected Google Meet URLs:\n${urls.map(u => `  - ${u}`).join('\n')}\n\nUse the meet code from one of these URLs as room_id to join.${localServerHint}` }] };
+          return { content: [{ type: "text", text: `Not in a call. Detected Google Meet URLs:\n${urls.map(u => `  - ${u}`).join('\n')}\n\nUse the meet code from one of these URLs as room_id to join.${preCal}${localServerHint}` }] };
         }
-        return { content: [{ type: "text", text: `Not in a call. No Google Meet URLs detected in browser tabs.${localServerHint}` }] };
+        return { content: [{ type: "text", text: `Not in a call. No Google Meet URLs detected in browser tabs.${preCal}${localServerHint}` }] };
       }
     } catch {
       // Local server unreachable — fall through with whatever roomId we have
@@ -3206,15 +3341,8 @@ server.tool(
     // a Google Calendar event — gives the agent the meeting's actual title/
     // description/start time up front, instead of walking into the call cold
     // and having to ask what it's for.
-    const cal = status.calendarEventContext;
-    if (cal && (cal.summary || cal.description)) {
-      const calLines = [`Calendar context: this call was auto-joined from a calendar invite.`];
-      if (cal.summary) calLines.push(`  Title: ${cal.summary}`);
-      if (cal.start) calLines.push(`  Start: ${cal.start}`);
-      if (cal.end) calLines.push(`  End: ${cal.end}`);
-      if (cal.description) calLines.push(`  Description: ${cal.description}`);
-      sections.push(calLines.join('\n'));
-    }
+    const calBlock = formatCalendarContext(status.calendarEventContext);
+    if (calBlock) sections.push(calBlock.replace(/^\n\n/, ''));
 
     if (status.whiteboardUrl) {
       sections.push(`Whiteboard URL (just the board, no room UI): ${status.whiteboardUrl} (share this in chat so participants can view the whiteboard)`);

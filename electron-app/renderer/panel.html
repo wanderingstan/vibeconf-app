@@ -130,6 +130,13 @@
             <!-- The helper text that used to sit under this button is now its
                  tooltip — true but not worth permanent screen space. -->
             <button id="joinBtn" class="primary" title="Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.">Call now</button>
+            <!-- #639: the bot is working but is in no meeting — preparing for a
+                 scheduled call, or writing up the one that just ended. Hidden
+                 the rest of the time; panel.js owns the text and the `hidden`
+                 attribute (toggled via .hidden, never style.display). Sits
+                 under the button it explains, because that button is disabled
+                 while this is showing and the reason should be adjacent. -->
+            <div id="agentBusyNotice" class="agent-busy-notice" hidden></div>
             <!-- Manual entry. A + rather than a disclosure triangle, because what
                  it reveals is literally "Add <bot> to call" — so the control can
                  say what it DOES instead of only "there is more below". Rotated

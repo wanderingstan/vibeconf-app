@@ -35,7 +35,11 @@ test('provider routes sendChat through the serial queue, not straight to the flo
 
 test('the serial queue chains onto the previous send and survives its failure', () => {
   const def = provider.slice(provider.indexOf('function sendChatSerial'));
-  assert.ok(def.includes('chatSendChain.then(() => sendChatFlow(text))'),
+  // #572 split the caller's answer (`settled`) from the queue's clock (`run`),
+  // so the queue is no longer the thing the caller awaits. It still has to
+  // chain — that is what stops two flows typing into one input — and the
+  // behaviour of both halves is exercised in chat-send-timeout-false-negative.
+  assert.ok(def.includes('chatSendChain.then(() => sendChatFlow(text, settle))'),
     'each send must wait for the previous one');
   assert.match(def, /chatSendChain = run\.catch\(/,
     'a rejected send must not wedge the queue for all later sends');

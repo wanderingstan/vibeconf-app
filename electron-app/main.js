@@ -10,6 +10,7 @@ const Store = require('./store.js');
 const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
 const profileManager = require('./profile-manager.js');
 const { profileLaunchCommand } = require('./profile-launch.js');
+const { stallExplainedByOwnSpeech } = require('./caption-stall-excuse.js');
 const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
@@ -14466,8 +14467,15 @@ function setupIPC() {
     // whether or not a remote is speaking. Caught live 2026-07-09: the 🥴
     // impaired face lit up while the bot was mid-answer, because the ambiguous
     // branch below ran first and nobody else happened to be talking.
-    const gapOverlapsBotSpeech = localServer.speakingAloud
-      || (Date.now() - (localServer.lastSpokeAloudAt || 0) < (info?.ageMs || 0));
+    //
+    // #265: only the bot's speech itself (plus one detector window for captions
+    // to resume) is excused — NOT the whole stall. "Spoke at any point since
+    // the last caption" let one sentence at minute 1 excuse minute 44.
+    const gapOverlapsBotSpeech = stallExplainedByOwnSpeech({
+      speakingAloud: localServer.speakingAloud,
+      lastSpokeAloudAt: localServer.lastSpokeAloudAt,
+      now: Date.now(),
+    });
     if (gapOverlapsBotSpeech) {
       console.log(`[electron] caption stall (${secs}s) explained by the bot's own speech (self-captions excluded) — NOT deaf/impaired; ignoring`);
       return;

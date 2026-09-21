@@ -770,8 +770,15 @@ function hasUnreadChat() {
   return !!btn && MEET.chat.unreadRe.test(btn.getAttribute('aria-label') || '');
 }
 
+// Prefer the VISIBLE input. Meet keeps the chat composer mounted after the
+// side panel switches back to People, so a bare querySelector can hand back a
+// hidden leftover — which still accepts text and even posts, by accident.
 function getChatInput() {
-  return document.querySelector(MEET.chat.input);
+  const all = document.querySelectorAll(MEET.chat.input);
+  for (const el of all) {
+    if (el.getClientRects().length > 0) return el;
+  }
+  return all[0] || null;
 }
 
 // A Workspace-organized meeting backs its chat with a Google Chat SPACE, which
@@ -802,8 +809,18 @@ function chatUnavailableError() {
   return new Error('Could not open the chat pane');
 }
 
+// "Open" means chat is the ACTIVE side panel and its input is on screen — not
+// merely that an input exists. Meet leaves the composer in the DOM (hidden)
+// after we switch back to People, so the old `!!getChatInput()` said "already
+// open" on every send after the first. The flow then skipped opening chat,
+// typed into the hidden input, and restorePeoplePane clicked People while
+// People was already showing — toggling it SHUT, so every restore failed its
+// first attempt and speech tracking went blind for ~1.4s per send (#572).
 function isChatPaneOpen() {
-  return !!getChatInput();
+  const input = getChatInput();
+  if (!input || input.getClientRects().length === 0) return false;
+  const btn = getChatToggle();
+  return !btn || btn.getAttribute('aria-expanded') === 'true';
 }
 
 // Whether the chat side-panel is open, INDEPENDENT of the (lazy-rendered) input.
@@ -946,6 +963,13 @@ async function openChatPane() {
 // backstop if all retries somehow fail.
 async function restorePeoplePane() {
   for (let attempt = 0; attempt < 3; attempt++) {
+    // Already showing? Then clicking People would TOGGLE IT SHUT (#572). Check
+    // before every click, not just the first: a dropped click mid-animation can
+    // still land late and open the pane on its own.
+    if (visiblePeopleTileCount() > 0 && !isChatPaneToggleExpanded()) {
+      console.log('[chat] ✓ People pane already showing — not clicking (attempt', attempt + 1, ')');
+      return true;
+    }
     const btn = findPeopleButton();
     if (!btn) {
       console.warn('[chat] ❌ People button not found (attempt', attempt + 1, 'of 3)');

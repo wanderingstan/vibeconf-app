@@ -1,24 +1,44 @@
-# Tag-triggered release: builds the Windows and Linux installers and attaches
-# them to a DRAFT GitHub release.
+# Tag-triggered release: builds the macOS, Windows and Linux installers and
+# attaches them to a DRAFT GitHub release.
 #
 # Why a draft: the release notes here are hand-written, and the app self-updates
 # from these assets — a half-uploaded release shouldn't be visible to running
 # apps. The draft collects its assets, you write the notes, then publish.
 #
-# macOS is deliberately NOT built here. The Mac build is signed and notarized,
-# which needs Apple Developer certs; those aren't in GitHub secrets (and putting
-# them there is a real decision, not a detail). Build the Mac locally with
-# `pnpm dist` and attach it to the same draft:
+# macOS IS built here, signed and notarized, since the runner has the Developer
+# ID identity and the notarization creds from repo secrets. Five secrets drive
+# it; with any of them missing the Mac job FAILS LOUDLY at the verify step
+# rather than shipping a signed-but-un-notarized app (see that step's note):
+#
+#     CSC_LINK                     base64 of the Developer ID .p12 (cert + key)
+#     CSC_KEY_PASSWORD             the .p12 export password
+#     APPLE_ID                     Apple Developer account email
+#     APPLE_APP_SPECIFIC_PASSWORD  appleid.apple.com → Sign-In and Security
+#     APPLE_TEAM_ID                PNPVJ6J7X2
+#
+# To (re)generate CSC_LINK on a Mac that holds the identity:
+#
+#     security export -k login.keychain-db -t identities -f pkcs12 -o /tmp/devid.p12
+#     base64 -i /tmp/devid.p12 | pbcopy     # paste into the CSC_LINK secret
+#     rm /tmp/devid.p12
+#
+# The cert expires (~5 years) and the app-specific password can be revoked from
+# appleid.apple.com; either one turns into a red Mac job, not a bad release.
+#
+# Building the Mac LOCALLY still works and is the fallback if Apple's
+# notarization service is down or the secrets have lapsed — `pnpm dist` in
+# electron-app/, then attach to the same draft:
 #
 #     V=0.8.10
 #     gh release upload "v$V" electron-app/dist/*"$V"*.dmg \
 #                             electron-app/dist/*"$V"*-mac.zip \
 #                             electron-app/dist/latest-mac.yml
 #
-# Glob on the VERSION, not just the extension. dist/ is not cleaned between
-# builds, so a bare `dist/*.dmg` also matches every previous release still
-# sitting there and quietly uploads a stale build onto the new release — hit
-# for real cutting v0.8.0-beta1, with v0.7.0-beta66 still in dist/.
+# Glob on the VERSION, not just the extension. A local dist/ is not cleaned
+# between builds, so a bare `dist/*.dmg` also matches every previous release
+# still sitting there and quietly uploads a stale build onto the new release —
+# hit for real cutting v0.8.0-beta1, with v0.7.0-beta66 still in dist/. (The CI
+# runner starts clean, which is why the upload step below can glob by extension.)
 #
 # All three matter: Squirrel.Mac updates from the .zip (not the .dmg), and
 # latest-mac.yml is the feed that points at it. Upload the .dmg alone and macOS
@@ -75,8 +95,7 @@
 #     git commit -am "Release v0.8.10" && git push
 #     git tag v0.8.10 && git push origin v0.8.10
 #
-# That leaves a DRAFT with the Windows/Linux assets. Then, locally:
-#     # build + attach the notarized Mac assets (see the block above)
+# That leaves a DRAFT with all three platforms' assets already attached. Then:
 #     gh release edit v0.8.10 --draft=false --prerelease \
 #                             --title "v0.8.10 (candidate)" --notes-file notes.md
 #
@@ -162,6 +181,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - os: macos-latest
+            args: "--mac"
+            mac: true
           - os: windows-latest
             args: "--win"
           - os: ubuntu-latest
@@ -171,8 +193,10 @@ jobs:
       run:
         working-directory: electron-app
     env:
-      # No code-signing certs in CI — see the header note.
-      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # Windows is unsigned and Linux needs no signing, so keep electron-builder
+      # from going looking for an identity there. On macOS it must be ON, or the
+      # CSC_LINK cert imported below is ignored and the .app ships unsigned.
+      CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.mac && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v7
 
@@ -185,6 +209,33 @@ jobs:
 
       - name: Build installer
         run: npx --no-install electron-builder ${{ matrix.args }} --publish never
+        env:
+          # Signing + notarization creds. electron-builder picks all five up from
+          # the environment with no config — CSC_* to sign, the APPLE_* trio for
+          # @electron/notarize (the legacy Apple ID + app-specific password flow,
+          # NOT an App Store Connect .p8 key). Empty on Windows/Linux so the certs
+          # never land in a runner that has no use for them.
+          CSC_LINK: ${{ matrix.mac && secrets.CSC_LINK || '' }}
+          CSC_KEY_PASSWORD: ${{ matrix.mac && secrets.CSC_KEY_PASSWORD || '' }}
+          APPLE_ID: ${{ matrix.mac && secrets.APPLE_ID || '' }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.mac && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ matrix.mac && secrets.APPLE_TEAM_ID || '' }}
+
+      # THE reason this step exists: with the APPLE_* vars unset, electron-builder
+      # SKIPS notarization with a warning and exits 0. The build looks green and
+      # the .dmg looks fine, and users get "Apple could not verify" on first
+      # launch. So assert the outcome instead of trusting the exit code.
+      #
+      # Check the .app, never the .dmg — the .dmg is signed/stapled by nobody
+      # (electron-builder notarizes the .app and only then wraps it), so
+      # `stapler validate` on the .dmg failing is EXPECTED, not a regression.
+      - name: Verify the .app is signed, notarized and stapled
+        if: matrix.mac
+        run: |
+          app=$(ls -d dist/mac*/*.app | head -1)
+          echo "verifying $app"
+          spctl -a -vvv -t exec "$app"
+          xcrun stapler validate "$app"
 
       - name: Attach installers to the draft release
         shell: bash
@@ -194,9 +245,11 @@ jobs:
           shopt -s nullglob
           # latest*.yml is what electron-updater actually reads — without it the
           # installers are just files and nothing self-updates. Each platform
-          # emits its own (latest.yml on Windows, latest-linux.yml on Linux),
-          # and macOS contributes latest-mac.yml from the local build.
-          assets=(dist/*.exe dist/*.AppImage dist/*.deb dist/latest*.yml)
+          # emits its own: latest.yml on Windows, latest-linux.yml on Linux,
+          # latest-mac.yml on macOS.
+          # The .dmg is for humans downloading; the -mac.zip is what Squirrel.Mac
+          # self-updates from. Both, or macOS updates silently do nothing.
+          assets=(dist/*.dmg dist/*-mac.zip dist/*.exe dist/*.AppImage dist/*.deb dist/latest*.yml)
           if [ ${#assets[@]} -eq 0 ]; then
             echo "::error::no installers found in electron-app/dist"
             exit 1

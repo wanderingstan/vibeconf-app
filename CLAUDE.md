@@ -5,9 +5,15 @@ concise and accurate; extend as new gotchas are found.
 
 ## Building & notarizing the macOS app
 
-The Mac `.dmg` is built **locally** — CI (`.github/workflows/release.yml`) only
-builds the Windows/Linux installers, because notarization needs Apple Developer
-credentials that aren't in GitHub secrets. Signing uses the
+Release builds for all three platforms run in CI
+(`.github/workflows/release.yml`), macOS included: the Mac job signs and
+notarizes from five repo secrets (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`) and fails loudly if the .app
+comes out un-notarized. That workflow's header is the reference for the secrets
+and how to regenerate them.
+
+Building the Mac **locally** is still supported, and is the fallback when
+Apple's notarization service is down or a secret has lapsed. Signing uses the
 `Developer ID Application: Stanley James (PNPVJ6J7X2)` cert in the login keychain.
 
 - `pnpm dist` (in `electron-app/`) — signed **and notarized** `.dmg`.

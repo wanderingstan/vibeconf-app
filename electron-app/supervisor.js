@@ -30,7 +30,7 @@
 
 const {
   matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming,
-  msUntilStart, eventDedupeKey, evictStaleEventIds,
+  msUntilStart, eventDedupeKey, evictStaleEventIds, selectUpcomingMatches,
 } = require('./calendar-auto-join.js');
 
 // Decide which profiles to wake, given everything knowable at one tick.
@@ -220,4 +220,32 @@ function callPhase(callStatus, sinceMs, now = Date.now()) {
   }
 }
 
-module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS };
+// The Upcoming list in the window: the fleet's meetings, not the calendar's.
+//
+// Built from the bot's OWN display rule (selectUpcomingMatches: this bot's
+// identity email or #vibeconf tag, within 24h, at most 5 minutes past start),
+// applied per bot and merged, so the supervisor cannot show an event no bot's
+// panel would. It used to annotate every event on the calendar with which bot
+// it belonged to, and so listed a birthday no bot had anything to do with.
+//
+// One row per event occurrence (eventDedupeKey), naming every bot it would
+// wake. Soonest first; at the same minute, a meeting the owner has accepted
+// ahead of one they have not, the same tie-break the panel uses.
+function upcomingForFleet(events, fleet, now = Date.now()) {
+  const byKey = new Map();
+  for (const p of fleet || []) {
+    if (!p || !(p.calendarIdentityEmail || p.botName)) continue; // nothing to match on
+    const mine = selectUpcomingMatches(events, { calendarIdentityEmail: p.calendarIdentityEmail, botName: p.botName, now });
+    for (const e of mine) {
+      const key = eventDedupeKey(e);
+      if (!byKey.has(key)) byKey.set(key, { event: e, bots: [] });
+      byKey.get(key).bots.push(p.botName || p.name);
+    }
+  }
+  return [...byKey.values()]
+    .map(({ event, bots }) => ({ ...event, forProfile: bots.join(', '), ownerConfirmed: ownerHasConfirmed(event) }))
+    .sort((a, b) => (msUntilStart(a, now) - msUntilStart(b, now))
+      || ((a.ownerConfirmed ? 0 : 1) - (b.ownerConfirmed ? 0 : 1)));
+}
+
+module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS, upcomingForFleet };

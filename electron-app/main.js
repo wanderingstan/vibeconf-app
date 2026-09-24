@@ -2904,6 +2904,10 @@ const localServer = new globalThis.LocalServer({
     //
     // Here rather than in each join path because this is where every route
     // converges — a new one cannot forget to defuse it.
+    // #301: when this bot was last used, so the supervisor can list bots most
+    // recently used first. Stamped on getting into a call and at launch (below),
+    // the two moments a person has chosen this bot.
+    if (status === 'in-call') markLastUsed();
     if (_afterCallWorkTimer && isInCall(status)) {
       console.log('[electron] Call live again — cancelling the pending after-call teardown');
       clearTimeout(_afterCallWorkTimer);
@@ -3854,6 +3858,12 @@ async function pushAvatarBackground(svgSource) {
 // ---------------------------------------------------------------------------
 
 let store;
+
+// Per-profile "last chosen" time (#301 MRU ordering in the supervisor). Read by
+// profile-manager.readConfigFields like the other identity fields.
+function markLastUsed() {
+  try { if (store) store.set('lastUsedAt', Date.now()); } catch { /* best-effort */ }
+}
 let meetAccountEmailPinned = false; // true when --meet-account-email pinned the account (#282)
 // Calendar auto-join (#299): this bot's matching events within the next 24h,
 // for the panel's "upcoming meeting" notice. Written by
@@ -9561,6 +9571,7 @@ app.whenReady().then(async () => {
     console.log('[electron] Requested local server port:', explicitLocalPort);
   }
   await localServer.start();
+  markLastUsed(); // launched = chosen, for the supervisor's most-recent-first list
 
   // Remote log shipping (opt-in via `remoteLogging` pref). Build a stable
   // instanceId from hostname + profile so the same bot is recognizable across

@@ -236,3 +236,53 @@ test('soonest first; an unaccepted invite is listed but marked, and loses a same
 test('a bot with neither an invite address nor a name matches nothing', () => {
   assert.deepEqual(upcomingForFleet([event()], [{ name: 'blank', calendarIdentityEmail: '', botName: '' }], NOW), []);
 });
+
+// ── Most recently used first ──
+//
+// Bots behave more like browser tabs than a fixed roster, so the window lists
+// them by when they were last used. Each bot stamps lastUsedAt (launch, and
+// getting into a call); a bot from before the stamp falls back to the mtime
+// of its logs folder, which every launch writes to.
+
+const join = (...parts) => parts.join('/');
+
+test('lastUsedAt comes from the bot\'s own stamp when it has one', () => {
+  const pm = { listProfileNames: () => ['a'], readConfigFields: () => ({ botName: 'A', lastUsedAt: 1234 }) };
+  const fs = { statSync: () => { throw new Error('must not stat when the stamp exists'); } };
+  assert.equal(readFleet('/p', { profileManager: pm, path: { join }, fs })[0].lastUsedAt, 1234);
+});
+
+test('an older bot without the stamp falls back to its logs folder\'s mtime', () => {
+  const pm = { listProfileNames: () => ['old'], readConfigFields: () => ({ botName: 'Old' }) };
+  const seen = [];
+  const fs = { statSync: (p) => { seen.push(p); return { mtimeMs: 999 }; } };
+  assert.equal(readFleet('/p', { profileManager: pm, path: { join }, fs })[0].lastUsedAt, 999);
+  assert.deepEqual(seen, ['/p/old/logs']);
+});
+
+test('a bot with neither is simply never-used (null), not dropped', () => {
+  const pm = { listProfileNames: () => ['new'], readConfigFields: () => ({ botName: 'New' }) };
+  const fs = { statSync: () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); } };
+  const fleet = readFleet('/p', { profileManager: pm, path: { join }, fs });
+  assert.equal(fleet.length, 1);
+  assert.equal(fleet[0].lastUsedAt, null);
+});
+
+test('profile-manager passes lastUsedAt through, and only as a number', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const pm = require('../electron-app/profile-manager.js');
+  const root = mkdtempSync(join(tmpdir(), 'mru-'));
+  mkdirSync(join(root, 'agent'));
+  writeFileSync(join(root, 'agent', 'config.json'), JSON.stringify({ botName: 'X', lastUsedAt: 42 }));
+  assert.equal(pm.readConfigFields(root).lastUsedAt, 42);
+  writeFileSync(join(root, 'agent', 'config.json'), JSON.stringify({ botName: 'X', lastUsedAt: 'yesterday' }));
+  assert.equal(pm.readConfigFields(root).lastUsedAt, null);
+});
+
+test('a bot stamps lastUsedAt at launch and on getting into a call', () => {
+  const main = require('node:fs').readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
+  assert.match(main, /store\.set\('lastUsedAt', Date\.now\(\)\)/);
+  assert.match(main, /await localServer\.start\(\);\s*\n\s*markLastUsed\(\);/);
+  assert.match(main, /if \(status === 'in-call'\) markLastUsed\(\);/);
+});

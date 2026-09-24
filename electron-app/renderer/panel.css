@@ -1045,19 +1045,17 @@ button.agent-gear {
   text-shadow: var(--art-outline);
 }
 button.agent-gear:hover:not(:disabled) { background: rgba(74, 49, 64, 0.45); color: var(--on-art); }
-/* The gear is a masked icon, so its outline is a drop-shadow (see below); give
-   it the same tight-plus-soft pair as the name's text-shadow. */
-button.agent-gear .ui-icon {
+/* The icon buttons that sit ON the avatar (the gear, and the 👀 / + / 🧠 / 🚧
+   row) need the same black outline as the name. The shadow goes on the BUTTON,
+   not the .ui-icon: an icon is a CSS mask, and a mask is applied after filter,
+   so a drop-shadow on the icon itself is clipped away with everything outside
+   the glyph. (The .bot-hero .ui-icon drop-shadow that used to sit here never
+   painted, which is why these looked flat.) On the button, drop-shadow follows
+   the painted glyph, and the hover circle gets a soft edge too. */
+.bot-hero button.agent-gear,
+.bot-hero button.join-more {
   filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8));
 }
-/* These controls sit ON the avatar, over whatever artwork the bot is using, so
-   they need the same lift the name and buttons get. text-shadow cannot do it:
-   an icon is a masked box, not text, and has no glyph to shadow. drop-shadow
-   follows the actual painted shape. */
-.bot-hero .ui-icon { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8)); }
-/* (.join-caret had its own text-shadow here while it was a text glyph. It is a
-   masked icon now, so it is covered by the .ui-icon rule above — text-shadow
-   would paint nothing, there being no text.) */
 /* #379: the switcher SWITCHES the current window (replaces this bot), which only
    makes sense pre-call. In-call, the name must STILL be visible (it's the
    masthead now), so we neutralise the control rather than hide it: drop the

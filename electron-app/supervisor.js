@@ -137,4 +137,27 @@ function readFleet(profilesRoot, { profileManager = require('./profile-manager.j
   return fleet;
 }
 
-module.exports = { decideWakeups, readFleet };
+// The Meet calls open in the user's browser, as the running bots report them.
+//
+// Every idle bot scans the browser's tabs and publishes what it found
+// (detectedMeetUrls on /api/sync/no-room), so with three bots up the same tab
+// arrives three times: merged here by meet code, first-seen order kept so the
+// window's pick does not jump around between refreshes.
+//
+// Only IDLE bots count. A bot stops scanning when it enters a call, and does
+// not clear its last result, so an in-call bot's list is a stale snapshot of
+// the moment it joined. Interim, until the scan itself moves into the
+// supervisor (#301 step 3) and there is exactly one, always-current source.
+function detectedCalls(instances) {
+  const byCode = new Map();
+  for (const inst of instances || []) {
+    if (!inst || (inst.callStatus && inst.callStatus !== 'idle')) continue;
+    for (const raw of inst.detectedMeetUrls || []) {
+      const code = String(raw).match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/)?.[1];
+      if (code && !byCode.has(code)) byCode.set(code, { code, url: `https://meet.google.com/${code}` });
+    }
+  }
+  return [...byCode.values()];
+}
+
+module.exports = { decideWakeups, readFleet, detectedCalls };

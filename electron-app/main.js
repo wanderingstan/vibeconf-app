@@ -2359,6 +2359,7 @@ const localServer = new globalThis.LocalServer({
   // Profile switcher (#282): a sibling instance asked us to come forward.
   // /call → POST /api/call/start → the same path the panel button takes.
   onStartCall: (opts) => createAndJoinMeet(opts),
+  onJoinMeet: ({ url, spawnAgent }) => { joinMeetUrl(url, { spawnAgent }); return { ok: true }; }, // #301: supervisor "Add"
   onRecord: (opts) => setCallRecording(opts), // #209: start/stop call recording
 
   onFocusRequest: () => {

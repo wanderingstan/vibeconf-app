@@ -82,9 +82,31 @@ function describeState(bot) {
   return { cls: '', text: 'Not running' };
 }
 
-// In a call, then running, then the rest; alphabetical by display name within
-// each. The bots you might act on are the ones near the top.
+// Busy, then running, then the rest; within each, most recently used first.
+// Bots behave more like browser tabs than a fixed roster: whatever you used
+// lately is what you reach for, and a bot tried once last month sinks on its
+// own, so a long list needs no cleanup. Name breaks ties (and orders bots that
+// have never been used).
 function rank(bot) { return inCall(bot) ? 0 : bot.running ? 1 : 2; }
+function byRecency(a, b) {
+  return rank(a) - rank(b)
+    || (b.lastUsedAt || 0) - (a.lastUsedAt || 0)
+    || labelOf(a).localeCompare(labelOf(b));
+}
+
+// "used 5m ago", "used 3d ago": enough to tell last week's bot from last
+// year's, not a timestamp.
+function usedAgo(ms) {
+  if (!ms) return null;
+  const mins = Math.round((Date.now() - ms) / 60000);
+  if (mins < 1) return 'used just now';
+  if (mins < 60) return `used ${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `used ${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 60) return `used ${days}d ago`;
+  return `used ${Math.round(days / 30)}mo ago`;
+}
 function labelOf(bot) { return bot.botName || bot.name; }
 
 function avatarFor(bot) {
@@ -115,7 +137,7 @@ function renderBots({ bots = [], orphans = [], calls = [] }) {
     els.bots.append(el('div', 'empty', 'No bots configured yet.'));
   }
 
-  const sorted = [...bots].sort((a, b) => rank(a) - rank(b) || labelOf(a).localeCompare(labelOf(b)));
+  const sorted = [...bots].sort(byRecency);
   for (const bot of sorted) {
     const row = el('div', `bot${bot.running ? '' : ' off'}`);
     row.append(avatarFor(bot));
@@ -130,7 +152,11 @@ function renderBots({ bots = [], orphans = [], calls = [] }) {
     const state = describeState(bot);
     const sub = el('div', 'sub');
     sub.append(el('span', `state ${state.cls}`, state.text));
-    const where = [bot.name !== labelOf(bot) ? bot.name : null, bot.port ? `port ${bot.port}` : null].filter(Boolean);
+    // A closed bot's port says nothing useful; when it was last used does.
+    const where = [
+      bot.name !== labelOf(bot) ? bot.name : null,
+      bot.running ? (bot.port ? `port ${bot.port}` : null) : usedAgo(bot.lastUsedAt),
+    ].filter(Boolean);
     if (where.length) sub.append(document.createTextNode(` · ${where.join(' · ')}`));
     sub.title = `${bot.name}${bot.port ? ` · port ${bot.port}` : ''}`;
     who.append(sub);

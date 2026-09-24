@@ -91,6 +91,7 @@ test('readConfigFields: empty when neither config exists', () => {
     assert.deepEqual(pm.readConfigFields(dir), {
       botName: null, meetAccountEmail: null, lastMeetName: null,
       lastSlackName: null, avatarThumb: null, calendarIdentityEmail: null,
+      lastUsedAt: null,
     });
   });
 });

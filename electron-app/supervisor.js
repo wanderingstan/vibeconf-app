@@ -113,7 +113,11 @@ function decideWakeups({ profiles = [], events = [], now = 0, running = new Set(
 // Read every locally-configured profile as the decision wants it — flat records,
 // off disk, with no running instance required. Injectable so the tests can
 // describe a fleet without building one on the filesystem.
-function readFleet(profilesRoot, { profileManager = require('./profile-manager.js'), path = require('path') } = {}) {
+function logsMtime(fs, dir) {
+  try { return fs.statSync(dir).mtimeMs || null; } catch { return null; }
+}
+
+function readFleet(profilesRoot, { profileManager = require('./profile-manager.js'), path = require('path'), fs = require('fs') } = {}) {
   let names = [];
   try { names = profileManager.listProfileNames(profilesRoot); } catch { return []; }
   const fleet = [];
@@ -131,6 +135,11 @@ function readFleet(profilesRoot, { profileManager = require('./profile-manager.j
         // The small PNG each bot renders of its own avatar (a data: URL). Kept
         // off /api/instances: the window wants faces, the agents only want ports.
         avatarThumb: fields.avatarThumb || null,
+        // When the bot was last launched or in a call, for most-recent-first
+        // ordering. A bot that predates the stamp falls back to its logs
+        // folder's mtime: every launch writes a session log there, so it is a
+        // fair stand-in, and far better than sorting old bots as never used.
+        lastUsedAt: fields.lastUsedAt || logsMtime(fs, path.join(profilesRoot, name, 'logs')),
       });
     } catch { /* skip this one, keep the fleet */ }
   }

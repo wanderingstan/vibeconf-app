@@ -2484,6 +2484,10 @@ const ERROR_ACTIONS = {
   // 'meet-sign-in-as-bot', which NAVIGATES the Meet view — that would hang up
   // the guest-fallback call the bot may be sitting in.
   'reveal-bot-view': () => api.invoke('reveal-bot-view'),
+  // #347/#795: the bot is IN a guest-fallback call, so its view is the call.
+  // Main opens a separate sign-in window on the bot's real Google jar; the
+  // call is not touched and the next join is signed in.
+  'open-bot-sign-in': () => api.invoke('open-bot-sign-in'),
 };
 
 const errorActionBtn = document.getElementById('errorAction');
@@ -3974,5 +3978,5 @@ api.on('call-status-changed', ({ status, provider }) => {
 
 api.on('call-failed', (data) => {
   exitCallState();
-  if (data?.message) showError(data.message);
+  if (data?.message) showError(data.message, null, data.errorAction);
 });

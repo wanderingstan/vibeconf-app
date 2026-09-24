@@ -6251,6 +6251,25 @@ async function clearMeetIdentityCache(partition) {
     summary.errors.length ? '· errors: ' + summary.errors.join('; ') : '');
 }
 
+// #795: empty the guest partition completely: cookies, storage, caches. Unlike
+// clearMeetIdentityCache this is not scoped to Meet and does not spare Google's
+// sign-in cookies, because on the guest jar those are exactly what must go
+// (#250's reason for sparing them is the HOME jar's session). Only ever called
+// on GUEST_PARTITION, named literally, so it cannot touch the profile's real
+// Google or Slack login. Logs and carries on if the wipe fails: the authuser
+// pin is gated on !guestFallback separately, so a failed wipe cannot re-pin
+// the blocked account on its own.
+async function resetGuestPartition() {
+  const sess = session.fromPartition(GUEST_PARTITION);
+  try {
+    await sess.clearStorageData();
+    await sess.clearCache();
+    console.log('[electron] #795: wiped the guest partition so the guest join starts anonymous');
+  } catch (err) {
+    console.error('[electron] #795: could not wipe the guest partition:', err.message);
+  }
+}
+
 // Apply Meet-specific session config to a given session. Called per
 // partition so each identity mode shares the exact same handler setup.
 //   - Strip CSP so the preload's page-inject eval() isn't blocked by
@@ -7164,6 +7183,68 @@ function broadcastAuthChanged() {
 // it IS the whole fix: type the password and Google's own `continue=` redirect
 // carries that view into the meeting.
 const SIGN_BOT_IN_ACTION = { id: 'reveal-bot-view', label: 'Sign the bot in →' };
+
+// Google's sign-in flow, landing on Meet home afterwards. Shared by the
+// "Sign in to Google as bot" button and the #795 guest dead end.
+const MEET_SIGN_IN_URL = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmeet.google.com%2F';
+
+// The fix a guest-fallback call needs, as opposed to a join that is parked on
+// the sign-in page. See openBotSignInWindow.
+const OPEN_BOT_SIGN_IN_ACTION = { id: 'open-bot-sign-in', label: 'Sign the bot in →' };
+
+// Retracts the identity-challenge errors once a sign-in window finishes.
+const GOOGLE_SIGN_IN_ERROR_KEY = 'google-sign-in';
+
+// Sign the bot back in to Google WITHOUT touching the call.
+//
+// Every earlier route went through meetView, and meetView is the call: during a
+// #347 guest fallback, navigating it to Google's sign-in hangs up the meeting
+// the bot just got into, and signing in there lands the login in the GUEST jar
+// (the one that call is on), which fixes nothing for next time and is how that
+// jar got polluted (#795). Revealing the view instead showed the lobby, with no
+// sign-in page on it at all.
+//
+// So: a small window of its own on SESSION_PARTITION, named literally. That is
+// the profile's real cookie jar (the same one the share window rides for the
+// same reason, see navigate-webview), so a login completed here is what the
+// next join reads. Not the share window itself: mid-share that window is what
+// the room is looking at, and the room should not watch the bot's password page.
+let botSignInWindow = null;
+function openBotSignInWindow() {
+  if (botSignInWindow && !botSignInWindow.isDestroyed()) {
+    botSignInWindow.show();
+    botSignInWindow.focus();
+    return;
+  }
+  // Same Chrome UA and handlers the Meet view gets, or Google refuses the
+  // sign-in as an unsupported embedded browser.
+  ensureMeetSessionConfigured(SESSION_PARTITION);
+  const win = new BrowserWindow({
+    width: 480,
+    height: 680,
+    title: 'Sign the bot in to Google',
+    parent: (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, partition: SESSION_PARTITION },
+  });
+  botSignInWindow = win;
+  win.on('page-title-updated', (e) => { e.preventDefault(); });
+  win.on('closed', () => { if (botSignInWindow === win) botSignInWindow = null; });
+
+  // Done when Google hands the window on to Meet (the continue= target): the
+  // new cookies are in the jar. Close it, refresh the panel's account display,
+  // and retract the "joining as a guest" error, which has now been acted on.
+  // The call in progress stays a guest; the NEXT join is signed in.
+  win.webContents.on('did-navigate', (_e, url) => {
+    let host = '';
+    try { host = new URL(url).hostname; } catch { /* keep '' */ }
+    if (host !== 'meet.google.com') return;
+    console.log('[electron] Bot sign-in window reached Meet; Google sign-in is done');
+    broadcastAuthChanged();
+    clearBroadcastError(GOOGLE_SIGN_IN_ERROR_KEY);
+    if (!win.isDestroyed()) win.close();
+  });
+  win.loadURL(MEET_SIGN_IN_URL);
+}
 
 function broadcastError(message, key, errorAction) {
   // `errorAction` (#346): { id, label } naming a fix the panel can run from the
@@ -12307,6 +12388,15 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
   // master-auth cookies, and there are none here), and Meet serves the guest
   // pre-join where autoJoin types the bot's own name from the profile config.
   // The guest join needs no new join logic.
+  //
+  // #795: that only holds if the guest jar really IS empty, and it is a
+  // persist: partition, so it outlives the app. Anyone who signs in to Google
+  // on a page shown inside a guest view leaves master-auth cookies there, and
+  // from then on every fallback reads "signed in", skips the cache clear, pins
+  // the blocked account via authuser and lands on the very identity challenge
+  // it was meant to route around. So wipe the jar on every fallback, before the
+  // read, not only when cookies are spotted. A guest is anonymous by definition.
+  if (guestFallback) await resetGuestPartition();
   const sess = session.fromPartition(activeMeetPartition);
   const signedIn = await isSignedInToGoogle(sess);
 
@@ -12351,7 +12441,10 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
   // sign-in (get-meet-account-email). No pin when guest or when unknown.
   // `=== true`: only pin authuser when we KNOW there's a session. Pinning on an
   // unknown read would put an account on the URL we can't vouch for.
-  const boundEmail = signedIn === true && store ? store.get('meetAccountEmail') : null;
+  // #795: and NEVER on the guest fallback, whatever its cookies claim. Putting
+  // the blocked account on the URL is what walks a guest straight back into
+  // that account's identity challenge.
+  const boundEmail = !guestFallback && signedIn === true && store ? store.get('meetAccountEmail') : null;
   const urlToLoad = boundEmail ? pinAuthUser(meetUrl, boundEmail) : meetUrl;
   if (boundEmail) console.log('[electron] Pinning Meet account via authuser:', boundEmail);
 
@@ -13564,6 +13657,11 @@ function setupIPC() {
     revealBotViewForSignIn();
     return { ok: true, state: botViewState };
   });
+  // The guest-fallback error's action: sign in on the side, call untouched.
+  ipcMain.handle('open-bot-sign-in', () => {
+    openBotSignInWindow();
+    return { ok: true };
+  });
   ipcMain.handle('get-bot-view', () => ({ state: botViewState, visible: botViewInCall, resting: restingBotViewState() }));
 
   // --- Share window visibility ---
@@ -13814,8 +13912,14 @@ function setupIPC() {
   // and persist across launches. Later calls bounce straight through to Meet's
   // home if already signed in.
   ipcMain.handle('meet-sign-in-as-bot', () => {
-    const url = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmeet.google.com%2F';
-    navigateMeetView(url);
+    // Mid-call (a guest fallback included), navigating meetView would hang up
+    // the meeting, so sign in on the side instead. At rest the view is free,
+    // and signing in there lets the account chip on Meet home report the email.
+    if (isInCall(localServer.callStatus)) {
+      openBotSignInWindow();
+      return { ok: true, mode: 'account', window: true };
+    }
+    navigateMeetView(MEET_SIGN_IN_URL);
     // #498: the bot view is hidden by default, so without this the sign-in page
     // loads somewhere nobody can see and the button looks broken. You cannot
     // type a Google password into a window that isn't on screen — pop the view
@@ -14226,13 +14330,15 @@ function setupIPC() {
   // the same way the renderer does — #346's join-landed-somewhere-else needs
   // the whole 'Error:' fan-out (broadcastError, waiter resolution, room clear),
   // and re-deriving any of that at a second call site is how the two drift.
-  function handleMeetStatusUpdate(status) {
+  // `errorAction` (optional, #346/#795): a { id, label } fix for the error bar,
+  // passed straight through to broadcastError on the 'Error' path.
+  function handleMeetStatusUpdate(status, errorAction) {
     console.log('[electron] Meet status:', status);
     // Map Meet status to call status for the local server
     if (typeof status === 'string') {
       if (status.startsWith('Error')) {
         // Surface join-flow errors as a push notification when backgrounded.
-        broadcastError(status);
+        broadcastError(status, null, errorAction);
         // Decisively reset call state — without this, callStatus would stick at
         // 'waiting-to-be-admitted' forever and the agent's wait_for_speech loop
         // would never exit. Failing-to-admit means we're not in the call at all,
@@ -14254,7 +14360,9 @@ function setupIPC() {
         localServer.clearRoom();
         // Reset the panel UI — without this it keeps showing "leave call"
         // even though we never made it into the meeting.
-        broadcastToRenderers('call-failed', { message: status });
+        // errorAction rides along: the panel re-shows `message` on top of the
+        // stack, and without it that copy would hide the action button (#795).
+        broadcastToRenderers('call-failed', { message: status, errorAction });
       } else if (status.startsWith('Notice:')) {
         // #404: agent-visible notices from the call view (time-limit warning,
         // unhandled-dialog surfacing). Rides status.errors, which the agent
@@ -14600,10 +14708,37 @@ function setupIPC() {
         guestFallbackTriedFor = currentMeetUrl;
         const message = `Google is asking ${botLabel} to confirm its identity, so it is joining as a guest instead. `
           + 'It may be waiting to be let in, so admit it from the meeting if you see it. '
-          + "To fix this properly, sign the bot back in to Google in its own view.";
-        broadcastError(message, null, SIGN_BOT_IN_ACTION);
+          + 'Sign the bot back in to Google so its next call is signed in; this call is not interrupted.';
+        // Not SIGN_BOT_IN_ACTION: the view is about to hold the guest call, so
+        // revealing it shows a lobby and signing in there would hang up. The
+        // sign-in window uses the real jar and leaves the call alone.
+        broadcastError(message, GOOGLE_SIGN_IN_ERROR_KEY, OPEN_BOT_SIGN_IN_ACTION);
         localServer.addError(message);
         loadMeetURL(currentMeetUrl, { guestFallback: true });
+        return;
+      }
+
+      // #795: the GUEST attempt itself landed on sign-in. That is a dead end,
+      // not a pause: there is no account here for a human to rescue, and signing
+      // in on this page would put the bot's login into the guest jar (which is
+      // how that jar got polluted in the first place) while leaving the real
+      // one broken. Holding the room would leave the bot at 'navigating' with
+      // nothing more to try, so fail the join for real: the 'Error:' path
+      // resolves the agent's waiters, clears the room and resets the panel.
+      //
+      // Then point the view back at the HOME partition's sign-in page, so the
+      // #764 "Sign the bot in" button reveals a page where signing in actually
+      // fixes the bot. callStatus is idle by then, so that page's own
+      // meet-landing report is ignored as routine.
+      if (activeMeetPartition === GUEST_PARTITION) {
+        const message = `Google is asking ${botLabel} to confirm its identity, and joining as a guest `
+          + 'did not get past it either, so it could not join the call. '
+          + 'Sign the bot back in to Google, then start the call again.';
+        localServer.addError(message);
+        handleMeetStatusUpdate(`Error: ${message}`, SIGN_BOT_IN_ACTION);
+        destroyProviderView();
+        activeMeetPartition = SESSION_PARTITION;
+        navigateMeetView(MEET_SIGN_IN_URL);
         return;
       }
 

@@ -57,8 +57,8 @@ test('there is still exactly one caller that can delete the session', () => {
 test('authuser is pinned only on a KNOWN session', () => {
   // Pinning ?authuser=<email> on an unknown read would assert an identity we
   // could not verify at that moment.
-  assert.match(main, /const boundEmail = signedIn === true && store/,
-    'boundEmail requires signedIn === true');
+  assert.match(main, /const boundEmail = !guestFallback && signedIn === true && store/,
+    'boundEmail requires signedIn === true (and, #795, never on the guest fallback)');
 });
 
 test('an expired session notifies, and says which account to restore', () => {

@@ -58,14 +58,26 @@ function renderCallBar(calls) {
   els.callBar.append(bar);
 }
 
+// Busy = anything from starting to join through the post-call write-up. The
+// supervisor decides it (callPhase in supervisor.js), so the window and the
+// directory never disagree about what a status means.
 function inCall(bot) {
-  return bot.running && bot.callStatus && bot.callStatus !== 'idle';
+  return !!bot.busy;
 }
 
 // The words behind the status dot: what a person would say the bot is doing.
-// The port rides along because it is how every log line and agent names a bot.
+const PHASE_TEXT = {
+  joining: 'Joining…',
+  stuck: 'Stuck joining',
+  waiting: 'Waiting to be let in',
+  'in-call': 'In a call',
+  wrapping: 'Wrapping up the call',
+};
 function describeState(bot) {
-  if (inCall(bot)) return { cls: 'call', text: bot.roomId ? `In a call · ${bot.roomId}` : `In a call (${bot.callStatus})` };
+  if (bot.busy) {
+    const where = bot.roomId && bot.phase !== 'wrapping' ? ` · ${bot.roomId}` : '';
+    return { cls: bot.phase === 'stuck' ? 'stuck' : 'call', text: `${PHASE_TEXT[bot.phase] || 'Busy'}${where}` };
+  }
   if (bot.running) return { cls: 'up', text: 'Running' };
   return { cls: '', text: 'Not running' };
 }
@@ -88,7 +100,7 @@ function avatarFor(bot) {
     // existed) still gets a tile, so every row lines up.
     box.append(el('span', 'mono', (labelOf(bot).trim().charAt(0) || '?').toUpperCase()));
   }
-  box.append(el('span', `dot ${inCall(bot) ? 'call' : bot.running ? 'up' : ''}`));
+  box.append(el('span', `dot ${bot.phase === 'stuck' ? 'stuck' : inCall(bot) ? 'call' : bot.running ? 'up' : ''}`));
   return box;
 }
 
@@ -124,7 +136,9 @@ function renderBots({ bots = [], orphans = [], calls = [] }) {
     who.append(sub);
     row.append(who);
 
-    const err = rowErrors.get(bot.name);
+    // A stuck join says why when the bot told us; otherwise what we can see.
+    const err = rowErrors.get(bot.name)
+      || (bot.phase === 'stuck' ? (bot.error || 'No progress for over a minute. Show the bot to see where it is.') : null);
     if (err) who.append(el('div', 'err', err));
 
     // What the row offers, by state:

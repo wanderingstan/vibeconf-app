@@ -27,7 +27,7 @@ const { execFile } = require('child_process');
 
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
-const { decideWakeups, readFleet, detectedCalls, launchThenAct } = require('./supervisor.js');
+const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase } = require('./supervisor.js');
 const { matchesCalendarEvent, ownerHasConfirmed } = require('./calendar-auto-join.js');
 const { spawnArgsForProfile, profileLaunchCommand } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
@@ -99,6 +99,35 @@ async function scanRunning() {
   return byProfile;
 }
 
+// When each running bot entered the callStatus it is in now, keyed by
+// profile. Only this process can know it: a bot reports its state, not its
+// age. Reset whenever the status changes, and dropped when the bot stops.
+const statusSince = new Map();
+
+function trackStatus(name, callStatus, now) {
+  const prev = statusSince.get(name);
+  if (!prev || prev.status !== callStatus) statusSince.set(name, { status: callStatus, since: now });
+  return statusSince.get(name).since;
+}
+
+// The last thing a bot reported going wrong, for a row that looks stuck. On
+// the room's sync endpoint, which wants the bot's token; fetched only for
+// stuck bots, so a healthy fleet costs nothing extra.
+async function lastError(inst) {
+  if (!inst.roomId) return null;
+  try {
+    const res = await fetch(`http://127.0.0.1:${inst.port}/api/sync/${encodeURIComponent(inst.roomId)}`, {
+      headers: botAuthHeaders(inst.port), signal: AbortSignal.timeout(1500),
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    const errors = body?.status?.errors || body?.errors || [];
+    return errors.length ? String(errors[errors.length - 1].message || '') || null : null;
+  } catch {
+    return null;
+  }
+}
+
 // The whole picture the window renders: who exists, who is up, what they are
 // doing. One call so the renderer never shows a half-refreshed fleet.
 async function fleetStatus() {
@@ -109,8 +138,14 @@ async function fleetStatus() {
     catch { return {}; }
   })();
 
-  const bots = configured.map((p) => {
+  const now = Date.now();
+  for (const name of [...statusSince.keys()]) if (!running.has(name)) statusSince.delete(name);
+
+  const bots = await Promise.all(configured.map(async (p) => {
     const live = running.get(p.name) || null;
+    const { phase, busy } = live
+      ? callPhase(live.callStatus, trackStatus(p.name, live.callStatus, now), now)
+      : { phase: null, busy: false };
     return {
       name: p.name,
       botName: p.botName || '',
@@ -121,8 +156,11 @@ async function fleetStatus() {
       port: live ? live.port : (registry[p.name] || null),
       callStatus: live ? live.callStatus : null,
       roomId: live ? live.roomId : null,
+      phase,
+      busy,
+      error: phase === 'stuck' ? await lastError(live) : null,
     };
-  });
+  }));
 
   // A port answering for a profile that has no config on disk is a real thing
   // to surface, not a rounding error: an orphan (#511) looks exactly like this,

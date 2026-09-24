@@ -128,9 +128,9 @@ function renderBots({ bots = [], orphans = [], calls = [] }) {
     if (err) who.append(el('div', 'err', err));
 
     // What the row offers, by state:
-    //   closed          Open (launch). Call/Add for a closed bot is step 2.
-    //   in a call       Show
-    //   running, idle   Show, plus Add when a Meet is open in the browser, else Call
+    //   in a call   Show
+    //   otherwise   Open/Show, plus Add when a Meet is open in the browser, else
+    //               Call. On a closed bot, Call and Add launch it first.
     const actions = el('div', 'actions');
     const button = (label, busy, cls, run) => {
       const b = el('button', cls, label);
@@ -148,17 +148,20 @@ function renderBots({ bots = [], orphans = [], calls = [] }) {
       actions.append(b);
       return b;
     };
-    if (!bot.running) {
-      button('Open', 'Opening…', 'primary open', () => api.invoke('supervisor:launch', bot.name));
-    } else if (inCall(bot)) {
+    if (inCall(bot)) {
       button('Show', 'Showing…', '', () => api.invoke('supervisor:focus', bot.name));
     } else {
-      button('Show', 'Showing…', 'ghost', () => api.invoke('supervisor:focus', bot.name));
+      if (bot.running) button('Show', 'Showing…', 'ghost', () => api.invoke('supervisor:focus', bot.name));
+      else button('Open', 'Opening…', 'ghost', () => api.invoke('supervisor:launch', bot.name));
+      // A closed bot has to start before it can call, which takes seconds; say
+      // so, or the button reads as stuck.
+      const busy = (verb) => (bot.running ? verb : 'Starting…');
+      const cls = bot.running ? 'primary' : 'primary closed';
       if (target) {
-        button('Add', 'Adding…', 'primary', () => api.invoke('supervisor:add', bot.name, target.url))
+        button('Add', busy('Adding…'), cls, () => api.invoke('supervisor:add', bot.name, target.url))
           .title = `Add ${labelOf(bot)} to ${target.code}`;
       } else {
-        button('Call', 'Calling…', 'primary', () => api.invoke('supervisor:call', bot.name))
+        button('Call', busy('Calling…'), cls, () => api.invoke('supervisor:call', bot.name))
           .title = `Start a new Meet with ${labelOf(bot)}`;
       }
     }

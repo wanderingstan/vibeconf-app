@@ -21,13 +21,13 @@
 // works would make the cross-platform story an afterthought. The window is the
 // product; the menulet is a way to hide it.
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu } = require('electron');
 const path = require('path');
 const { execFile } = require('child_process');
 
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
-const { decideWakeups, readFleet, detectedCalls } = require('./supervisor.js');
+const { decideWakeups, readFleet, detectedCalls, launchThenAct } = require('./supervisor.js');
 const { matchesCalendarEvent, ownerHasConfirmed } = require('./calendar-auto-join.js');
 const { spawnArgsForProfile, profileLaunchCommand } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
@@ -282,8 +282,7 @@ async function focusProfile(name) {
 // spawnAgent:true because a person clicked, exactly as with the panel buttons;
 // without it the bot sits in the call with nobody driving it.
 //
-// Closed bots are not handled here yet (#301 step 2): they have to launch
-// before they can do either.
+// A closed bot is launched first and acted on once it answers (launchThenAct).
 async function botRequest(name, pathname, body) {
   const inst = (await scanRunning()).get(name);
   if (!inst) return { ok: false, error: 'not running' };
@@ -309,8 +308,16 @@ async function botRequest(name, pathname, body) {
   }
 }
 
-const startCall = (name) => botRequest(name, '/api/call/start', { openBrowser: true, spawnAgent: true });
-const addToCall = (name, url) => botRequest(name, '/api/call/join', { url, spawnAgent: true });
+function whenUp(name, act) {
+  return launchThenAct({
+    isRunning: async () => (await scanRunning()).has(name),
+    launch: () => launchProfile(name),
+    act,
+  });
+}
+
+const startCall = (name) => whenUp(name, () => botRequest(name, '/api/call/start', { openBrowser: true, spawnAgent: true }));
+const addToCall = (name, url) => whenUp(name, () => botRequest(name, '/api/call/join', { url, spawnAgent: true }));
 
 // ── The directory ───────────────────────────────────────────────────────────
 //
@@ -425,6 +432,42 @@ async function confirmQuit() {
   app.quit();
 }
 
+// A person asking to quit: the window's ✕, or Cmd+Q from the menu below. Both
+// get the dialog. Guarded so a second Cmd+Q while it is up does not stack a
+// second one.
+let confirming = false;
+async function requestQuit() {
+  if (quitting || store.get('confirmSupervisorQuit') === false) { quitting = true; app.quit(); return; }
+  if (confirming) return;
+  confirming = true;
+  try { await confirmQuit(); } finally { confirming = false; }
+}
+
+// On macOS the default menu's Quit calls app.quit() directly, which is the same
+// 'before-quit' a SIGTERM, a logout or Dock → Quit produces, and those must NOT
+// wait on a dialog (see the before-quit handler in start()). So Cmd+Q gets its
+// own item that asks first. Elsewhere there is no app menu; closing the window
+// is the gesture, and the close handler covers it.
+function installMenu() {
+  if (process.platform !== 'darwin') return;
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    {
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { label: `Quit ${app.name}`, accelerator: 'Command+Q', click: () => { requestQuit(); } },
+      ],
+    },
+    { role: 'editMenu' },
+    { role: 'windowMenu' },
+  ]));
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 520,
@@ -453,7 +496,7 @@ function createWindow() {
   win.on('close', (event) => {
     if (quitting || store.get('confirmSupervisorQuit') === false) return;
     event.preventDefault();
-    confirmQuit();
+    requestQuit();
   });
   win.on('closed', () => { win = null; });
 }
@@ -470,6 +513,13 @@ function start() {
     app.quit();
     return;
   }
+  // Any quit that reaches 'before-quit' without going through requestQuit is
+  // not a person at this window: a kill signal (Electron turns SIGTERM into an
+  // ordinary quit, so there is no signal handler to catch it), a logout or
+  // shutdown, Dock → Quit, the updater. None of those should park the process
+  // on a dialog nobody is there to answer. Same rule as the bot window
+  // (appIsQuitting in main.js).
+  app.on('before-quit', () => { quitting = true; });
   app.on('second-instance', () => {
     if (!win || win.isDestroyed()) return createWindow();
     if (win.isMinimized()) win.restore();
@@ -498,6 +548,7 @@ function start() {
     });
 
     startDirectory();
+    installMenu();
     createWindow();
     tick().catch((err) => console.warn('[supervisor] first tick failed:', err.message));
     pollTimer = setInterval(() => {

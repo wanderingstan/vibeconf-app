@@ -9842,62 +9842,40 @@ app.whenReady().then(async () => {
     // once this runs the Automation decision has been put to the user either
     // way, and the wizard can read the real status instead of assuming unknown.
     if (process.platform === 'darwin') { try { store.set('automationProbed', true); } catch { /* ignore */ } }
-    const { execFile } = require('child_process');
+    // The scan itself (AppleScript over Chrome/Safari/Brave, and the parsing of
+    // what it prints) lives in browser-call-scan.js, shared with the supervisor.
+    const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
+    const { supervisorUrl } = require('./supervisor-port.js');
     let pollInFlight = false;
-
-    // Note: Firefox is not supported — it has no AppleScript tab API.
-    //
-    // PERF (Stan, 2026-07-05 — polls timed out on EVERY tick, so detection
-    // silently never fired). Two independent fixes, both needed:
-    //   1. NO System Events. The old `tell application "System Events" …
-    //      exists process` preamble alone measured 16.8s on a busy machine —
-    //      the whole 8s budget gone before touching a browser. The
-    //      `application "X" is running` form asks launchd directly (fast) and,
-    //      critically, does NOT launch the app the way a bare `tell
-    //      application` would.
-    //   2. BATCHED tab reads: `URL of tabs of w` is one Apple Event per
-    //      window vs two per TAB. ~48 tabs measured 0.25s batched vs 8s+
-    //      per-tab.
-    // Per-window try blocks skip a misbehaving window without aborting the
-    // whole scan; the per-item try skips tabs whose URL is `missing value`
-    // (empty Safari tabs).
-    const browserScanBlock = (appName) => `
-if application "${appName}" is running then
-  try
-    tell application "${appName}"
-      repeat with w in windows
-        try
-          set tabURLs to URL of tabs of w
-          set tabTitles to title of tabs of w
-          repeat with i from 1 to count of tabURLs
-            try
-              set tabURL to (item i of tabURLs) as text
-              set tabTitle to ""
-              try
-                set tabTitle to (item i of tabTitles) as text
-              end try
-              if tabURL starts with "https://meet.google.com/" then
-                set allURLs to allURLs & "MEET:" & tabURL & linefeed
-              else if tabURL starts with "https://app.slack.com/client/" then
-                set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
-              else if tabURL is "about:blank" then
-                set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
-              end if
-            end try
-          end repeat
-        end try
-      end repeat
-    end tell
-  end try
-end if`;
-    const appleScript = `
-set allURLs to ""
-${browserScanBlock('Google Chrome')}
-${browserScanBlock('Safari')}
-${browserScanBlock('Brave Browser')}
-allURLs`;
+    // Which source the last poll used, so a switch is logged once, not per tick.
+    let lastScanSource = null;
 
     console.log('[electron] Meet/Slack detection started');
+
+    // #301: the supervisor is the machine's one browser scanner. Ask it first,
+    // and scan ourselves only when it is not answering (not started yet, an
+    // older build without the endpoint, or its own scan failing, which it
+    // reports as scanning:false). Its answer has the same shape as our own
+    // scan, so everything below is unchanged except the pop-up: the supervisor
+    // already showed that once for the whole fleet.
+    async function scanViaSupervisor() {
+      try {
+        const res = await fetch(`${supervisorUrl()}/api/detected-calls`, { signal: AbortSignal.timeout(800) });
+        if (!res.ok) return null;
+        const body = await res.json();
+        if (!body || body.ok !== true || body.scanning !== true) return null;
+        return {
+          ok: true,
+          meetUrls: Array.isArray(body.meetUrls) ? body.meetUrls : [],
+          slackHuddleUrl: body.slackHuddleUrl || null,
+          slackAmbiguous: null,
+          elapsedMs: 0,
+          fromSupervisor: true,
+        };
+      } catch {
+        return null;
+      }
+    }
 
     function pollForMeet() {
       if (currentMeetUrl || pollInFlight) return;
@@ -9908,12 +9886,22 @@ allURLs`;
       if (localServer.callStatus === 'in-call') return;
       pollInFlight = true;
 
-      const pollStart = Date.now();
-      execFile('osascript', ['-e', appleScript], { timeout: 8000 }, (err, stdout, stderr) => {
+      (async () => {
+        const viaSupervisor = await scanViaSupervisor();
+        const source = viaSupervisor ? 'supervisor' : 'self';
+        if (source !== lastScanSource) {
+          console.log(`[electron] Meet/Slack detection: ${viaSupervisor ? "using the supervisor's scan" : 'scanning the browser ourselves (no supervisor answering)'}`);
+          lastScanSource = source;
+        }
+        return viaSupervisor || scanBrowsers();
+      })().then((scan) => {
         pollInFlight = false;
-        const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
-        if (err) {
-          const stderrMsg = stderr?.trim() || '';
+        const elapsed = (scan.elapsedMs / 1000).toFixed(1);
+        // The supervisor already told the user about this tab; a bot repeating
+        // it is the duplicate pop-up #301 set out to remove.
+        const notify = !scan.fromSupervisor;
+        if (!scan.ok) {
+          const stderrMsg = scan.stderr || '';
           // Log a given failure ONCE, not every 5 seconds. These conditions are
           // persistent by nature — a denied Automation permission, a missing
           // binary, a browser that hangs the scan — so repeating the same line
@@ -9921,17 +9909,16 @@ allURLs`;
           // shares. Keyed by message so a DIFFERENT failure still gets through,
           // and re-armed on the next success below, so a recurrence after a
           // recovery is still reported.
-          const failKey = stderrMsg || (err.killed ? 'timeout' : err.message?.slice(0, 80)) || 'unknown';
+          const failKey = scan.failKey;
           if (failKey !== lastMeetPollFailure) {
             lastMeetPollFailure = failKey;
             console.log(`[electron] Meet poll failed (${elapsed}s):`, failKey, '— further identical failures suppressed');
           }
-          // -1743 = errAEEventNotPermitted: the user hasn't granted Automation
-          // permission to control the browser. macOS won't re-prompt once it's
-          // been denied/dismissed, so the poll fails silently forever and Meet
-          // detection just never works (Seth's case). Surface it once with a
-          // path to fix it.
-          const notAuthorized = stderrMsg.includes('-1743') || /not authorized to send apple events/i.test(stderrMsg);
+          // The user hasn't granted Automation permission to control the
+          // browser. macOS won't re-prompt once it's been denied/dismissed, so
+          // the poll fails silently forever and Meet detection just never works
+          // (Seth's case). Surface it once with a path to fix it.
+          const notAuthorized = isAutomationDenied(stderrMsg);
           if (notAuthorized && !automationPromptShown) {
             automationPromptShown = true;
             dialog.showMessageBox({
@@ -9967,37 +9954,14 @@ allURLs`;
           lastMeetPollFailure = null;
         }
 
-        const lines = (stdout || '').trim().split('\n').map((l) => l.trim()).filter(Boolean);
-        const urls = lines.filter((l) => l.startsWith('MEET:')).map((l) => l.slice(5))
-          .filter((u) => /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(u));
+        const urls = scan.meetUrls;
         const meetUrl = urls[0] || null;
-
-        // Slack huddle: a live browser huddle shows up as an about:blank window
-        // (the huddle popup, whose TITLE carries the workspace) alongside a
-        // workspace tab that carries the team/channel. With MULTIPLE Slack tabs
-        // open we must pick the one actually IN the huddle, not just the first —
-        // so match the huddle popup's workspace to the right tab's title.
-        const slackTabs = lines.filter((l) => l.startsWith('SLACK:')).map((l) => {
-          const [url, ...rest] = l.slice(6).split('|||');
-          return { url, title: (rest.join('|||') || '').trim() };
-        }).filter((t) => /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(t.url));
-        const blankTitles = lines.filter((l) => l.startsWith('BLANK:')).map((l) => l.slice(6).trim());
-        const huddleTitle = blankTitles.find((t) => /^Huddle:/i.test(t));
-        let slackHuddleUrl = null;
-        if (huddleTitle) {
-          // "Huddle: #channel - Workspace - Slack 🎤" → workspace is the 2nd
-          // " - " segment; match the Slack tab whose title names that workspace.
-          const ws = (huddleTitle.split(' - ')[1] || '').trim();
-          const match = ws && slackTabs.find((t) => t.title.includes(ws));
-          slackHuddleUrl = (match && match.url) || (slackTabs.length === 1 ? slackTabs[0].url : null);
-          if (slackTabs.length > 1 && !match) {
-            console.warn('[electron] Slack huddle "' + huddleTitle + '": ' + slackTabs.length +
-              ' Slack tabs, none matched workspace "' + ws + '" — not auto-selecting. Tabs:',
-              JSON.stringify(slackTabs.map((t) => t.title)));
-          }
-        } else if (blankTitles.length && slackTabs.length === 1) {
-          // A blank (huddle) window + exactly one Slack tab → unambiguous.
-          slackHuddleUrl = slackTabs[0].url;
+        const slackHuddleUrl = scan.slackHuddleUrl;
+        if (scan.slackAmbiguous) {
+          const amb = scan.slackAmbiguous;
+          console.warn('[electron] Slack huddle "' + amb.huddleTitle + '": ' + amb.tabTitles.length +
+            ' Slack tabs, none matched workspace "' + amb.workspace + '" — not auto-selecting. Tabs:',
+            JSON.stringify(amb.tabTitles));
         }
 
         // Forward all detected Meet URLs + any Slack huddle to local server for MCP access
@@ -10009,7 +9973,7 @@ allURLs`;
           console.log('[electron] Slack huddle detected:', slackHuddleUrl);
           broadcastToRenderers('slack-huddle-detected', { url: slackHuddleUrl });
           const { Notification } = require('electron');
-          if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
+          if (notify && Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
             const n = new Notification({
               title: 'Slack Huddle Detected',
               body: 'Found a Slack huddle in your browser. Open Vibeconferencing to connect your bot.',
@@ -10030,7 +9994,7 @@ allURLs`;
           broadcastToRenderers('meet-detected', { url: meetUrl, meetCode });
           // Show macOS notification
           const { Notification } = require('electron');
-          if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
+          if (notify && Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
             const notification = new Notification({
               title: 'Google Meet Detected',
               body: `Found call: ${meetCode}. Click Join in Vibeconferencing to connect your bot.`,

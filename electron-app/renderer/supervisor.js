@@ -251,7 +251,9 @@ async function refresh() {
 // The process pushes after every tick, so the window stays current without
 // polling it a second time from here.
 api.on('supervisor-state', (state) => {
-  renderEvents(state || {});
+  // Not every push is a calendar tick: a change in the browser's open calls
+  // pushes too, with no events, and must not blank the Upcoming list.
+  if (state && 'events' in state) renderEvents(state);
   if (state?.lastTick) {
     els.tickStatus.textContent = `Last checked ${new Date(state.lastTick).toLocaleTimeString()}`;
   }

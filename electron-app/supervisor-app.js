@@ -21,7 +21,7 @@
 // works would make the cross-platform story an afterthought. The window is the
 // product; the menulet is a way to hide it.
 
-const { app, BrowserWindow, ipcMain, shell, dialog, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Notification } = require('electron');
 const path = require('path');
 const { execFile } = require('child_process');
 
@@ -31,6 +31,7 @@ const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase } = re
 const { matchesCalendarEvent, ownerHasConfirmed } = require('./calendar-auto-join.js');
 const { spawnArgsForProfile, profileLaunchCommand } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
+const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
 
 const POLL_MS = 60 * 1000;
 const PROBE_TIMEOUT_MS = 350;
@@ -168,7 +169,12 @@ async function fleetStatus() {
   const known = new Set(configured.map((p) => p.name));
   const orphans = [...running.values()].filter((i) => i.profile && !known.has(i.profile));
 
-  return { bots, orphans, calls: detectedCalls([...running.values()]), defaultProfile: paths.defaultProfile };
+  // Our own scan when it is working; otherwise what the bots found (an older
+  // bot build, or a supervisor without Automation access).
+  const calls = browserScan.scanning
+    ? detectedCalls([{ callStatus: 'idle', detectedMeetUrls: browserScan.meetUrls }])
+    : detectedCalls([...running.values()]);
+  return { bots, orphans, calls, defaultProfile: paths.defaultProfile };
 }
 
 // ── Calendar ────────────────────────────────────────────────────────────────
@@ -312,6 +318,110 @@ async function focusProfile(name) {
   }
 }
 
+// ── The browser scan ────────────────────────────────────────────────────────
+//
+// The machine's one look at which calls are open in the user's browser (#301
+// step 3). Bots ask for this at /api/detected-calls instead of each running
+// its own AppleScript scan, so N bots cost one scan and one pop-up, and "Add"
+// works even with no bot running or every bot in a call.
+//
+// Keeps scanning while bots are in calls, unlike the per-bot scan it replaces:
+// a call one bot is in is exactly the call the others might be Added to.
+
+const SCAN_MS = 5000;
+const browserScan = {
+  scanning: false,       // true once a scan has succeeded; false while failing
+  meetUrls: [],
+  slackHuddleUrl: null,
+  lastFailKey: null,
+  notifiedCodes: new Set(), // Meet codes already announced; cleared when the tab goes
+  automationPromptShown: false,
+};
+let scanTimer = null;
+let scanInFlight = false;
+
+const meetCodeOf = (url) => String(url || '').match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/)?.[1] || null;
+
+// "Google Meet Detected", once per tab, for the whole fleet. Skipped when a bot
+// is already in that call: that tab is the one Call just opened, or the user
+// joining a call their bot is in, and neither is news.
+async function announceNewCalls(meetUrls) {
+  const codes = new Set(meetUrls.map(meetCodeOf).filter(Boolean));
+  for (const code of [...browserScan.notifiedCodes]) if (!codes.has(code)) browserScan.notifiedCodes.delete(code);
+  const fresh = [...codes].filter((c) => !browserScan.notifiedCodes.has(c));
+  if (!fresh.length) return;
+  fresh.forEach((c) => browserScan.notifiedCodes.add(c));
+  const running = await scanRunning().catch(() => new Map());
+  const busyRooms = new Set([...running.values()].filter((i) => i.callStatus && i.callStatus !== 'idle').map((i) => i.roomId));
+  const news = fresh.filter((c) => !busyRooms.has(c));
+  if (!news.length || !Notification.isSupported() || process.env.VIBECONF_NO_NOTIFICATIONS) return;
+  const n = new Notification({
+    title: 'Google Meet Detected',
+    body: `Found call: ${news[0]}. Add a bot to it from Vibeconferencing.`,
+    silent: false,
+  });
+  n.on('click', () => {
+    if (!win || win.isDestroyed()) createWindow();
+    else { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+  });
+  n.show();
+}
+
+async function scanTick() {
+  if (scanInFlight) return;
+  scanInFlight = true;
+  try {
+    const scan = await scanBrowsers();
+    if (!scan.ok) {
+      browserScan.scanning = false;
+      if (scan.failKey !== browserScan.lastFailKey) {
+        browserScan.lastFailKey = scan.failKey;
+        console.log('[supervisor] browser scan failed:', scan.failKey, '(bots fall back to scanning for themselves; further identical failures suppressed)');
+      }
+      // Same one-time nudge the bot gives, since the supervisor is now the one
+      // asking macOS for Automation access.
+      if (isAutomationDenied(scan.stderr) && !browserScan.automationPromptShown) {
+        browserScan.automationPromptShown = true;
+        dialog.showMessageBox({
+          type: 'warning',
+          title: 'Permission needed to detect Google Meet',
+          message: 'Vibeconferencing needs Automation permission to find your active Google Meet call.',
+          detail: 'Open System Settings → Privacy & Security → Automation, then enable the checkbox under Vibeconferencing for your browser (Google Chrome / Brave / Safari).',
+          buttons: ['Open System Settings', 'Later'],
+          defaultId: 0,
+          cancelId: 1,
+        }).then(({ response }) => {
+          if (response === 0) shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Automation');
+        }).catch(() => {});
+      }
+      return;
+    }
+    if (browserScan.lastFailKey !== null) {
+      console.log('[supervisor] browser scan recovered');
+      browserScan.lastFailKey = null;
+    }
+    if (scan.elapsedMs >= 2000) console.log(`[supervisor] browser scan slow (${(scan.elapsedMs / 1000).toFixed(1)}s)`);
+    const changed = scan.meetUrls.join('|') !== browserScan.meetUrls.join('|');
+    browserScan.scanning = true;
+    browserScan.meetUrls = scan.meetUrls;
+    browserScan.slackHuddleUrl = scan.slackHuddleUrl;
+    if (changed) {
+      announceNewCalls(scan.meetUrls).catch(() => {});
+      pushState({ callsChanged: true }); // the window refreshes on any push
+    }
+  } finally {
+    scanInFlight = false;
+  }
+}
+
+function startBrowserScan() {
+  // AppleScript is macOS-only; elsewhere there is nothing to scan with, and the
+  // bots' own fallback already says so in their logs.
+  if (process.platform !== 'darwin') return;
+  scanTick();
+  scanTimer = setInterval(scanTick, SCAN_MS);
+}
+
 // ── Calls ───────────────────────────────────────────────────────────────────
 //
 // "Call" and "Add" on a RUNNING bot. Both are the bot's own panel buttons,
@@ -395,6 +505,17 @@ function startDirectory() {
         // for them, so they stay in the window.
         const instances = [...running.values()].map(({ detectedMeetUrls, ...inst }) => inst);
         return send(200, { ok: true, instances, supervisor: { port } });
+      }
+      // What the browser scan found, for the bots (see the scan section).
+      // scanning:false tells a bot to scan for itself instead of trusting an
+      // empty list that only means "could not look".
+      if (url.pathname === '/api/detected-calls') {
+        return send(200, {
+          ok: true,
+          scanning: browserScan.scanning,
+          meetUrls: browserScan.meetUrls,
+          slackHuddleUrl: browserScan.slackHuddleUrl,
+        });
       }
       if (url.pathname === '/api/health') {
         return send(200, { ok: true, supervisor: { port, pid: process.pid, version: app.getVersion() } });
@@ -586,6 +707,7 @@ function start() {
     });
 
     startDirectory();
+    startBrowserScan();
     installMenu();
     createWindow();
     tick().catch((err) => console.warn('[supervisor] first tick failed:', err.message));
@@ -596,6 +718,7 @@ function start() {
 
   app.on('window-all-closed', () => {
     if (pollTimer) clearInterval(pollTimer);
+    if (scanTimer) clearInterval(scanTimer);
     if (directory) directory.close();
     app.quit();
   });

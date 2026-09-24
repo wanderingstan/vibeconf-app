@@ -1875,7 +1875,7 @@ function renderProfileMenu(data) {
   if (!profiles.length) {
     const empty = document.createElement('div');
     empty.textContent = 'No saved bots yet.';
-    empty.style.cssText = 'padding:6px 8px;color:#9aa0a6';
+    empty.style.cssText = 'padding:6px 8px;color:var(--ink-soft)';
     profileMenu.appendChild(empty);
   }
   for (const p of profiles) {
@@ -1885,14 +1885,14 @@ function renderProfileMenu(data) {
     const displayName = p.botName || dirName;
     const row = document.createElement('div');
     row.title = `Profile folder: ${p.name}`;
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:' + (p.isCurrent ? 'default' : 'pointer');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:6px;cursor:' + (p.isCurrent ? 'default' : 'pointer');
     if (p.isCurrent) {
       // Picking the bot you're already on is a no-op — but it must still close
       // the menu. Leaving it inert meant a natural "never mind" gesture left the
       // dropdown stuck open.
       row.onclick = () => closeProfileMenu();
     } else {
-      row.onmouseenter = () => { row.style.background = '#3c4043'; };
+      row.onmouseenter = () => { row.style.background = 'var(--paper-lo)'; };
       row.onmouseleave = () => { row.style.background = ''; };
       // Default click SWITCHES this window to that profile (#379). ⌥-click opens
       // it in a SEPARATE new window instead (additive, advanced).
@@ -1903,30 +1903,32 @@ function renderProfileMenu(data) {
     const mark = document.createElement('span');
     mark.style.cssText = 'width:14px;flex:0 0 auto;text-align:center';
     if (p.isCurrent) {
-      mark.textContent = '✓'; mark.style.color = '#8ab4f8'; mark.title = 'current bot (this window)';
+      mark.textContent = '✓'; mark.style.color = 'var(--magenta)'; mark.title = 'current bot (this window)';
     } else {
-      mark.textContent = '●'; mark.style.color = p.running ? '#81c995' : '#5f6368';
+      mark.textContent = '●'; mark.style.color = p.running ? 'var(--go-deep)' : 'var(--ink-faint)';
       mark.title = p.running ? `running on port ${p.port}` : 'not running';
     }
     const label = document.createElement('div');
     label.style.cssText = 'flex:1;min-width:0';
     const top = document.createElement('div');
     top.textContent = displayName;
-    top.style.cssText = 'font-weight:600;color:#e8eaed;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    top.style.cssText = 'font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     const sub = document.createElement('div');
     // Prefer the most identifying remembered fact: bound account email, then the
     // remembered Meet/Slack display name (#282). The Bot Name is the top line
     // now, so it's no longer a useful sub-line — fall back to the profile dir.
     sub.textContent = p.meetAccountEmail || p.lastMeetName || p.lastSlackName || dirName;
-    sub.style.cssText = 'color:#9aa0a6;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    sub.style.cssText = 'color:var(--ink-soft);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     label.appendChild(top); label.appendChild(sub);
     // Avatar thumbnail: the small PNG each bot rasterises of its own avatar
     // (see refreshAvatarThumb), else a neutral monogram so every row aligns.
     const avatar = document.createElement('div');
     // Rounded SQUARE (not a circle) to match the main agent avatar and show more
     // of the background — the most customizable part of the icon (emojis all read
-    // about the same). 6px ≈ the main avatar's 14px/54px proportion at 24px.
-    avatar.style.cssText = 'width:24px;height:24px;flex:0 0 auto;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#3c4043;color:#9aa0a6;font-size:11px;font-weight:600';
+    // about the same). 34px: it fills the row's two text lines, top to bottom,
+    // so the picture is the thing you recognise a bot by (Stan, 2026-09-24).
+    // 8px radius ≈ the main avatar's 14px/54px proportion at this size.
+    avatar.style.cssText = 'width:34px;height:34px;flex:0 0 auto;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--line);color:var(--ink-soft);font-size:14px;font-weight:600';
     if (p.avatarThumb) {
       const img = document.createElement('img');
       img.src = p.avatarThumb;
@@ -1941,10 +1943,10 @@ function renderProfileMenu(data) {
   }
   const add = document.createElement('div');
   add.textContent = '＋ New bot…';
-  add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
+  add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid var(--line);color:var(--magenta);cursor:pointer';
   // Hover, like every other row in this menu. It was the only item without it,
   // so the one entry that CREATES something was also the one that looked inert.
-  add.onmouseenter = () => { add.style.background = '#3c4043'; };
+  add.onmouseenter = () => { add.style.background = 'var(--paper-lo)'; };
   add.onmouseleave = () => { add.style.background = ''; };
   // No prompt. The name it used to ask for was the profile DIRECTORY, from when
   // that was also the bot's name — it isn't any more, so this asked people to
@@ -1963,15 +1965,15 @@ function renderProfileMenu(data) {
   // #379: discoverability hint for the additive path.
   const hint = document.createElement('div');
   hint.textContent = '⌥-click a bot profile to open it in a new window instead';
-  hint.style.cssText = 'padding:4px 8px 2px;color:#5f6368;font-size:10px';
+  hint.style.cssText = 'padding:4px 8px 2px;color:var(--ink-faint);font-size:10px';
   profileMenu.appendChild(hint);
 
   // Debugging help: reveal the bot-profiles folder so the user can delete/rename
   // profile dirs directly (#282).
   const folder = document.createElement('div');
   folder.innerHTML = uiIcon('folder', 'lead') + 'Open bot profiles folder';
-  folder.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
-  folder.onmouseenter = () => { folder.style.background = '#3c4043'; };
+  folder.style.cssText = 'padding:6px 8px;color:var(--ink-soft);cursor:pointer';
+  folder.onmouseenter = () => { folder.style.background = 'var(--paper-lo)'; };
   folder.onmouseleave = () => { folder.style.background = ''; };
   folder.onclick = () => { closeProfileMenu(); api.invoke('open-profiles-folder').catch(() => {}); };
   profileMenu.appendChild(folder);
@@ -1979,8 +1981,8 @@ function renderProfileMenu(data) {
   // Reveal the session-log folder — quick path to past calls' logs (#292).
   const logs = document.createElement('div');
   logs.innerHTML = uiIcon('clipboard', 'lead') + 'Open call logs folder';
-  logs.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
-  logs.onmouseenter = () => { logs.style.background = '#3c4043'; };
+  logs.style.cssText = 'padding:6px 8px;color:var(--ink-soft);cursor:pointer';
+  logs.onmouseenter = () => { logs.style.background = 'var(--paper-lo)'; };
   logs.onmouseleave = () => { logs.style.background = ''; };
   logs.onclick = () => { closeProfileMenu(); api.invoke('open-logs-folder').catch(() => {}); };
   profileMenu.appendChild(logs);
@@ -1999,7 +2001,7 @@ async function refreshProfilesCache() {
     if (profileMenu && profileMenu.style.display === 'block') renderProfileMenu(cachedProfiles);
   } catch {
     if (!cachedProfiles && profileMenu && profileMenu.style.display === 'block') {
-      profileMenu.innerHTML = '<div style="padding:6px 8px;color:#f28b82">Failed to load profiles</div>';
+      profileMenu.innerHTML = '<div style="padding:6px 8px;color:var(--pink-deep)">Failed to load profiles</div>';
     }
   }
 }
@@ -2024,7 +2026,7 @@ if (profileMenuBtn && profileMenu) {
     // dismiss" — did nothing at all.
     document.body.dataset.menuOpen = 'true';
     if (cachedProfiles) renderProfileMenu(cachedProfiles);           // instant from cache
-    else profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
+    else profileMenu.innerHTML = '<div style="padding:6px 8px;color:var(--ink-soft)">Loading…</div>';
     refreshProfilesCache();                                          // refresh in the background (re-renders if still open)
   });
   document.addEventListener('click', (e) => {

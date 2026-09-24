@@ -26,7 +26,7 @@ You drive it from your agent (just say *"join my call"*); the app is the "body" 
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
 
 ### 2. Allow the permission prompts
-The app needs **no microphone, camera, or screen recording permission** — the bot's mic and camera are synthetic (an AudioContext and a canvas stream) and the whiteboard share captures via the app's own window rendering, so no capture device is ever opened and macOS isn't consulted. One optional prompt may appear: **Browser Automation** (lets the app find your open Meet by itself — skip it and just paste the Meet link into the app).
+The app needs **no microphone, camera, or screen-recording permission**: the bot's mic and camera are virtual. One optional prompt may appear, **Browser Automation**, which lets the app find your open Meet by itself. Skip it and just paste the Meet link into the app.
 
 ### 3. Sign in *(optional)*
 Signing in gets you access to the shared whiteboard. It's optional and not automatic; sign in anytime from App Settings (**⌘,**).
@@ -51,18 +51,18 @@ Click **Admit** in your Meet window when it asks. Your bot appears as a particip
 
 **That's it. You're in a call with your bot. 🎉**
 
-### 8. Give your bot a good voice *(optional, whenever you're ready)*
-Out of the box it uses the basic built-in Mac voice, which is fine for testing but robotic. Pick one:
+## Make it better *(optional)*
 
-- **⭐ ElevenLabs (best, most natural):** grab a free API key at **[elevenlabs.io](https://elevenlabs.io)**, then in the app press **⌘,** (App Settings) and paste the key. Then choose a voice from the People pane.
-- **Premium Mac voices (free):** in **System Settings → Accessibility → Spoken Content**, download an "Enhanced" or "Premium" voice, then pick it in the app's voice selector. A big step up from the default, no account needed.
+### A good voice
+Out of the box the bot uses the basic built-in Mac voice: fine for testing, but robotic.
+
+- **⭐ ElevenLabs (most natural):** grab a free API key at **[elevenlabs.io](https://elevenlabs.io)**, paste it in App Settings (**⌘,**), then choose a voice from the People pane.
+- **Premium Mac voices (free, no account):** search "system voice" in System Settings, open the picker under **Accessibility → Spoken Content**, download an "Enhanced" or "Premium" voice, then pick it in the app's voice selector.
 - **Local / open-source (advanced):** run a local voice engine (Kokoro/Voicebox) and point the app at it. See [docs/preferences.md](docs/preferences.md).
-
-*Downloading a premium macOS voice (free): search "system voice" in System Settings, open the picker under Accessibility → Spoken Content, and grab a "Premium" or "Enhanced" one.*
 
 ![Animated walkthrough: searching "system voice" in macOS System Settings, which opens the System voice picker under Accessibility → Spoken Content where an Enhanced/Premium voice can be downloaded](media/premium-mac-voice.gif)
 
-### 9. Try real-time voice *(experimental, optional)*
+### Real-time voice *(experimental)*
 Turn on a bot's **`realtimeVoice`** preference **before it joins** to try OpenAI's speech-to-speech model in the voice seat. Your agent stays in the call as the "slow half", feeding the voice model facts instead of speaking itself. It needs an **OpenAI API key** in App Settings (**⌘,**), and call audio goes to OpenAI for as long as the realtime session is running, so expect per-minute charges. Details: [docs/realtime-voice-in-app.md](docs/realtime-voice-in-app.md).
 
 ---
@@ -89,7 +89,7 @@ Worth knowing before your first call:
 - **Joins can drop:** [#785](https://github.com/wanderingstan/vibeconf-app/issues/785) has four joins started from the agent dropping seconds after admission in one Workspace-hosted room; a fifth, started from the app's panel, stayed connected. The cause isn't known yet.
 - **Several bots, one floor:** spoken replies can be held or cut off by turn-taking, more often with several bots in the call. Keep speech short and put anything that has to land in chat or on the whiteboard.
 - **One shared whiteboard:** bots in the same room share one board and each update replaces it, so two bots writing at once can overwrite each other. Your agent can list and read back earlier versions with `read_whiteboard`.
-- **The default voice:** without an ElevenLabs key it uses the built-in Mac voice; [step 8](#8-give-your-bot-a-good-voice-optional-whenever-youre-ready) shows better options.
+- **The default voice:** without an ElevenLabs key it uses the built-in Mac voice; [A good voice](#a-good-voice) shows better options.
 
 If a call goes wrong, the bot's panel has a **📤 Share this call's log** button. Clicking it sends that call's log so far and keeps sending it until the call ends; logs can contain transcript text. (Continuous remote logging is a separate setting and is off by default.)
 

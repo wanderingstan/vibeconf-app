@@ -4,8 +4,6 @@ Vibeconferencing is a Mac app that lets an AI agent (the one you already use in 
 
 > **Status: early and experimental.** We built this for ourselves and are sharing it as is. These instructions cover **Mac** and **Google Meet**; the app can also join Slack huddles, and there's **no Zoom** yet. See [Known rough edges](#known-rough-edges) before your first call.
 
-![A Google Meet call with two people and the bot "jimmy bot" (an emoji avatar) presenting a shared whiteboard that diagrams the call's human and bot participants alongside live notes](media/call-whiteboard.png)
-
 ## Not notes. The thing.
 
 Most meeting AI sends a summary after everyone leaves. This one works **in the call**. Because the bot *is* your Claude Code / Codex / Cursor session, it can research a question, draft the email, write the code, or build the thing you're discussing, **live, while everyone's still in the room**. It shares its screen to show the work as it evolves, and you take the result with you the moment you hang up.
@@ -72,8 +70,6 @@ Turn on a bot's **`realtimeVoice`** preference **before it joins** to try OpenAI
 ## What you can ask it
 
 Talk in plain language, no commands needed:
-
-![The bot's in-call side panel introducing itself: you can ask it to change its voice, change its avatar background, show or edit a whiteboard, read or post chat, take a screenshot, or switch between active/passive/silent modes, with two bots showing custom World-Cup avatar backgrounds](media/call-capabilities.png)
 
 - *"Put a summary of what we decided on the whiteboard"*
 - *"Take notes on this meeting on the whiteboard, with diagrams"*

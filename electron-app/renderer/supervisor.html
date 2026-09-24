@@ -9,71 +9,139 @@
   <meta charset="utf-8" />
   <title>Vibeconferencing</title>
   <style>
+    /* The bot panel's palette and type (panel.css), so the supervisor reads as
+       the same app rather than a debug page bolted onto it. */
     :root {
-      --bg: #1d1f21; --panel: #26292c; --line: #34383c;
-      --text: #e8eaed; --dim: #9aa0a6; --accent: #81c995; --warn: #f28b82;
+      --bg: #202124; --surface: #303134; --hover: #3c4043; --line: #3c4043;
+      --text: #e8eaed; --dim: #9aa0a6; --faint: #5f6368;
+      --accent: #8ab4f8; --accent-hover: #aecbfa;
+      --up: #81c995; --call: #fdd663; --warn: #f28b82;
     }
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      margin: 0; background: var(--bg); color: var(--text);
-      font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
+      font: 13px/1.45 'Google Sans', Roboto, Arial, sans-serif;
+      user-select: none; cursor: default;
     }
     header {
-      padding: 14px 16px 10px; border-bottom: 1px solid var(--line);
-      display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+      padding: 18px 20px 14px;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
     }
-    h1 { font-size: 15px; margin: 0; font-weight: 600; }
+    h1 { font-size: 18px; font-weight: 500; color: var(--accent); }
+    .count { color: var(--dim); font-size: 12px; margin-top: 2px; }
     h2 {
-      font-size: 11px; text-transform: uppercase; letter-spacing: .07em;
-      color: var(--dim); margin: 0 0 8px; font-weight: 600;
+      font-size: 13px; font-weight: 500; color: var(--dim);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin: 0 0 8px; padding: 0 8px;
     }
-    .section { padding: 14px 16px; border-bottom: 1px solid var(--line); }
-    .muted { color: var(--dim); }
-    .empty { color: var(--dim); font-style: italic; padding: 2px 0; }
+    .section { padding: 8px 12px 16px; }
+    .section + .section { border-top: 1px solid var(--line); padding-top: 16px; }
+    .empty { color: var(--dim); padding: 6px 8px; }
 
+    /* ── Bot rows ── unboxed, like the panel's masthead: the face carries the
+       row, and hover is the only chrome. */
     .bot {
-      display: flex; align-items: center; gap: 10px;
-      padding: 9px 10px; background: var(--panel);
-      border: 1px solid var(--line); border-radius: 7px; margin-bottom: 6px;
+      display: flex; align-items: center; gap: 12px;
+      padding: 8px; border-radius: 12px;
     }
-    .bot .who { flex: 1; min-width: 0; }
-    .bot .name { font-weight: 600; }
-    .bot .sub {
-      color: var(--dim); font-size: 11px;
+    .bot:hover { background: var(--surface); }
+    /* Rounded SQUARE, same shape as the panel's avatar and the profile
+       switcher's thumbnail: it shows more of the background, which is the most
+       customizable part of a bot's face. */
+    .avatar {
+      position: relative; flex: none;
+      width: 44px; height: 44px; border-radius: 11px;
+      background: var(--hover); color: var(--dim);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 500;
+    }
+    .avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
+    /* A closed bot's face is dimmed, so who is up reads at a glance without
+       parsing any text. */
+    .bot.off .avatar img, .bot.off .avatar .mono { opacity: 0.45; filter: saturate(0.4); }
+    /* Status dot on the avatar's corner, ringed in the background colour so it
+       stays legible over any artwork. The words in .sub say the same thing:
+       colour alone would hide the one state that matters most, in a call. */
+    .dot {
+      position: absolute; right: -3px; bottom: -3px;
+      width: 13px; height: 13px; border-radius: 50%;
+      background: var(--faint); border: 2.5px solid var(--bg);
+    }
+    .bot:hover .dot { border-color: var(--surface); }
+    .dot.up { background: var(--up); }
+    .dot.call { background: var(--call); }
+    .who { flex: 1; min-width: 0; }
+    .name {
+      font-size: 14px; font-weight: 500; color: var(--text);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-    /* A dot, plus words. Colour alone would leave the one genuinely important
-       state — in a call — invisible to anyone who cannot distinguish it. */
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #5f6368; flex: none; }
-    .dot.up { background: var(--accent); }
-    .dot.call { background: #fbbc04; }
-    button {
-      background: #35393d; color: var(--text); border: 1px solid var(--line);
-      border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+    .tag {
+      font-size: 11px; font-weight: 500; color: var(--dim);
+      background: var(--surface); border-radius: 6px; padding: 1px 6px; margin-left: 6px;
+      vertical-align: 1px;
     }
-    button:hover { background: #3f4448; }
-    button.primary { background: #2d6a4f; border-color: #2d6a4f; }
-    button.primary:hover { background: #35805e; }
+    .bot:hover .tag { background: var(--hover); }
+    .sub {
+      color: var(--dim); font-size: 12px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .sub .state.up { color: var(--up); }
+    .sub .state.call { color: var(--call); }
 
-    .event { padding: 7px 0; border-bottom: 1px dashed var(--line); }
-    .event:last-child { border-bottom: 0; }
-    .event .when { color: var(--accent); font-variant-numeric: tabular-nums; }
-    .event .for { color: var(--dim); font-size: 11px; }
-    .banner { padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; font-size: 12px; }
-    .banner.warn { background: #3a2a28; color: var(--warn); border: 1px solid #5c3b38; }
-    footer { padding: 10px 16px; color: var(--dim); font-size: 11px; display: flex; justify-content: space-between; }
+    /* Pill buttons, as in the panel. */
+    button {
+      font: 500 13px 'Google Sans', Roboto, Arial, sans-serif;
+      border: none; border-radius: 20px; padding: 6px 16px; cursor: pointer;
+      background: var(--surface); color: var(--text); flex: none;
+    }
+    button:hover:not(:disabled) { background: var(--hover); }
+    .bot:hover button:not(.primary) { background: var(--hover); }
+    .bot:hover button:not(.primary):hover:not(:disabled) { background: #4a4e52; }
+    button.primary { background: var(--accent); color: var(--bg); }
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button:disabled { opacity: 0.5; cursor: default; }
+    /* Most people have a bot or three, and a plain blue Open is right for
+       them. A big fleet (a developer's, mostly) turns that into a wall of
+       accent, so past a handful the buttons go quiet until their row is
+       hovered. supervisor.js sets .many. */
+    #bots.many .bot button.primary { background: var(--surface); color: var(--text); }
+    #bots.many .bot:hover button.primary { background: var(--accent); color: var(--bg); }
+    #bots.many .bot:hover button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.ghost { background: none; color: var(--dim); padding: 6px 12px; }
+    button.ghost:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+
+    /* ── Upcoming ── */
+    .event { padding: 8px; border-radius: 12px; display: flex; gap: 12px; align-items: baseline; }
+    .event:hover { background: var(--surface); }
+    .event .when {
+      flex: none; min-width: 64px; color: var(--accent); font-weight: 500;
+      font-variant-numeric: tabular-nums;
+    }
+    .event .what { min-width: 0; }
+    .event .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .event .for { color: var(--dim); font-size: 12px; }
+    .banner {
+      margin: 0 8px 10px; padding: 8px 12px; border-radius: 8px; font-size: 12px;
+      background: #3a2a28; color: var(--warn);
+    }
+    footer {
+      padding: 12px 20px 16px; color: var(--faint); font-size: 11px;
+      display: flex; justify-content: space-between; gap: 12px;
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>Bots on this machine</h1>
-    <button id="refresh">Refresh</button>
+    <div>
+      <h1>Bots on this machine</h1>
+      <div class="count" id="count"></div>
+    </div>
+    <button id="refresh" class="ghost">Refresh</button>
   </header>
 
   <div class="section">
-    <h2>Bots</h2>
-    <div id="bots"><div class="empty">Looking…</div></div>
     <div id="orphans"></div>
+    <div id="bots"><div class="empty">Looking…</div></div>
   </div>
 
   <div class="section">
@@ -83,8 +151,8 @@
   </div>
 
   <footer>
-    <span id="tickStatus" class="muted">—</span>
-    <span class="muted">Watching for all bots, including closed ones</span>
+    <span>Watching the calendar for every bot, including closed ones</span>
+    <span id="tickStatus"></span>
   </footer>
 
   <script src="supervisor.js"></script>

@@ -111,6 +111,7 @@ async function fleetStatus() {
     return {
       name: p.name,
       botName: p.botName || '',
+      avatarThumb: p.avatarThumb || null,
       calendarIdentityEmail: p.calendarIdentityEmail || '',
       isDefault: p.name === paths.defaultProfile,
       running: !!live,

@@ -9,6 +9,7 @@ const api = window.electronAPI;
 
 const els = {
   bots: document.getElementById('bots'),
+  count: document.getElementById('count'),
   orphans: document.getElementById('orphans'),
   events: document.getElementById('events'),
   banner: document.getElementById('calendarBanner'),
@@ -26,31 +27,68 @@ function el(tag, className, text) {
   return node;
 }
 
-function describeBot(bot) {
-  if (!bot.running) return bot.port ? `not running · port ${bot.port}` : 'not running';
-  const where = bot.roomId ? ` · ${bot.roomId}` : '';
-  if (bot.callStatus && bot.callStatus !== 'idle') return `${bot.callStatus}${where} · port ${bot.port}`;
-  return `running · port ${bot.port}`;
+function inCall(bot) {
+  return bot.running && bot.callStatus && bot.callStatus !== 'idle';
+}
+
+// The words behind the status dot: what a person would say the bot is doing.
+// The port rides along because it is how every log line and agent names a bot.
+function describeState(bot) {
+  if (inCall(bot)) return { cls: 'call', text: bot.roomId ? `In a call · ${bot.roomId}` : `In a call (${bot.callStatus})` };
+  if (bot.running) return { cls: 'up', text: 'Running' };
+  return { cls: '', text: 'Not running' };
+}
+
+// In a call, then running, then the rest; alphabetical by display name within
+// each. The bots you might act on are the ones near the top.
+function rank(bot) { return inCall(bot) ? 0 : bot.running ? 1 : 2; }
+function labelOf(bot) { return bot.botName || bot.name; }
+
+function avatarFor(bot) {
+  const box = el('div', 'avatar');
+  if (bot.avatarThumb && bot.avatarThumb.startsWith('data:image/')) {
+    const img = document.createElement('img');
+    img.src = bot.avatarThumb;
+    img.alt = '';
+    img.draggable = false;
+    box.append(img);
+  } else {
+    // A bot that has never drawn its face (never opened since the thumbnail
+    // existed) still gets a tile, so every row lines up.
+    box.append(el('span', 'mono', (labelOf(bot).trim().charAt(0) || '?').toUpperCase()));
+  }
+  box.append(el('span', `dot ${inCall(bot) ? 'call' : bot.running ? 'up' : ''}`));
+  return box;
 }
 
 function renderBots({ bots = [], orphans = [] }) {
   els.bots.replaceChildren();
+  const up = bots.filter((b) => b.running).length;
+  els.count.textContent = bots.length ? `${up} of ${bots.length} running` : '';
+  els.bots.classList.toggle('many', bots.length > 6);
   if (!bots.length) {
     els.bots.append(el('div', 'empty', 'No bots configured yet.'));
   }
 
-  for (const bot of bots) {
-    const row = el('div', 'bot');
-    const inCall = bot.running && bot.callStatus && bot.callStatus !== 'idle';
-    row.append(el('span', `dot ${inCall ? 'call' : bot.running ? 'up' : ''}`));
+  const sorted = [...bots].sort((a, b) => rank(a) - rank(b) || labelOf(a).localeCompare(labelOf(b)));
+  for (const bot of sorted) {
+    const row = el('div', `bot${bot.running ? '' : ' off'}`);
+    row.append(avatarFor(bot));
 
     const who = el('div', 'who');
     // The display name is what a person calls this bot; the profile is what the
     // machine calls it. Both, because they routinely differ — and the profile is
     // what every log line, port and folder is named after.
-    const label = bot.botName || bot.name;
-    who.append(el('div', 'name', bot.isDefault ? `${label} (default)` : label));
-    who.append(el('div', 'sub', `${bot.name} · ${describeBot(bot)}`));
+    const name = el('div', 'name', labelOf(bot));
+    if (bot.isDefault) name.append(el('span', 'tag', 'default'));
+    who.append(name);
+    const state = describeState(bot);
+    const sub = el('div', 'sub');
+    sub.append(el('span', `state ${state.cls}`, state.text));
+    const where = [bot.name !== labelOf(bot) ? bot.name : null, bot.port ? `port ${bot.port}` : null].filter(Boolean);
+    if (where.length) sub.append(document.createTextNode(` · ${where.join(' · ')}`));
+    sub.title = `${bot.name}${bot.port ? ` · port ${bot.port}` : ''}`;
+    who.append(sub);
     row.append(who);
 
     const open = el('button', bot.running ? '' : 'primary', bot.running ? 'Show' : 'Open');
@@ -117,13 +155,13 @@ function renderEvents(state) {
   }
   for (const event of events) {
     const row = el('div', 'event');
-    const line = el('div');
-    line.append(el('span', 'when', whenLabel(event.start)));
-    line.append(document.createTextNode(`  ${event.summary || '(untitled)'}`));
-    row.append(line);
+    row.append(el('span', 'when', whenLabel(event.start)));
+    const what = el('div', 'what');
+    what.append(el('div', 'title', event.summary || '(untitled)'));
     // Which bot this wakes is the whole point of showing it here — an upcoming
     // meeting nobody is assigned to is a meeting no bot will join.
-    if (event.forProfile) row.append(el('div', 'for', `→ ${event.forProfile}`));
+    if (event.forProfile) what.append(el('div', 'for', `→ ${event.forProfile}`));
+    row.append(what);
     els.events.append(row);
   }
 }

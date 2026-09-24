@@ -863,20 +863,25 @@ button.auth-action-btn:hover:not(:disabled) {
      opening below it. */
   z-index: 6;
 }
-/* No OS title bar → this strip becomes the window's drag handle. Whatever is
-   interactive inside it must opt back out, or it stops being clickable. */
+/* No OS title bar → the window needs a drag handle. It is the whole banner,
+   not just the strip above the name: the art is the window's face, and a thin
+   band over the name was hard to find (Stan, 2026-09-24). Everything that
+   takes a click opts back out below, and so does .hero-bottom, so the handle
+   ends where the call controls begin. */
+body[data-titlebar] .bot-hero { -webkit-app-region: drag; }
+body[data-titlebar] .bot-hero :is(button, a, input, select, textarea),
+body[data-titlebar] .hero-bottom,
+body[data-titlebar] .hero-notice { -webkit-app-region: no-drag; }
 body[data-titlebar] .hero-top {
-  -webkit-app-region: drag;
   /* Clears the window controls now floating over the banner. They miss the name
      horizontally (macOS traffic lights sit at x 13–70, the name is centred), so
      this only has to stop the two reading as cramped — not fully clear them. */
   padding-top: 18px;
 }
-body[data-titlebar] .hero-top button,
 body[data-titlebar] .hero-top .profile-menu { -webkit-app-region: no-drag; }
-/* …and the whole strip stands down while the bot switcher is open, so clicking
-   beside the name dismisses it instead of dragging the window. */
-body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
+/* …and the whole banner stands down while the bot switcher is open, so a click
+   anywhere on the art dismisses it instead of dragging the window. */
+body[data-menu-open] .bot-hero { -webkit-app-region: no-drag; }
 
 /* (The gear used to slide 146px clear of the Windows caption overlay. Windows
    has a standard title bar again — see titleBarOptions in main.js — so the gear

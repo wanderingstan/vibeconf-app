@@ -1381,8 +1381,8 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
   flex: none;
   display: flex; align-items: baseline; gap: 8px;
   font-size: 12px; line-height: 1.4;
-  background: #3f3722; color: #fdd663;
-  border: 1px solid #7c6a2e; border-radius: 8px;
+  background: #FFF3D1; color: #6B4700;
+  border: 1px solid #D9A93F; border-radius: 8px;
   padding: 8px 12px;
 }
 .brain-notification .bn-icon { flex: none; }

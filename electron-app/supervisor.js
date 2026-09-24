@@ -190,4 +190,34 @@ async function launchThenAct({
   return { ok: false, error: `the bot did not start within ${Math.round(timeoutMs / 1000)}s` };
 }
 
-module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct };
+// What a bot's callStatus means for its row in the window, and whether it
+// looks stuck. The bot reports a state, not how long it has been in it, so the
+// caller tracks since-when (sinceMs) and passes it in.
+//
+// Why "stuck" exists at all: a join that dead-ends (a Google sign-in wall, see
+// #795) leaves the bot at 'navigating' indefinitely and says nothing. Shown as
+// "In a call", that read as success. A real join gets from navigating to the
+// lobby or the call in seconds, so a minute there is a symptom worth naming.
+// Waiting to be admitted is deliberately NOT timed: a host taking their time
+// is normal, and the bot is doing exactly what it should.
+const STUCK_JOINING_MS = 60_000;
+function callPhase(callStatus, sinceMs, now = Date.now()) {
+  switch (callStatus) {
+    case 'navigating':
+    case 'joining':
+      return { phase: (now - sinceMs) >= STUCK_JOINING_MS ? 'stuck' : 'joining', busy: true };
+    case 'waiting-to-be-admitted':
+      return { phase: 'waiting', busy: true };
+    case 'in-call':
+      return { phase: 'in-call', busy: true };
+    case 'call-complete':
+    case 'after-call-work':
+      // The call is over but the agent is writing it up. Busy, not in a call:
+      // starting another one now would pull the bot out of its wrap-up.
+      return { phase: 'wrapping', busy: true };
+    default:
+      return { phase: 'idle', busy: false };
+  }
+}
+
+module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS };

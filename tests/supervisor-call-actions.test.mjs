@@ -17,7 +17,7 @@ import http from 'node:http';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { detectedCalls, launchThenAct } = require('../electron-app/supervisor.js');
+const { detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS } = require('../electron-app/supervisor.js');
 // local-server.js publishes itself on globalThis (see rejoin-guard-adoption.test.mjs).
 require('../electron-app/local-server.js');
 const LocalServer = globalThis.LocalServer;
@@ -116,6 +116,35 @@ test('a bot that never comes up times out instead of hanging the button', async 
   assert.equal(r.ok, false);
   assert.match(r.error, /did not start within 10s/);
   assert.equal(acted, false);
+});
+
+// ── callPhase: what a row says about a bot's call ──
+
+test('idle (or no status from an old build) is free to Call or Add', () => {
+  assert.deepEqual(callPhase('idle', 0, 0), { phase: 'idle', busy: false });
+  assert.deepEqual(callPhase(undefined, 0, 0), { phase: 'idle', busy: false });
+});
+
+test('a fresh navigating/joining is Joining, not In a call', () => {
+  assert.equal(callPhase('navigating', 0, 5_000).phase, 'joining');
+  assert.equal(callPhase('joining', 0, 5_000).phase, 'joining');
+});
+
+test('a join with no progress for a minute is Stuck (#795: a sign-in wall looked like success)', () => {
+  assert.equal(callPhase('navigating', 0, STUCK_JOINING_MS - 1).phase, 'joining');
+  assert.equal(callPhase('navigating', 0, STUCK_JOINING_MS).phase, 'stuck');
+  assert.equal(callPhase('navigating', 0, STUCK_JOINING_MS).busy, true);
+});
+
+test('waiting to be admitted is never Stuck: the host is allowed to take their time', () => {
+  assert.equal(callPhase('waiting-to-be-admitted', 0, 60 * 60_000).phase, 'waiting');
+});
+
+test('after the call, the write-up keeps the bot busy', () => {
+  for (const s of ['call-complete', 'after-call-work']) {
+    assert.deepEqual(callPhase(s, 0, 0), { phase: 'wrapping', busy: true });
+  }
+  assert.deepEqual(callPhase('in-call', 0, 0), { phase: 'in-call', busy: true });
 });
 
 // ── /api/call/join ──

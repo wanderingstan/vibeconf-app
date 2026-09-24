@@ -68,6 +68,9 @@ test('#347: the swappable binding is confined to the Meet join path', () => {
     /^\s*const sess = session\.fromPartition\(activeMeetPartition\);$/,
     /^\s*await clearMeetIdentityCache\(activeMeetPartition\);$/,
     /^\s*if \(activeMeetPartition === GUEST_PARTITION && !guestLobbyNotified\) \{$/,
+    // #795: the guest attempt's own sign-in dead end, and the step back home.
+    /^\s*if \(activeMeetPartition === GUEST_PARTITION\) \{$/,
+    /^\s*activeMeetPartition = SESSION_PARTITION;$/,
   ];
   const uses = main.split('\n').filter((l) => l.includes('activeMeetPartition') && !l.trim().startsWith('//'));
   assert.ok(uses.length >= 7, `expected the join path to use it; found ${uses.length}`);

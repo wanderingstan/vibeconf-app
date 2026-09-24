@@ -3974,5 +3974,5 @@ api.on('call-status-changed', ({ status, provider }) => {
 
 api.on('call-failed', (data) => {
   exitCallState();
-  if (data?.message) showError(data.message);
+  if (data?.message) showError(data.message, null, data.errorAction);
 });

@@ -100,13 +100,13 @@
     button.primary { background: var(--accent); color: var(--bg); }
     button.primary:hover:not(:disabled) { background: var(--accent-hover); }
     button:disabled { opacity: 0.5; cursor: default; }
-    /* Most people have a bot or three, and a plain blue Open is right for
-       them. A big fleet (a developer's, mostly) turns that into a wall of
-       accent, so past a handful the buttons go quiet until their row is
-       hovered. supervisor.js sets .many. */
-    #bots.many .bot button.primary.open { background: var(--surface); color: var(--text); }
-    #bots.many .bot:hover button.primary.open { background: var(--accent); color: var(--bg); }
-    #bots.many .bot:hover button.primary.open:hover:not(:disabled) { background: var(--accent-hover); }
+    /* Most people have a bot or three, and a plain blue Call is right for
+       them. A big fleet (a developer's, mostly) turns every closed bot's Call
+       into a wall of accent, so past a handful those go quiet until their row
+       is hovered. Running bots stay blue. supervisor.js sets .many. */
+    #bots.many .bot button.primary.closed { background: var(--surface); color: var(--text); }
+    #bots.many .bot:hover button.primary.closed { background: var(--accent); color: var(--bg); }
+    #bots.many .bot:hover button.primary.closed:hover:not(:disabled) { background: var(--accent-hover); }
     button.ghost { background: none; color: var(--dim); padding: 6px 12px; }
     button.ghost:hover:not(:disabled) { background: var(--surface); color: var(--text); }
 

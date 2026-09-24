@@ -160,4 +160,34 @@ function detectedCalls(instances) {
   return [...byCode.values()];
 }
 
-module.exports = { decideWakeups, readFleet, detectedCalls };
+// Call or Add on a CLOSED bot: launch it, wait until it answers, then act.
+//
+// Launch-then-HTTP rather than a new launch flag, so a closed bot and a running
+// one take the same /api/call/* path and cannot drift apart. It is safe to act
+// the moment the bot answers: main.js awaits its local server's start and then
+// creates the window in the same tick, so no request is handled before there
+// is a window to join from (the same point --meet-url auto-joins at).
+//
+// "Answers" means the PROFILE is found running, not that its registered port
+// is open: the default bot can land on a port other than 7865, and a stale
+// process on the registered port is exactly the confusion #517 was about.
+//
+// Everything is injected so the timing can be tested without launching apps.
+async function launchThenAct({
+  isRunning, launch, act,
+  timeoutMs = 60_000, intervalMs = 1000,
+  sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
+  now = Date.now,
+}) {
+  if (await isRunning()) return act();
+  const launched = await launch();
+  if (!launched?.ok) return launched || { ok: false, error: 'launch failed' };
+  const deadline = now() + timeoutMs;
+  while (now() < deadline) {
+    await sleep(intervalMs);
+    if (await isRunning()) return act();
+  }
+  return { ok: false, error: `the bot did not start within ${Math.round(timeoutMs / 1000)}s` };
+}
+
+module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct };

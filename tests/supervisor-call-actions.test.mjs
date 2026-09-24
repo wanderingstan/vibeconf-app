@@ -17,7 +17,7 @@ import http from 'node:http';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { detectedCalls } = require('../electron-app/supervisor.js');
+const { detectedCalls, launchThenAct } = require('../electron-app/supervisor.js');
 // local-server.js publishes itself on globalThis (see rejoin-guard-adoption.test.mjs).
 require('../electron-app/local-server.js');
 const LocalServer = globalThis.LocalServer;
@@ -57,6 +57,65 @@ test('junk and missing lists are skipped, not thrown on', () => {
     { callStatus: 'idle', detectedMeetUrls: ['https://meet.google.com/landing', 'not a url'] },
   ]), []);
   assert.deepEqual(detectedCalls(undefined), []);
+});
+
+// ── launchThenAct: Call/Add on a closed bot ──
+
+// A fake clock: sleep advances it instead of waiting.
+function clock() {
+  let t = 0;
+  return { now: () => t, sleep: async (ms) => { t += ms; } };
+}
+
+test('a running bot is acted on at once, never relaunched', async () => {
+  let launches = 0;
+  const r = await launchThenAct({
+    ...clock(),
+    isRunning: async () => true,
+    launch: () => { launches++; return { ok: true }; },
+    act: async () => ({ ok: true, acted: true }),
+  });
+  assert.deepEqual(r, { ok: true, acted: true });
+  assert.equal(launches, 0);
+});
+
+test('a closed bot is launched, waited for, then acted on', async () => {
+  const c = clock();
+  const log = [];
+  const r = await launchThenAct({
+    ...c,
+    isRunning: async () => c.now() >= 4000, // comes up after ~4s
+    launch: () => { log.push('launch'); return { ok: true }; },
+    act: async () => { log.push(`act@${c.now()}`); return { ok: true }; },
+  });
+  assert.equal(r.ok, true);
+  assert.deepEqual(log, ['launch', 'act@4000']);
+});
+
+test('a failed launch is returned as-is, without waiting', async () => {
+  const c = clock();
+  const r = await launchThenAct({
+    ...c,
+    isRunning: async () => false,
+    launch: () => ({ ok: false, error: 'invalid profile name' }),
+    act: async () => { throw new Error('must not act'); },
+  });
+  assert.deepEqual(r, { ok: false, error: 'invalid profile name' });
+  assert.equal(c.now(), 0);
+});
+
+test('a bot that never comes up times out instead of hanging the button', async () => {
+  let acted = false;
+  const r = await launchThenAct({
+    ...clock(),
+    timeoutMs: 10_000,
+    isRunning: async () => false,
+    launch: () => ({ ok: true }),
+    act: async () => { acted = true; return { ok: true }; },
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /did not start within 10s/);
+  assert.equal(acted, false);
 });
 
 // ── /api/call/join ──

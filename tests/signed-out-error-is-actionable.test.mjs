@@ -39,9 +39,18 @@ test('both identity-challenge errors offer the sign-in action', () => {
   const calls = branch.match(/broadcastError\([^)]*\)/g) || [];
   assert.equal(calls.length, 2, 'guest-fallback and hard-failure, both of them');
   for (const call of calls) {
-    assert.match(call, /SIGN_BOT_IN_ACTION/,
+    assert.match(call, /SIGN_BOT_IN_ACTION|OPEN_BOT_SIGN_IN_ACTION/,
       `an identity-challenge error with no way to act on it: ${call}`);
   }
+  // Which action matters. The guest fallback's view is about to BE the call:
+  // revealing it shows a lobby, and signing in there hangs up and lands the
+  // login in the guest jar (#795). It must open the side window instead. The
+  // hard failure's view is parked on the home jar's sign-in page, so revealing
+  // it is still the right fix there.
+  const fallback = branch.slice(0, branch.indexOf('loadMeetURL(currentMeetUrl, { guestFallback: true })'));
+  assert.match(fallback, /broadcastError\(message, GOOGLE_SIGN_IN_ERROR_KEY, OPEN_BOT_SIGN_IN_ACTION\)/);
+  assert.doesNotMatch(fallback, /[^_]SIGN_BOT_IN_ACTION\)/,
+    'the guest-fallback notice must not offer to reveal the call view');
 });
 
 test('the action reveals the bot view and does not navigate it', () => {

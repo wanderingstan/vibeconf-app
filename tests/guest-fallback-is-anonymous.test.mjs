@@ -105,3 +105,50 @@ test("the panel's call-failed copy keeps the action, so the button is not hidden
   const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
   assert.match(panel, /showError\(data\.message, null, data\.errorAction\)/);
 });
+
+// ---------------------------------------------------------------------------
+// Signing the bot back in without hanging up the guest call.
+//
+// The guest-fallback notice's button used to reveal the Meet view, which by
+// then IS the guest call; the only sign-in route from there navigated that view,
+// ending the call and dropping the login into the guest jar. The fix is a
+// separate window on the profile's real jar.
+
+test('the sign-in window rides the HOME partition, named literally', () => {
+  const body = bodyOf('function openBotSignInWindow(');
+  assert.match(body, /partition: SESSION_PARTITION/);
+  assert.doesNotMatch(body, /activeMeetPartition|GUEST_PARTITION/,
+    'a login here must land in the jar the next join reads');
+  assert.match(body, /ensureMeetSessionConfigured\(SESSION_PARTITION\)/,
+    'needs the Chrome UA, or Google refuses the embedded sign-in');
+  assert.match(body, /loadURL\(MEET_SIGN_IN_URL\)/);
+  // It must never move the call view.
+  assert.doesNotMatch(body, /meetView|navigateMeetView|loadMeetURL/);
+});
+
+test('finishing the sign-in closes the window and retracts the guest notice', () => {
+  const body = bodyOf('function openBotSignInWindow(');
+  assert.match(body, /hostname/);
+  assert.match(body, /meet\.google\.com/);
+  assert.match(body, /clearBroadcastError\(GOOGLE_SIGN_IN_ERROR_KEY\)/);
+  assert.match(body, /broadcastAuthChanged\(\)/);
+});
+
+test('the panel can run the new action, and main answers it', () => {
+  const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+  assert.match(main, /const OPEN_BOT_SIGN_IN_ACTION = \{ id: 'open-bot-sign-in'/);
+  assert.match(panel, /'open-bot-sign-in': \(\) => api\.invoke\('open-bot-sign-in'\)/);
+  const i = main.indexOf("ipcMain.handle('open-bot-sign-in'");
+  assert.ok(i > 0);
+  assert.match(main.slice(i, main.indexOf('});', i)), /openBotSignInWindow\(\)/);
+});
+
+test('"Sign in to Google as bot" mid-call signs in on the side instead of hanging up', () => {
+  const i = main.indexOf("ipcMain.handle('meet-sign-in-as-bot'");
+  const body = main.slice(i, main.indexOf('\n  });', i));
+  const gate = body.indexOf('if (isInCall(localServer.callStatus))');
+  assert.ok(gate > 0, 'must check for a call in flight first');
+  assert.ok(body.indexOf('openBotSignInWindow()') > gate);
+  assert.ok(body.indexOf('navigateMeetView(') > body.indexOf('openBotSignInWindow()'),
+    'navigating the call view is only for when no call is in flight');
+});

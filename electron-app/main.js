@@ -7188,6 +7188,64 @@ const SIGN_BOT_IN_ACTION = { id: 'reveal-bot-view', label: 'Sign the bot in →'
 // "Sign in to Google as bot" button and the #795 guest dead end.
 const MEET_SIGN_IN_URL = 'https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmeet.google.com%2F';
 
+// The fix a guest-fallback call needs, as opposed to a join that is parked on
+// the sign-in page. See openBotSignInWindow.
+const OPEN_BOT_SIGN_IN_ACTION = { id: 'open-bot-sign-in', label: 'Sign the bot in →' };
+
+// Retracts the identity-challenge errors once a sign-in window finishes.
+const GOOGLE_SIGN_IN_ERROR_KEY = 'google-sign-in';
+
+// Sign the bot back in to Google WITHOUT touching the call.
+//
+// Every earlier route went through meetView, and meetView is the call: during a
+// #347 guest fallback, navigating it to Google's sign-in hangs up the meeting
+// the bot just got into, and signing in there lands the login in the GUEST jar
+// (the one that call is on), which fixes nothing for next time and is how that
+// jar got polluted (#795). Revealing the view instead showed the lobby, with no
+// sign-in page on it at all.
+//
+// So: a small window of its own on SESSION_PARTITION, named literally. That is
+// the profile's real cookie jar (the same one the share window rides for the
+// same reason, see navigate-webview), so a login completed here is what the
+// next join reads. Not the share window itself: mid-share that window is what
+// the room is looking at, and the room should not watch the bot's password page.
+let botSignInWindow = null;
+function openBotSignInWindow() {
+  if (botSignInWindow && !botSignInWindow.isDestroyed()) {
+    botSignInWindow.show();
+    botSignInWindow.focus();
+    return;
+  }
+  // Same Chrome UA and handlers the Meet view gets, or Google refuses the
+  // sign-in as an unsupported embedded browser.
+  ensureMeetSessionConfigured(SESSION_PARTITION);
+  const win = new BrowserWindow({
+    width: 480,
+    height: 680,
+    title: 'Sign the bot in to Google',
+    parent: (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, partition: SESSION_PARTITION },
+  });
+  botSignInWindow = win;
+  win.on('page-title-updated', (e) => { e.preventDefault(); });
+  win.on('closed', () => { if (botSignInWindow === win) botSignInWindow = null; });
+
+  // Done when Google hands the window on to Meet (the continue= target): the
+  // new cookies are in the jar. Close it, refresh the panel's account display,
+  // and retract the "joining as a guest" error, which has now been acted on.
+  // The call in progress stays a guest; the NEXT join is signed in.
+  win.webContents.on('did-navigate', (_e, url) => {
+    let host = '';
+    try { host = new URL(url).hostname; } catch { /* keep '' */ }
+    if (host !== 'meet.google.com') return;
+    console.log('[electron] Bot sign-in window reached Meet; Google sign-in is done');
+    broadcastAuthChanged();
+    clearBroadcastError(GOOGLE_SIGN_IN_ERROR_KEY);
+    if (!win.isDestroyed()) win.close();
+  });
+  win.loadURL(MEET_SIGN_IN_URL);
+}
+
 function broadcastError(message, key, errorAction) {
   // `errorAction` (#346): { id, label } naming a fix the panel can run from the
   // error bar itself — see ERROR_ACTIONS in panel.js for the ids it honours.
@@ -13599,6 +13657,11 @@ function setupIPC() {
     revealBotViewForSignIn();
     return { ok: true, state: botViewState };
   });
+  // The guest-fallback error's action: sign in on the side, call untouched.
+  ipcMain.handle('open-bot-sign-in', () => {
+    openBotSignInWindow();
+    return { ok: true };
+  });
   ipcMain.handle('get-bot-view', () => ({ state: botViewState, visible: botViewInCall, resting: restingBotViewState() }));
 
   // --- Share window visibility ---
@@ -13849,6 +13912,13 @@ function setupIPC() {
   // and persist across launches. Later calls bounce straight through to Meet's
   // home if already signed in.
   ipcMain.handle('meet-sign-in-as-bot', () => {
+    // Mid-call (a guest fallback included), navigating meetView would hang up
+    // the meeting, so sign in on the side instead. At rest the view is free,
+    // and signing in there lets the account chip on Meet home report the email.
+    if (isInCall(localServer.callStatus)) {
+      openBotSignInWindow();
+      return { ok: true, mode: 'account', window: true };
+    }
     navigateMeetView(MEET_SIGN_IN_URL);
     // #498: the bot view is hidden by default, so without this the sign-in page
     // loads somewhere nobody can see and the button looks broken. You cannot
@@ -14638,8 +14708,11 @@ function setupIPC() {
         guestFallbackTriedFor = currentMeetUrl;
         const message = `Google is asking ${botLabel} to confirm its identity, so it is joining as a guest instead. `
           + 'It may be waiting to be let in, so admit it from the meeting if you see it. '
-          + "To fix this properly, sign the bot back in to Google in its own view.";
-        broadcastError(message, null, SIGN_BOT_IN_ACTION);
+          + 'Sign the bot back in to Google so its next call is signed in; this call is not interrupted.';
+        // Not SIGN_BOT_IN_ACTION: the view is about to hold the guest call, so
+        // revealing it shows a lobby and signing in there would hang up. The
+        // sign-in window uses the real jar and leaves the call alone.
+        broadcastError(message, GOOGLE_SIGN_IN_ERROR_KEY, OPEN_BOT_SIGN_IN_ACTION);
         localServer.addError(message);
         loadMeetURL(currentMeetUrl, { guestFallback: true });
         return;

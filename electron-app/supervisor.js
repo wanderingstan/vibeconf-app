@@ -128,6 +128,9 @@ function readFleet(profilesRoot, { profileManager = require('./profile-manager.j
         name,
         calendarIdentityEmail: fields.calendarIdentityEmail || '',
         botName: fields.botName || '',
+        // The small PNG each bot renders of its own avatar (a data: URL). Kept
+        // off /api/instances: the window wants faces, the agents only want ports.
+        avatarThumb: fields.avatarThumb || null,
       });
     } catch { /* skip this one, keep the fleet */ }
   }

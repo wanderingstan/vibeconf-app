@@ -1653,15 +1653,14 @@ function ensureStatusBar() {
       /* Auto-grow for long messages instead of clipping them off the right
          edge (a full-sentence #404 notice ran past the viewport — unreadable). */
       min-height: 56px;
-      /* SOLID accent blue, opaque. This used to have to match the panel's
-         "Bot's view" bar (.botview-bar) directly above it in the column so the
-         two read as one surface; that bar is gone now that the view is hidden by
-         default, but opaque still beats the old rgba(...,0.82), which over the
-         white Meet page rendered lighter than the dark panel behind it and made
-         the seam obvious. Opaque #8ab4f8 looks the same whatever is behind it.
-         (Was partially transparent to keep Google's UI visible beneath — the
-         solid look wins; the banner is click-through and auto-fades on hover.) */
-      background: #8ab4f8; color: #ffffff;
+      /* SOLID ink, opaque: the panel's darkest colour (--ink #4A3140, the
+         Fluent set's plum-black), so the banner reads as part of the app
+         rather than the Google-blue it used to be (#8ab4f8, a leftover from
+         the old dark-Material panel; Stan, 2026-09-24). Opaque still matters:
+         the old rgba(...,0.82) rendered lighter over the white Meet page and
+         looked patchy. The banner is click-through and auto-fades on hover,
+         so Google's UI underneath stays usable. */
+      background: #4A3140; color: #FFF4DA;
       /* ...and click-through so they stay USABLE for debugging — the banner
          never intercepts pointer events (#bot-view banner is purely a label).
          KEEP THIS even though the banner now auto-fades on hover: an element at
@@ -1671,7 +1670,6 @@ function ensureStatusBar() {
       /* Fades out when the cursor is over it (see the mousemove handler below),
          so it never hides the Meet UI a human is trying to look at. */
       transition: opacity 0.15s ease;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
       /* Drop shadow along the bottom edge so the banner reads as FLOATING above
          the real Meet/huddle content beneath it, rather than being part of it. */
       box-shadow: 0 6px 14px rgba(0, 0, 0, 0.38);
@@ -1682,16 +1680,18 @@ function ensureStatusBar() {
       letter-spacing: 0.3px;
     }
     #vibeconf-status-bar .icon { margin-right: 14px; font-size: 26px; flex: none; }
-    #vibeconf-status-bar .label { color: #e8f0fe; margin-right: 12px; flex: none; white-space: nowrap; }
+    /* The face's lit yellow (--f3d-face-lit), the one warm accent, so the
+       label reads as a label and the status after it as the message. */
+    #vibeconf-status-bar .label { color: #FFC13B; margin-right: 12px; flex: none; white-space: nowrap; }
     /* The status text takes the remaining width and WRAPS (up to a few lines)
        so the whole message is readable rather than truncated. */
     #vibeconf-status-bar .status {
-      color: #ffffff; flex: 1; min-width: 0;
+      color: #FFF4DA; flex: 1; min-width: 0;
       font-size: 17px; line-height: 1.3;
       white-space: normal; overflow-wrap: anywhere;
       display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
     }
-    #vibeconf-status-bar .status.error { color: #fce8e6; font-weight: 700; }
+    #vibeconf-status-bar .status.error { color: #F47587; font-weight: 700; }
     /* While a call recording runs, the banner must not grow: the recording
        keeps Meet's video tiles (record-region.js), the banner overlays the top
        of the page, and a wrapped multi-line notice reached down over the top
@@ -1699,7 +1699,7 @@ function ensureStatusBar() {
        text is in the session log either way. */
     #vibeconf-status-bar.recording { max-height: 56px; overflow: hidden; }
     #vibeconf-status-bar.recording .status { -webkit-line-clamp: 1; white-space: nowrap; text-overflow: ellipsis; }
-    #vibeconf-status-bar .status.active { color: #ffffff; }
+    #vibeconf-status-bar .status.active { color: #FFF4DA; }
     body { padding-top: 56px !important; }
   `;
   document.head.appendChild(style);

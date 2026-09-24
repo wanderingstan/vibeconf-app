@@ -79,7 +79,7 @@ function showSettingsError(msg) {
     el.id = 'settingsErrorBanner';
     el.setAttribute('role', 'alert');
     el.style.cssText = 'position:sticky;top:0;z-index:99;margin:0 0 8px;padding:8px 10px;'
-      + 'background:#5c1f1f;color:#ffd7d7;border:1px solid #a04040;border-radius:6px;'
+      + 'background:var(--paper);color:var(--pink-deep);border:1.5px solid var(--pink-deep);border-radius:6px;'
       + 'font-size:12px;line-height:1.4;cursor:pointer';
     el.title = 'Click to dismiss';
     el.addEventListener('click', () => el.remove());
@@ -443,7 +443,7 @@ function paintAvatarBgPreviewFace(dataUri, emojiChar) {
 function setAvatarBgStatus(text, isError) {
   if (!avatarBgStatus) return;
   avatarBgStatus.textContent = text || '';
-  avatarBgStatus.style.color = isError ? '#f28b82' : '#81c995';
+  avatarBgStatus.style.color = isError ? 'var(--pink-deep)' : 'var(--ink-soft)';
 }
 
 chooseAvatarBgBtn?.addEventListener('click', async () => {
@@ -1717,25 +1717,25 @@ function closeProfileMenu() {
 function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(74,49,64,0.45);display:flex;align-items:center;justify-content:center';
     const box = document.createElement('div');
-    box.style.cssText = 'background:#2a2d31;border:1px solid #5f6368;border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:0 10px 40px rgba(0,0,0,0.6)';
+    box.style.cssText = 'background:var(--paper);border:1.5px solid var(--ink);border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:var(--shadow)';
     const t = document.createElement('div');
     t.textContent = title;
     // pre-line so a caller can put a blank line between a warning and the ask.
     // textContent is still what's set — the title stays untrusted text, never HTML.
-    t.style.cssText = 'color:#e8eaed;font-size:13px;margin-bottom:10px;line-height:1.4;white-space:pre-line';
+    t.style.cssText = 'color:var(--ink);font-size:13px;margin-bottom:10px;line-height:1.4;white-space:pre-line';
     const input = document.createElement('input');
     input.type = 'text'; input.value = initial; input.placeholder = placeholder;
-    input.style.cssText = 'width:100%;box-sizing:border-box;background:#202124;border:1px solid #5f6368;border-radius:6px;color:#e8eaed;padding:8px;font-size:13px;outline:none';
+    input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--cream);border:1.5px solid var(--ink-faint);border-radius:6px;color:var(--ink);padding:8px;font-size:13px;font-family:var(--font-body);outline:none';
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px';
     const cancel = document.createElement('button');
     cancel.textContent = 'Cancel';
-    cancel.style.cssText = 'background:none;border:1px solid #5f6368;color:#9aa0a6;border-radius:18px;padding:6px 14px;cursor:pointer';
+    cancel.style.cssText = 'width:auto;margin:0;background:none;border:1.5px solid var(--ink-faint);color:var(--ink-soft);border-radius:18px;padding:6px 14px;cursor:pointer';
     const ok = document.createElement('button');
     ok.textContent = okLabel;
-    ok.style.cssText = 'background:#8ab4f8;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
+    ok.style.cssText = 'width:auto;margin:0;background:var(--go);border:none;color:var(--ink);border-radius:18px;padding:6px 14px;font-weight:700;cursor:pointer';
     const close = (val) => { overlay.remove(); resolve(val); };
     cancel.onclick = () => close(null);
     ok.onclick = () => close(input.value.trim() || null);
@@ -1758,19 +1758,19 @@ function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' })
 function basicAuthPrompt({ host = '', realm = '' }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(74,49,64,0.45);display:flex;align-items:center;justify-content:center';
     const box = document.createElement('div');
-    box.style.cssText = 'background:#2a2d31;border:1px solid #5f6368;border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:0 10px 40px rgba(0,0,0,0.6)';
+    box.style.cssText = 'background:var(--paper);border:1.5px solid var(--ink);border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:var(--shadow)';
     const t = document.createElement('div');
     t.textContent = `Sign in to ${host || 'this site'}`;
-    t.style.cssText = 'color:#e8eaed;font-size:13px;margin-bottom:4px';
+    t.style.cssText = 'color:var(--ink);font-size:13px;margin-bottom:4px';
     const sub = document.createElement('div');
     sub.textContent = realm ? `This site is password-protected (${realm}). It stays signed in for the rest of the session.` : 'This site is password-protected. It stays signed in for the rest of the session.';
-    sub.style.cssText = 'color:#9aa0a6;font-size:11px;margin-bottom:10px;line-height:1.4';
+    sub.style.cssText = 'color:var(--ink-soft);font-size:11px;margin-bottom:10px;line-height:1.4';
     const mkInput = (type, ph) => {
       const el = document.createElement('input');
       el.type = type; el.placeholder = ph;
-      el.style.cssText = 'width:100%;box-sizing:border-box;background:#202124;border:1px solid #5f6368;border-radius:6px;color:#e8eaed;padding:8px;font-size:13px;outline:none;margin-bottom:8px';
+      el.style.cssText = 'width:100%;box-sizing:border-box;background:var(--cream);border:1.5px solid var(--ink-faint);border-radius:6px;color:var(--ink);font-family:var(--font-body);padding:8px;font-size:13px;outline:none;margin-bottom:8px';
       return el;
     };
     const userIn = mkInput('text', 'Username');
@@ -1779,10 +1779,10 @@ function basicAuthPrompt({ host = '', realm = '' }) {
     btns.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:4px';
     const cancel = document.createElement('button');
     cancel.textContent = 'Cancel';
-    cancel.style.cssText = 'background:none;border:1px solid #5f6368;color:#9aa0a6;border-radius:18px;padding:6px 14px;cursor:pointer';
+    cancel.style.cssText = 'width:auto;margin:0;background:none;border:1.5px solid var(--ink-faint);color:var(--ink-soft);border-radius:18px;padding:6px 14px;cursor:pointer';
     const ok = document.createElement('button');
     ok.textContent = 'Sign in';
-    ok.style.cssText = 'background:#8ab4f8;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
+    ok.style.cssText = 'width:auto;margin:0;background:var(--go);border:none;color:var(--ink);border-radius:18px;padding:6px 14px;font-weight:700;cursor:pointer';
     const close = (val) => { overlay.remove(); resolve(val); };
     const submit = () => { const u = userIn.value.trim(); close(u ? { user: u, password: passIn.value } : null); };
     cancel.onclick = () => close(null);
@@ -2390,7 +2390,7 @@ function setUserRow(signedIn, who) {
     userIdStatus.textContent = signedIn ? who : '⚠ not signed in';
     // Signed in is the normal case — let it sit quiet in the footer's grey.
     // Only the actionable "not signed in" state earns a colour.
-    userIdStatus.style.color = signedIn ? '' : '#fdd663';
+    userIdStatus.style.color = signedIn ? '' : 'var(--magenta)';
   }
   if (userSignInMainBtn) userSignInMainBtn.style.display = signedIn ? 'none' : 'inline-block';
   if (userSignOutMainBtn) userSignOutMainBtn.style.display = signedIn ? 'inline-block' : 'none';
@@ -3384,13 +3384,13 @@ if (simulateSpeechBtn) {
     const speaker = SIMULATED_SPEAKER;
     if (!text) {
       simulateSpeechStatus.textContent = 'Enter some text first.';
-      simulateSpeechStatus.style.color = '#fdd663';
+      simulateSpeechStatus.style.color = 'var(--magenta)';
       simulateText.focus();
       return;
     }
     simulateSpeechBtn.disabled = true;
     simulateSpeechStatus.textContent = 'Sending…';
-    simulateSpeechStatus.style.color = '#9aa0a6';
+    simulateSpeechStatus.style.color = 'var(--ink-soft)';
     try {
       const result = await api.invoke('simulate-speech', { text, speaker });
       if (result?.ok) {
@@ -3398,15 +3398,15 @@ if (simulateSpeechBtn) {
         // feed the user can see. Truncate so the status line stays compact.
         const echo = text.length > 80 ? text.slice(0, 80) + '…' : text;
         simulateSpeechStatus.textContent = `Sent as ${speaker}: "${echo}"`;
-        simulateSpeechStatus.style.color = '#81c995';
+        simulateSpeechStatus.style.color = 'var(--ink-soft)';
         simulateText.value = '';
       } else {
         simulateSpeechStatus.textContent = `Failed: ${result?.error || 'unknown'}`;
-        simulateSpeechStatus.style.color = '#ea4335';
+        simulateSpeechStatus.style.color = 'var(--pink-deep)';
       }
     } catch (err) {
       simulateSpeechStatus.textContent = `Error: ${err.message}`;
-      simulateSpeechStatus.style.color = '#ea4335';
+      simulateSpeechStatus.style.color = 'var(--pink-deep)';
     } finally {
       simulateSpeechBtn.disabled = false;
       // Refocus so the user is primed to type the next message immediately.
@@ -3738,7 +3738,7 @@ async function refreshAgentClaudeMd() {
 refreshAgentClaudeMd();
 saveAgentClaudeMdBtn?.addEventListener('click', async () => {
   if (!agentClaudeMdEl) return;
-  if (agentClaudeMdStatus) { agentClaudeMdStatus.style.color = '#81c995'; agentClaudeMdStatus.textContent = 'Saving…'; }
+  if (agentClaudeMdStatus) { agentClaudeMdStatus.style.color = 'var(--ink-soft)'; agentClaudeMdStatus.textContent = 'Saving…'; }
   // #557: this used to be `.catch(() => ({ ok: false }))` — every possible
   // cause, from a rejected invoke to a disk error, collapsed into the same two
   // words in an 11px span. When it actually happened nobody could tell whether
@@ -3748,7 +3748,7 @@ saveAgentClaudeMdBtn?.addEventListener('click', async () => {
     .catch((err) => ({ ok: false, error: err && err.message ? err.message : String(err) }));
   if (!r?.ok) reportSettingFailure('Personality (CLAUDE.md)', r?.error || 'unknown error');
   if (agentClaudeMdStatus) {
-    agentClaudeMdStatus.style.color = r?.ok ? '#81c995' : '#f28b82';
+    agentClaudeMdStatus.style.color = r?.ok ? 'var(--ink-soft)' : 'var(--pink-deep)';
     // Keep the reason where the eye already is, as well as in the banner.
     agentClaudeMdStatus.textContent = r?.ok ? 'Saved ✓' : `Save failed — ${r?.error || 'unknown error'}`;
     // Only the SUCCESS message self-clears. A failure that quietly wipes itself

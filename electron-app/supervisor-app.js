@@ -27,7 +27,7 @@ const { execFile } = require('child_process');
 
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
-const { decideWakeups, readFleet } = require('./supervisor.js');
+const { decideWakeups, readFleet, detectedCalls } = require('./supervisor.js');
 const { matchesCalendarEvent, ownerHasConfirmed } = require('./calendar-auto-join.js');
 const { spawnArgsForProfile, profileLaunchCommand } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
@@ -72,6 +72,9 @@ async function probe(port) {
       configuredBotName: (status.configuredBotName || '').trim() || null,
       callStatus: status.callStatus || null,
       roomId: body?.roomId || null,
+      // Meet tabs this bot found in the browser. For the window only; the
+      // directory strips it (see startDirectory).
+      detectedMeetUrls: Array.isArray(body?.detectedMeetUrls) ? body.detectedMeetUrls : [],
     };
   } catch {
     return null; // not listening, or too slow to be useful to a UI
@@ -127,7 +130,7 @@ async function fleetStatus() {
   const known = new Set(configured.map((p) => p.name));
   const orphans = [...running.values()].filter((i) => i.profile && !known.has(i.profile));
 
-  return { bots, orphans, defaultProfile: paths.defaultProfile };
+  return { bots, orphans, calls: detectedCalls([...running.values()]), defaultProfile: paths.defaultProfile };
 }
 
 // ── Calendar ────────────────────────────────────────────────────────────────
@@ -239,6 +242,21 @@ function launchProfile(name, { openSettings = false } = {}) {
   return { ok: true, port };
 }
 
+// Every bot's local API wants its per-launch token, except discovery
+// (/api/sync/no-room). Each instance writes it to
+// ~/.vibeconferencing/local-tokens/<port>.token, readable only by this user;
+// read per request, like the MCP does, because a restarted bot has a new one.
+function botAuthHeaders(port) {
+  try {
+    const os = require('os');
+    const fs = require('fs');
+    const tok = fs.readFileSync(path.join(os.homedir(), '.vibeconferencing', 'local-tokens', `${port}.token`), 'utf8').trim();
+    return tok ? { Authorization: `Bearer ${tok}` } : {};
+  } catch {
+    return {}; // auth disabled on that bot, or no token yet: let it answer 401 if it minds
+  }
+}
+
 // Focus a running bot by asking it to raise itself — the supervisor has no
 // handle on another process's windows, but every instance serves /api/focus.
 async function focusProfile(name) {
@@ -246,12 +264,53 @@ async function focusProfile(name) {
   const inst = running.get(name);
   if (!inst) return launchProfile(name);
   try {
-    await fetch(`http://127.0.0.1:${inst.port}/api/focus`, { method: 'POST', signal: AbortSignal.timeout(2000) });
+    const res = await fetch(`http://127.0.0.1:${inst.port}/api/focus`, {
+      method: 'POST', headers: botAuthHeaders(inst.port), signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return { ok: false, error: `running on ${inst.port} but would not focus: HTTP ${res.status}` };
     return { ok: true, focused: true, port: inst.port };
   } catch (err) {
     return { ok: false, error: `running on ${inst.port} but would not focus: ${err.message}` };
   }
 }
+
+// ── Calls ───────────────────────────────────────────────────────────────────
+//
+// "Call" and "Add" on a RUNNING bot. Both are the bot's own panel buttons,
+// reached over its local API: /api/call/start is "Call <bot> now" (a fresh Meet,
+// opened in the user's browser too), /api/call/join is Join on a detected tab.
+// spawnAgent:true because a person clicked, exactly as with the panel buttons;
+// without it the bot sits in the call with nobody driving it.
+//
+// Closed bots are not handled here yet (#301 step 2): they have to launch
+// before they can do either.
+async function botRequest(name, pathname, body) {
+  const inst = (await scanRunning()).get(name);
+  if (!inst) return { ok: false, error: 'not running' };
+  try {
+    const res = await fetch(`http://127.0.0.1:${inst.port}${pathname}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...botAuthHeaders(inst.port) },
+      body: JSON.stringify(body),
+      // Creating a Meet is a round trip to Google through the website.
+      signal: AbortSignal.timeout(20_000),
+    });
+    // An older build of the bot has no /api/call/join. Say that, rather than
+    // "HTTP 404", since the fix is updating that bot.
+    if (res.status === 404) return { ok: false, error: 'this bot\'s build is too old for this; update it' };
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.success === false) {
+      const why = { 'signed-out': 'not signed in to vibeconferencing.com', 'rate-limited': 'too many new calls, try again shortly' }[json.code];
+      return { ok: false, error: why || json.detail || json.code || `HTTP ${res.status}` };
+    }
+    return { ok: true, ...json };
+  } catch (err) {
+    return { ok: false, error: err.name === 'TimeoutError' ? 'the bot did not answer in time' : err.message };
+  }
+}
+
+const startCall = (name) => botRequest(name, '/api/call/start', { openBrowser: true, spawnAgent: true });
+const addToCall = (name, url) => botRequest(name, '/api/call/join', { url, spawnAgent: true });
 
 // ── The directory ───────────────────────────────────────────────────────────
 //
@@ -287,7 +346,10 @@ function startDirectory() {
         // truthfully. The supervisor is the authority on what SHOULD be there,
         // which is not a substitute for looking at what is.
         const running = await scanRunning();
-        return send(200, { ok: true, instances: [...running.values()], supervisor: { port } });
+        // Meet links are capabilities, and agents resolving a bot have no use
+        // for them, so they stay in the window.
+        const instances = [...running.values()].map(({ detectedMeetUrls, ...inst }) => inst);
+        return send(200, { ok: true, instances, supervisor: { port } });
       }
       if (url.pathname === '/api/health') {
         return send(200, { ok: true, supervisor: { port, pid: process.pid, version: app.getVersion() } });
@@ -428,6 +490,8 @@ function start() {
     ipcMain.handle('supervisor:tick', () => tick());
     ipcMain.handle('supervisor:launch', (_e, name) => launchProfile(name));
     ipcMain.handle('supervisor:focus', (_e, name) => focusProfile(name));
+    ipcMain.handle('supervisor:call', (_e, name) => startCall(name));
+    ipcMain.handle('supervisor:add', (_e, name, url) => addToCall(name, url));
     ipcMain.handle('supervisor:reveal', (_e, name) => {
       shell.openPath(path.join(profilesRoot, String(name || ''), 'agent'));
       return { ok: true };

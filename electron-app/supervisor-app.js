@@ -27,8 +27,7 @@ const { execFile } = require('child_process');
 
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
-const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase } = require('./supervisor.js');
-const { matchesCalendarEvent, ownerHasConfirmed } = require('./calendar-auto-join.js');
+const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, upcomingForFleet } = require('./supervisor.js');
 const { spawnArgsForProfile, profileLaunchCommand } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
 const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
@@ -226,20 +225,10 @@ async function tick() {
     if (!result.ok) console.warn(`[supervisor] could not launch "${wake.profile}":`, result.error);
   }
 
-  // Attribute each event to the bots it would wake, for the window. An upcoming
-  // meeting with no bot behind it is the failure worth SEEING — it looks
-  // identical to a scheduled one right up until nobody joins — so this is
-  // computed for display even though the wake-up decision above ignores it.
-  const fleet = readFleet(paths.profilesRoot);
-  const annotated = events.map((event) => ({
-    ...event,
-    forProfile: fleet
-      .filter((p) => (p.calendarIdentityEmail || p.botName)
-        && matchesCalendarEvent(event, { calendarIdentityEmail: p.calendarIdentityEmail, botName: p.botName }))
-      .map((p) => p.botName || p.name)
-      .join(', ') || null,
-    ownerConfirmed: ownerHasConfirmed(event),
-  }));
+  // The window's Upcoming list: only meetings some bot would join, by the
+  // bot's own display rule (see upcomingForFleet). The wake-up decision above
+  // is unaffected; this is what a person sees.
+  const annotated = upcomingForFleet(events, readFleet(paths.profilesRoot), now);
 
   pushState({ events: annotated, signedIn, calendarError: error || null, lastTick: now });
   return { wakeups, events: annotated };

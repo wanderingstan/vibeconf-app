@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { decideWakeups, readFleet } = require('../electron-app/supervisor.js');
+const { decideWakeups, readFleet, upcomingForFleet } = require('../electron-app/supervisor.js');
 const { eventDedupeKey } = require('../electron-app/calendar-auto-join.js');
 
 const NOW = 1_800_000_000_000;
@@ -187,4 +187,52 @@ test('one unreadable profile does not hide the rest of the fleet', () => {
 test('an unreadable profiles root yields an empty fleet, not a throw', () => {
   const fake = { listProfileNames: () => { throw new Error('ENOENT'); }, readConfigFields: () => ({}) };
   assert.deepEqual(readFleet('/nope', { profileManager: fake, path: { join: (a, b) => `${a}/${b}` } }), []);
+});
+
+// ── The window's Upcoming list ──
+//
+// upcomingForFleet is the supervisor showing the fleet's meetings with the
+// bot's own display rule. Before it, every event on the owner's calendar was
+// listed, so an all-day birthday with no bot on it read as the next meeting.
+
+const HOUR = 60 * 60 * 1000;
+
+test('an event no bot is on is not listed, however soon it is', () => {
+  const birthday = event({ id: 'bday', summary: 'Chloe Birthday', start: new Date(NOW).toISOString().slice(0, 10), attendees: [] });
+  const lunch = event({ id: 'lunch', summary: 'Lunch', start: soon(10 * 60_000), attendees: ['someone@else.test'] });
+  assert.deepEqual(upcomingForFleet([birthday, lunch], [bethany, tagged], NOW), []);
+});
+
+test('an event a bot is on is listed, naming the bot', () => {
+  const rows = upcomingForFleet([event()], [bethany, tagged], NOW);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].forProfile, 'Bethany');
+});
+
+test('one event on two bots is one row naming both', () => {
+  const both = event({ summary: 'Sync #vibeconf:Coltrane' }); // bethany by address, coltrane by tag
+  const rows = upcomingForFleet([both], [bethany, tagged], NOW);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].forProfile, 'Bethany, Coltrane');
+});
+
+test('the same 24h window and 5-minute grace as the panel', () => {
+  const tomorrow = event({ id: 'far', start: soon(25 * HOUR) });
+  const longGone = event({ id: 'gone', start: soon(-30 * 60_000) });
+  const justStarted = event({ id: 'now', start: soon(-60_000) });
+  const rows = upcomingForFleet([tomorrow, longGone, justStarted], [bethany], NOW);
+  assert.deepEqual(rows.map((r) => r.id), ['now']);
+});
+
+test('soonest first; an unaccepted invite is listed but marked, and loses a same-minute tie', () => {
+  const later = event({ id: 'later', start: soon(2 * HOUR) });
+  const tentative = event({ id: 'tent', start: soon(HOUR), selfResponseStatus: 'needsAction' });
+  const accepted = event({ id: 'acc', start: soon(HOUR), selfResponseStatus: 'accepted' });
+  const rows = upcomingForFleet([later, tentative, accepted], [bethany], NOW);
+  assert.deepEqual(rows.map((r) => r.id), ['acc', 'tent', 'later']);
+  assert.equal(rows.find((r) => r.id === 'tent').ownerConfirmed, false);
+});
+
+test('a bot with neither an invite address nor a name matches nothing', () => {
+  assert.deepEqual(upcomingForFleet([event()], [{ name: 'blank', calendarIdentityEmail: '', botName: '' }], NOW), []);
 });

@@ -223,7 +223,7 @@ function renderEvents(state) {
   const events = state.events || [];
   els.events.replaceChildren();
   if (!events.length) {
-    els.events.append(el('div', 'empty', 'Nothing scheduled.'));
+    els.events.append(el('div', 'empty', 'No meetings for your bots in the next 24 hours.'));
     return;
   }
   for (const event of events) {
@@ -233,7 +233,12 @@ function renderEvents(state) {
     what.append(el('div', 'title', event.summary || '(untitled)'));
     // Which bot this wakes is the whole point of showing it here — an upcoming
     // meeting nobody is assigned to is a meeting no bot will join.
-    if (event.forProfile) what.append(el('div', 'for', `→ ${event.forProfile}`));
+    // The owner's RSVP gates the join (ownerHasConfirmed), so an unaccepted
+    // meeting is listed but says it will not be joined, as the panel does.
+    const who = event.forProfile ? `→ ${event.forProfile}` : '';
+    what.append(el('div', 'for', event.ownerConfirmed === false
+      ? `${who} · not joining until you accept the invite`
+      : who));
     row.append(what);
     els.events.append(row);
   }

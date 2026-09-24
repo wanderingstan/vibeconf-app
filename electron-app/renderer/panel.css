@@ -24,6 +24,9 @@
      that's where every Fluent face is lit from. Never a hard black offset. */
   --shadow: -1px 2px 6px rgba(74, 49, 64, 0.20);
   --shadow-lo: -1px 1px 3px rgba(74, 49, 64, 0.14);
+  /* Light text straight on the bot's artwork (name, gear): a tight black
+     outline so edges hold on light art, plus a soft shadow for depth. */
+  --art-outline: 0 0 2px rgba(0, 0, 0, 0.9), 0 1px 4px rgba(0, 0, 0, 0.8);
   --font-display: 'Syne', Futura, 'Trebuchet MS', sans-serif;
   --font-body: 'DM Sans', 'Avenir Next', -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -990,20 +993,22 @@ body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
 /* `button.` prefix, not a bare class: the global `button:not(.primary)` fill is
    specificity (0,1,1) and would otherwise beat a plain class and paint these
    ghost controls solid grey. */
-/* The name sits on a translucent ink chip, always — not only on hover. The
-   window is the bot (2026-09-07), so the artwork under this can be anything a
-   user picks, and Stan's own gear vanished on a light one. A chip gives the
-   name and the gear their own contrast instead of borrowing it from the image;
-   the scrims above/below stay as the softer general lift. */
+/* No chip behind the name or the gear: the artwork runs right up to them, the
+   way Meet puts a participant's name straight on the video. Contrast comes from
+   a hard black outline plus a soft shadow (--art-outline), the same lift the
+   footer's branding and login line use, which reads on light artwork too
+   (Stan's gear vanished on a light one before, 2026-09-07). An earlier
+   translucent ink chip did the same job but looked like a grey box; Stan,
+   2026-09-24: "the gray background ... has got to go". Hover gets the same
+   round highlight as the icon-only join-more buttons. */
 button.agent-namebtn {
   width: auto; min-width: 0; max-width: 100%;
   display: flex; align-items: center; gap: 5px;
-  background: rgba(74, 49, 64, 0.55); border: none; cursor: pointer;
+  background: none; border: none; cursor: pointer;
   padding: 3px 12px 3px 12px; margin: 0; border-radius: 999px;
   text-align: left;
-  backdrop-filter: blur(6px);
 }
-button.agent-namebtn:hover:not(:disabled) { background: rgba(74, 49, 64, 0.75); }
+button.agent-namebtn:hover:not(:disabled) { background: rgba(74, 49, 64, 0.45); }
 /* The name, in the display face. Syne is wider than Google Sans, so long names
    (“Optimus Prime”) run out of room at 380 sooner — fitBotName() in panel.js
    steps this size down to 15px before the ellipsis takes over. */
@@ -1017,9 +1022,9 @@ button.agent-namebtn:hover:not(:disabled) { background: rgba(74, 49, 64, 0.75); 
   font-size: 26px; font-weight: 700; color: var(--on-art); letter-spacing: -0.01em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   /* Sits on the user's own artwork — a shadow keeps it readable on anything. */
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  text-shadow: var(--art-outline);
 }
-.agent-caret { flex: 0 0 auto; font-size: 13px; color: var(--on-art); text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+.agent-caret { flex: 0 0 auto; font-size: 13px; color: var(--on-art); text-shadow: var(--art-outline); }
 button.agent-namebtn:hover:not(:disabled) .agent-caret { color: var(--on-art); }
 /* Bot settings gear — sits next to the name, ghost-icon treatment. Stays
    visible in-call (unlike the switcher). */
@@ -1035,12 +1040,16 @@ button.agent-gear {
   width: 44px; height: 44px; padding: 0; margin: 0;
   flex: 0 0 auto; align-self: center;
   display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(74, 49, 64, 0.55); border: none; color: var(--on-art); cursor: pointer;
+  background: none; border: none; color: var(--on-art); cursor: pointer;
   font-size: 26px; line-height: 1; border-radius: 50%;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
-  backdrop-filter: blur(6px);
+  text-shadow: var(--art-outline);
 }
-button.agent-gear:hover:not(:disabled) { background: rgba(74, 49, 64, 0.8); color: var(--on-art); }
+button.agent-gear:hover:not(:disabled) { background: rgba(74, 49, 64, 0.45); color: var(--on-art); }
+/* The gear is a masked icon, so its outline is a drop-shadow (see below); give
+   it the same tight-plus-soft pair as the name's text-shadow. */
+button.agent-gear .ui-icon {
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8));
+}
 /* These controls sit ON the avatar, over whatever artwork the bot is using, so
    they need the same lift the name and buttons get. text-shadow cannot do it:
    an icon is a masked box, not text, and has no glyph to shadow. drop-shadow

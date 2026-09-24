@@ -16,9 +16,15 @@
   --ink: #4A3140;         /* the Fluent set's darkest pixel is #3F2831 — nothing pure */
   --ink-soft: #6B5566;
   --ink-faint: #9A8798;   /* decorative only — fails contrast for body text */
-  --pink: #E62776;        /* the one primary */
+  --pink: #E62776;        /* brand accent; Leave Call */
   --pink-deep: #B31199;
   --magenta: #9F0BA4;     /* links, eyebrows */
+  /* Call green: the Fluent set's own green (🤮 1f92e), for the buttons that
+     START a call. Green = call, red = hang up, the way every phone draws it;
+     pink on the call button read as hang-up (Stan, 2026-09-24). Labelled in
+     --ink, not cream: ink on it is 5.8:1, cream would be under 2:1. */
+  --go: #44CE81;
+  --go-deep: #3BBE74;     /* hover; still 4.9:1 against --ink */
   --line: #F1D9A4;
   /* Soft plum, falling down-and-LEFT: the key light is upper-right, because
      that's where every Fluent face is lit from. Never a hard black offset. */
@@ -181,8 +187,8 @@ select:focus {
   line-height: 1.4;
 }
 
-/* Buttons: Syne, pill, 1.5px ink border. The primary is the one pink thing in
-   a window; everything else is paper. */
+/* Buttons: Syne, pill, 1.5px ink border. The primary is the one green (call)
+   thing in a window; everything else is paper. */
 button {
   padding: 8px 16px;
   border-radius: 999px;
@@ -196,13 +202,13 @@ button {
 }
 
 button.primary {
-  background: var(--pink);
-  color: var(--cream);
+  background: var(--go);
+  color: var(--ink);
   box-shadow: var(--shadow);
 }
 
 button.primary:hover:not(:disabled) {
-  background: var(--pink-deep);
+  background: var(--go-deep);
 }
 
 button:not(.primary) {
@@ -1075,10 +1081,17 @@ body[data-call-state="in-call"] button.agent-namebtn:hover:not(:disabled) { back
 .hero-incall { display: none; }
 body[data-call-state="in-call"] .hero-precall { display: none; }
 body[data-call-state="in-call"] .hero-incall { display: block; }
-/* Leave Call — the primary action's shape, in red. */
-/* Leave Call — the primary's shape, in the deep pink. The palette has no red. */
-button.primary.danger { background: var(--pink-deep); color: var(--cream); }
-button.primary.danger:hover:not(:disabled) { background: var(--ink); }
+/* Leave takes the hot pink, the reddest colour in the palette, now that Call
+   is green: the two used to be pink and magenta, nearly indistinguishable. */
+button.primary.danger { background: var(--pink); color: var(--cream); }
+button.primary.danger:hover:not(:disabled) { background: var(--pink-deep); }
+/* On the avatar, Call and Leave sit on whatever artwork the user picked, and
+   that can be the same green or pink as the button (Jimmy's default is a
+   green park). A dark ring plus a soft drop, the same black-outline lift the
+   name and icons get, keeps the pill's edge no matter what is behind it. */
+.bot-hero button.primary:not(:disabled) {
+  box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.5);
+}
 /* Primary action + the ⋯ that reveals manual URL entry, on one line. The
    primary flexes so it stays the obvious target; ⋯ is a fixed ghost square. */
 /* Centred, and each control sized to its own content — a full-width button for

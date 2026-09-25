@@ -1,8 +1,12 @@
 # Vibeconferencing — bring your agent into a video call
 
-Vibeconferencing is a Mac app that lets an AI agent (the one you already use in **Claude Code, Codex, or Cursor**) **join your Google Meet calls as a real participant**. It hears the conversation and talks back out loud. And because it's your *actual* agent, not a notetaker, it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
+Vibeconferencing is a desktop app that lets an AI agent (the one you already use: **Claude Code, Codex, Grok, Meta's Muse**, or any agent that speaks MCP) **join your Google Meet calls as a real participant**. It hears the conversation and talks back out loud. And because it's your *actual* agent, not a notetaker, it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
 
-![A Google Meet call with two people and the bot "jimmy bot" (an emoji avatar) presenting a shared whiteboard that diagrams the call's human and bot participants alongside live notes](media/call-whiteboard.png)
+> **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS** (the steps below), **Linux**, including an always-on cloud box ([docs/cloud-box.md](docs/cloud-box.md)), and **Windows**. Builds for all three are in every release. It joins **Google Meet**; there's no Zoom yet. See [Known rough edges](#known-rough-edges) before your first call.
+
+![A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse](media/four-model-families-one-meet.jpg)
+
+*A real call, Sept 24, 2026: two humans and six agents from four model families (Claude, Codex, Grok, Meta's Muse) in one Meet.*
 
 ## Not notes. The thing.
 
@@ -18,7 +22,7 @@ You drive it from your agent (just say *"join my call"*); the app is the "body" 
 ## Get in a call with your bot — about 5 minutes
 
 **You'll need:**
-- A **Mac**
+- A **Mac** for the steps below. *(On Linux or Windows, grab the AppImage, `.deb` or installer from the same release; for an always-on Linux box in the cloud, see [docs/cloud-box.md](docs/cloud-box.md).)*
 - **Claude Code** installed and working. *(Codex, Cursor, or any MCP agent works too; [see below](#using-codex-cursor-or-another-agent).)*
 - A browser (whatever you already use — auto-detecting your open Meet works in Chrome, Brave, and Safari; in Firefox or anything else, paste the Meet link into the app)
 
@@ -26,7 +30,7 @@ You drive it from your agent (just say *"join my call"*); the app is the "body" 
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
 
 ### 2. Allow the permission prompts
-The app needs **no microphone, camera, or screen recording permission** — the bot's mic and camera are synthetic (an AudioContext and a canvas stream) and the whiteboard share captures via the app's own window rendering, so no capture device is ever opened and macOS isn't consulted. One optional prompt may appear: **Browser Automation** (lets the app find your open Meet by itself — skip it and just paste the Meet link into the app).
+The app needs **no microphone, camera, or screen-recording permission**: the bot's mic and camera are virtual. One optional prompt may appear, **Browser Automation**, which lets the app find your open Meet by itself. Skip it and just paste the Meet link into the app.
 
 ### 3. Sign in *(optional)*
 Signing in gets you access to the shared whiteboard. It's optional and not automatic; sign in anytime from App Settings (**⌘,**).
@@ -51,24 +55,25 @@ Click **Admit** in your Meet window when it asks. Your bot appears as a particip
 
 **That's it. You're in a call with your bot. 🎉**
 
-### 8. Give your bot a good voice *(optional, whenever you're ready)*
-Out of the box it uses the basic built-in Mac voice, which is fine for testing but robotic. Pick one:
+## Make it better *(optional)*
 
-- **⭐ ElevenLabs (best, most natural):** grab a free API key at **[elevenlabs.io](https://elevenlabs.io)**, then in the app press **⌘,** (App Settings) and paste the key. Then choose a voice from the People pane.
-- **Premium Mac voices (free):** in **System Settings → Accessibility → Spoken Content**, download an "Enhanced" or "Premium" voice, then pick it in the app's voice selector. A big step up from the default, no account needed.
+### A good voice
+Out of the box the bot uses the basic built-in Mac voice: fine for testing, but robotic.
+
+- **⭐ ElevenLabs (most natural):** grab a free API key at **[elevenlabs.io](https://elevenlabs.io)**, paste it in App Settings (**⌘,**), then choose a voice from the People pane.
+- **Premium Mac voices (free, no account):** search "system voice" in System Settings, open the picker under **Accessibility → Spoken Content**, download an "Enhanced" or "Premium" voice, then pick it in the app's voice selector.
 - **Local / open-source (advanced):** run a local voice engine (Kokoro/Voicebox) and point the app at it. See [docs/preferences.md](docs/preferences.md).
 
-*Downloading a premium macOS voice (free): search "system voice" in System Settings, open the picker under Accessibility → Spoken Content, and grab a "Premium" or "Enhanced" one.*
-
 ![Animated walkthrough: searching "system voice" in macOS System Settings, which opens the System voice picker under Accessibility → Spoken Content where an Enhanced/Premium voice can be downloaded](media/premium-mac-voice.gif)
+
+### Real-time voice *(experimental)*
+Turn on a bot's **`realtimeVoice`** preference **before it joins** to try OpenAI's speech-to-speech model in the voice seat. Your agent stays in the call as the "slow half", feeding the voice model facts instead of speaking itself. It needs an **OpenAI API key** in App Settings (**⌘,**), and call audio goes to OpenAI for as long as the realtime session is running, so expect per-minute charges. Details: [docs/realtime-voice-in-app.md](docs/realtime-voice-in-app.md).
 
 ---
 
 ## What you can ask it
 
 Talk in plain language, no commands needed:
-
-![The bot's in-call side panel introducing itself: you can ask it to change its voice, change its avatar background, show or edit a whiteboard, read or post chat, take a screenshot, or switch between active/passive/silent modes, with two bots showing custom World-Cup avatar backgrounds](media/call-capabilities.png)
 
 - *"Put a summary of what we decided on the whiteboard"*
 - *"Take notes on this meeting on the whiteboard, with diagrams"*
@@ -79,6 +84,22 @@ Talk in plain language, no commands needed:
 ## Using Codex, Cursor, or another agent
 
 Any MCP-capable agent can drive the bot. **Claude Code is wired up automatically** when you install the app. For other agents you point them at the app's bundled MCP server once. See **[docs/codex.md](docs/codex.md)** (Codex CLI) and the **[Quickstart](docs/quickstart.md)**.
+
+## Known rough edges
+
+Worth knowing before your first call:
+
+- **Admitting the bot:** if Meet shows a *"review potential risks"* prompt with only a **Deny** button, **Admit is in that prompt's ⋮ menu**.
+- **Joins can drop:** [#785](https://github.com/wanderingstan/vibeconf-app/issues/785) has four joins started from the agent dropping seconds after admission in one Workspace-hosted room; a fifth, started from the app's panel, stayed connected. The cause isn't known yet.
+- **Several bots, one floor:** spoken replies can be held or cut off by turn-taking, more often with several bots in the call. Keep speech short and put anything that has to land in chat or on the whiteboard.
+- **One shared whiteboard:** bots in the same room share one board and each update replaces it, so two bots writing at once can overwrite each other. Your agent can list and read back earlier versions with `read_whiteboard`.
+- **The default voice:** without an ElevenLabs key it uses the built-in Mac voice; [A good voice](#a-good-voice) shows better options.
+
+If a call goes wrong, the bot's panel has a **📤 Share this call's log** button. Clicking it sends that call's log so far and keeps sending it until the call ends; logs can contain transcript text. (Continuous remote logging is a separate setting and is off by default.)
+
+## Contributing
+
+Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issues/new) with what you said, what the bot did, and your app version. Want to help? Issues labelled [`good-for-bot`](https://github.com/wanderingstan/vibeconf-app/issues?q=is%3Aopen+label%3Agood-for-bot) have been vetted by a human as safe for an autonomous coding agent to attempt, so you can point your own agent at one.
 
 ## More docs
 

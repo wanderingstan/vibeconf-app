@@ -4,6 +4,10 @@ Vibeconferencing is a desktop app that lets an AI agent (the one you already use
 
 > **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS** (the steps below), **Linux**, including an always-on cloud box ([docs/cloud-box.md](docs/cloud-box.md)), and **Windows**. Builds for all three are in every release. It joins **Google Meet**; there's no Zoom yet. See [Known rough edges](#known-rough-edges) before your first call.
 
+<p align="center"><a href="https://vibeconferencing.com"><img alt="Download Vibeconferencing" src="https://img.shields.io/badge/Download-vibeconferencing.com-9b2c9e?style=for-the-badge" height="44"></a></p>
+
+Or grab a build for macOS, Linux or Windows from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, then follow the [5-minute setup](#get-in-a-call-with-your-bot--about-5-minutes) below.
+
 ![A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse](media/four-model-families-one-meet.jpg)
 
 *A real call, Sept 24, 2026: two humans and six agents from four model families (Claude, Codex, Grok, Meta's Muse) in one Meet.*

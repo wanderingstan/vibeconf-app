@@ -16,14 +16,23 @@
   --ink: #4A3140;         /* the Fluent set's darkest pixel is #3F2831 — nothing pure */
   --ink-soft: #6B5566;
   --ink-faint: #9A8798;   /* decorative only — fails contrast for body text */
-  --pink: #E62776;        /* the one primary */
+  --pink: #E62776;        /* brand accent; Leave Call */
   --pink-deep: #B31199;
   --magenta: #9F0BA4;     /* links, eyebrows */
+  /* Call green: the Fluent set's own green (🤮 1f92e), for the buttons that
+     START a call. Green = call, red = hang up, the way every phone draws it;
+     pink on the call button read as hang-up (Stan, 2026-09-24). Labelled in
+     --ink, not cream: ink on it is 5.8:1, cream would be under 2:1. */
+  --go: #44CE81;
+  --go-deep: #3BBE74;     /* hover; still 4.9:1 against --ink */
   --line: #F1D9A4;
   /* Soft plum, falling down-and-LEFT: the key light is upper-right, because
      that's where every Fluent face is lit from. Never a hard black offset. */
   --shadow: -1px 2px 6px rgba(74, 49, 64, 0.20);
   --shadow-lo: -1px 1px 3px rgba(74, 49, 64, 0.14);
+  /* Light text straight on the bot's artwork (name, gear): a tight black
+     outline so edges hold on light art, plus a soft shadow for depth. */
+  --art-outline: drop-shadow(0 0 1px rgba(0, 0, 0, 0.9)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8));
   --font-display: 'Syne', Futura, 'Trebuchet MS', sans-serif;
   --font-body: 'DM Sans', 'Avenir Next', -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -178,8 +187,8 @@ select:focus {
   line-height: 1.4;
 }
 
-/* Buttons: Syne, pill, 1.5px ink border. The primary is the one pink thing in
-   a window; everything else is paper. */
+/* Buttons: Syne, pill, 1.5px ink border. The primary is the one green (call)
+   thing in a window; everything else is paper. */
 button {
   padding: 8px 16px;
   border-radius: 999px;
@@ -193,13 +202,13 @@ button {
 }
 
 button.primary {
-  background: var(--pink);
-  color: var(--cream);
+  background: var(--go);
+  color: var(--ink);
   box-shadow: var(--shadow);
 }
 
 button.primary:hover:not(:disabled) {
-  background: var(--pink-deep);
+  background: var(--go-deep);
 }
 
 button:not(.primary) {
@@ -541,12 +550,11 @@ button.screen-close {
   display: inline-flex; align-items: center; justify-content: center;
   border: none; cursor: pointer;
   font-size: 19px; line-height: 1; border-radius: 50%;
-  /* Filled blue, iOS-style: this is the affirmative "done" action, and it's the
-     same #8ab4f8/#202124 pairing as button.primary — one blue in the app rather
-     than a second one imported from iOS. Opaque, so no backdrop-filter is
-     needed to keep text scrolling underneath from showing through.
-     iOS greys this out until something has changed; we don't track a dirty
-     state (each control here saves as you touch it), so it stays blue. */
+  /* Filled ink: this is the affirmative "done" action, iOS-style. Opaque, so
+     no backdrop-filter is needed to keep text scrolling underneath from
+     showing through. iOS greys this out until something has changed; we don't
+     track a dirty state (each control here saves as you touch it), so it
+     stays filled. */
   background: var(--ink);
   color: var(--cream);
   box-shadow: var(--shadow);
@@ -855,20 +863,25 @@ button.auth-action-btn:hover:not(:disabled) {
      opening below it. */
   z-index: 6;
 }
-/* No OS title bar → this strip becomes the window's drag handle. Whatever is
-   interactive inside it must opt back out, or it stops being clickable. */
+/* No OS title bar → the window needs a drag handle. It is the whole banner,
+   not just the strip above the name: the art is the window's face, and a thin
+   band over the name was hard to find (Stan, 2026-09-24). Everything that
+   takes a click opts back out below, and so does .hero-bottom, so the handle
+   ends where the call controls begin. */
+body[data-titlebar] .bot-hero { -webkit-app-region: drag; }
+body[data-titlebar] .bot-hero :is(button, a, input, select, textarea),
+body[data-titlebar] .hero-bottom,
+body[data-titlebar] .hero-notice { -webkit-app-region: no-drag; }
 body[data-titlebar] .hero-top {
-  -webkit-app-region: drag;
   /* Clears the window controls now floating over the banner. They miss the name
      horizontally (macOS traffic lights sit at x 13–70, the name is centred), so
      this only has to stop the two reading as cramped — not fully clear them. */
   padding-top: 18px;
 }
-body[data-titlebar] .hero-top button,
 body[data-titlebar] .hero-top .profile-menu { -webkit-app-region: no-drag; }
-/* …and the whole strip stands down while the bot switcher is open, so clicking
-   beside the name dismisses it instead of dragging the window. */
-body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
+/* …and the whole banner stands down while the bot switcher is open, so a click
+   anywhere on the art dismisses it instead of dragging the window. */
+body[data-menu-open] .bot-hero { -webkit-app-region: no-drag; }
 
 /* (The gear used to slide 146px clear of the Windows caption overlay. Windows
    has a standard title bar again — see titleBarOptions in main.js — so the gear
@@ -990,20 +1003,23 @@ body[data-menu-open] .hero-top { -webkit-app-region: no-drag; }
 /* `button.` prefix, not a bare class: the global `button:not(.primary)` fill is
    specificity (0,1,1) and would otherwise beat a plain class and paint these
    ghost controls solid grey. */
-/* The name sits on a translucent ink chip, always — not only on hover. The
-   window is the bot (2026-09-07), so the artwork under this can be anything a
-   user picks, and Stan's own gear vanished on a light one. A chip gives the
-   name and the gear their own contrast instead of borrowing it from the image;
-   the scrims above/below stay as the softer general lift. */
+/* No chip behind the name or the gear: the artwork runs right up to them, the
+   way Meet puts a participant's name straight on the video. Contrast comes from
+   a hard black outline plus a soft shadow (--art-outline, applied as a filter
+   on the button: see the rule after button.agent-gear), the same lift the
+   footer's branding and login line use, which reads on light artwork too
+   (Stan's gear vanished on a light one before, 2026-09-07). An earlier
+   translucent ink chip did the same job but looked like a grey box; Stan,
+   2026-09-24: "the gray background ... has got to go". Hover gets the same
+   round highlight as the icon-only join-more buttons. */
 button.agent-namebtn {
   width: auto; min-width: 0; max-width: 100%;
   display: flex; align-items: center; gap: 5px;
-  background: rgba(74, 49, 64, 0.55); border: none; cursor: pointer;
+  background: none; border: none; cursor: pointer;
   padding: 3px 12px 3px 12px; margin: 0; border-radius: 999px;
   text-align: left;
-  backdrop-filter: blur(6px);
 }
-button.agent-namebtn:hover:not(:disabled) { background: rgba(74, 49, 64, 0.75); }
+button.agent-namebtn:hover:not(:disabled) { background: rgba(74, 49, 64, 0.45); }
 /* The name, in the display face. Syne is wider than Google Sans, so long names
    (“Optimus Prime”) run out of room at 380 sooner — fitBotName() in panel.js
    steps this size down to 15px before the ellipsis takes over. */
@@ -1016,10 +1032,8 @@ button.agent-namebtn:hover:not(:disabled) { background: rgba(74, 49, 64, 0.75); 
   /* 700, not 800: user text, often with a g — Syne's g stub reads cut off at 800 (Seth, Sept 8). */
   font-size: 26px; font-weight: 700; color: var(--on-art); letter-spacing: -0.01em;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  /* Sits on the user's own artwork — a shadow keeps it readable on anything. */
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
 }
-.agent-caret { flex: 0 0 auto; font-size: 13px; color: var(--on-art); text-shadow: 0 1px 3px rgba(0,0,0,0.8); }
+.agent-caret { flex: 0 0 auto; font-size: 13px; color: var(--on-art); }
 button.agent-namebtn:hover:not(:disabled) .agent-caret { color: var(--on-art); }
 /* Bot settings gear — sits next to the name, ghost-icon treatment. Stays
    visible in-call (unlike the switcher). */
@@ -1035,20 +1049,22 @@ button.agent-gear {
   width: 44px; height: 44px; padding: 0; margin: 0;
   flex: 0 0 auto; align-self: center;
   display: inline-flex; align-items: center; justify-content: center;
-  background: rgba(74, 49, 64, 0.55); border: none; color: var(--on-art); cursor: pointer;
+  background: none; border: none; color: var(--on-art); cursor: pointer;
   font-size: 26px; line-height: 1; border-radius: 50%;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
-  backdrop-filter: blur(6px);
 }
-button.agent-gear:hover:not(:disabled) { background: rgba(74, 49, 64, 0.8); color: var(--on-art); }
-/* These controls sit ON the avatar, over whatever artwork the bot is using, so
-   they need the same lift the name and buttons get. text-shadow cannot do it:
-   an icon is a masked box, not text, and has no glyph to shadow. drop-shadow
-   follows the actual painted shape. */
-.bot-hero .ui-icon { filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8)); }
-/* (.join-caret had its own text-shadow here while it was a text glyph. It is a
-   masked icon now, so it is covered by the .ui-icon rule above — text-shadow
-   would paint nothing, there being no text.) */
+button.agent-gear:hover:not(:disabled) { background: rgba(74, 49, 64, 0.45); color: var(--on-art); }
+/* Everything that sits ON the avatar as a ghost control (the name, the gear,
+   and the 👀 / + / 🧠 / 🚧 row) gets its black outline the same way: as a
+   filter on the BUTTON. Two reasons it is not text-shadow / an icon filter:
+   the icons are CSS masks, and a mask is applied after filter, so a
+   drop-shadow on the icon itself is clipped away; and doing all of them on the
+   button means the round hover highlight picks up the same dark edge on every
+   one, rather than the name's hover looking different from the icons'. */
+.bot-hero button.agent-namebtn,
+.bot-hero button.agent-gear,
+.bot-hero button.join-more {
+  filter: var(--art-outline);
+}
 /* #379: the switcher SWITCHES the current window (replaces this bot), which only
    makes sense pre-call. In-call, the name must STILL be visible (it's the
    masthead now), so we neutralise the control rather than hide it: drop the
@@ -1068,10 +1084,17 @@ body[data-call-state="in-call"] button.agent-namebtn:hover:not(:disabled) { back
 .hero-incall { display: none; }
 body[data-call-state="in-call"] .hero-precall { display: none; }
 body[data-call-state="in-call"] .hero-incall { display: block; }
-/* Leave Call — the primary action's shape, in red. */
-/* Leave Call — the primary's shape, in the deep pink. The palette has no red. */
-button.primary.danger { background: var(--pink-deep); color: var(--cream); }
-button.primary.danger:hover:not(:disabled) { background: var(--ink); }
+/* Leave takes the hot pink, the reddest colour in the palette, now that Call
+   is green: the two used to be pink and magenta, nearly indistinguishable. */
+button.primary.danger { background: var(--pink); color: var(--cream); }
+button.primary.danger:hover:not(:disabled) { background: var(--pink-deep); }
+/* On the avatar, Call and Leave sit on whatever artwork the user picked, and
+   that can be the same green or pink as the button (Jimmy's default is a
+   green park). A dark ring plus a soft drop, the same black-outline lift the
+   name and icons get, keeps the pill's edge no matter what is behind it. */
+.bot-hero button.primary:not(:disabled) {
+  box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.5);
+}
 /* Primary action + the ⋯ that reveals manual URL entry, on one line. The
    primary flexes so it stays the obvious target; ⋯ is a fixed ghost square. */
 /* Centred, and each control sized to its own content — a full-width button for
@@ -1111,8 +1134,9 @@ button.join-more:hover:not(:disabled) { background: rgba(74, 49, 64, 0.45); colo
 /* The bot's-view toggle swaps 👀 for ✕ once the view is popped out. Both are
    drawn art in the same icon box now, so neither needs a size correction — the
    .is-close class survives only as a state hook for anything that wants it. */
-/* Open state — reads as "this is what's showing the field below". */
-button.join-more[aria-expanded="true"] { color: var(--pink); background: rgba(74, 49, 64, 0.7); }
+/* No separate open-state paint: the 45° turn below is the whole signal, so the
+   × looks exactly like the + it came from (Stan, 2026-09-24). A pink glyph on a
+   dark disc read as a different, alarming control. */
 /* ONE glyph, rotated. Swapping icons (+ for ×, or the old ▸ for ▴) makes the
    control jump: different optical weights and advance widths in the same pill.
    Rotating a single glyph keeps the size identical and animates for free.

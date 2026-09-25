@@ -481,7 +481,7 @@
         <div class="field">
           <label for="agentClaudeMd">Personality (CLAUDE.md)</label>
           <div style="font-size:11px;color:#6B5566;margin:0 0 6px">The bot's standing instructions, loaded at the start of every call. This is the <code>CLAUDE.md</code> in its working folder. Edit freely.</div>
-          <textarea id="agentClaudeMd" rows="12" spellcheck="false" placeholder="(loading…)" style="width:100%;box-sizing:border-box;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.45;resize:vertical"></textarea>
+          <textarea id="agentClaudeMd" rows="12" spellcheck="false" placeholder="(loading…)" style="width:100%;box-sizing:border-box;font-family:var(--font-mono);font-size:12px;line-height:1.45;resize:vertical"></textarea>
           <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
             <button id="saveAgentClaudeMdBtn" class="popout-btn">Save personality</button>
             <span id="agentClaudeMdStatus" style="font-size:11px;color:#4A3140"></span>
@@ -647,7 +647,7 @@
           <p class="helper-text" style="margin:0 0 6px">Exactly what captions the bot is receiving. The still-growing turn is marked LIVE. Compare in real time against the bot's Meet tile.</p>
           <div id="captionStateBadge" class="caption-badge" style="margin-bottom:6px"></div>
           <div class="field">
-            <div id="rawCaptionText" class="audio-status caption-feed" style="max-height:240px;overflow-y:auto;font-family:monospace;font-size:11px;white-space:pre-wrap"></div>
+            <div id="rawCaptionText" class="audio-status caption-feed" style="max-height:240px;overflow-y:auto;font-family:var(--font-mono);font-size:11px;white-space:pre-wrap"></div>
           </div>
         </div>
           <div class="section">
@@ -683,7 +683,7 @@
           <div class="section">
           <h2>Test Curl</h2>
           <div class="field">
-            <div id="curlCommand" class="audio-status" style="font-family:monospace;font-size:10px;white-space:pre-wrap;word-break:break-all"></div>
+            <div id="curlCommand" class="audio-status" style="font-family:var(--font-mono);font-size:10px;white-space:pre-wrap;word-break:break-all"></div>
           </div>
           <button id="copyCurlBtn" disabled>Copy Curl Command</button>
         </div>

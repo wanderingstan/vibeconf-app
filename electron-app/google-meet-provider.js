@@ -1644,7 +1644,21 @@ function ensureStatusBar() {
   if (document.getElementById('vibeconf-status-bar')) return;
   const bar = document.createElement('div');
   bar.id = 'vibeconf-status-bar';
-  bar.innerHTML = '<span class="icon">🤖</span><span class="label">Bot\'s view —</span><span class="status" id="vibeconf-status">Initializing...</span>';
+  bar.innerHTML = '<span class="icon"></span><span class="label">Bot\'s view —</span><span class="status" id="vibeconf-status">Initializing...</span>';
+  // The bot's own face, the Fluent 3D 🙂 the app and site use for it, rather
+  // than the OS 🤖. Read from the bundled set as a data URI (this is the Meet
+  // page's origin, so it can't fetch app files by URL); the plain glyph is the
+  // fallback if the asset can't be read.
+  const iconEl = bar.querySelector('.icon');
+  let faceUri = null;
+  try { faceUri = require('./emoji-assets.js').dataUriForRelPath('fluent3d/1f642.png'); } catch { /* fall back */ }
+  if (faceUri) {
+    const img = document.createElement('img');
+    img.src = faceUri; img.alt = '';
+    iconEl.appendChild(img);
+  } else {
+    iconEl.textContent = '🙂';
+  }
 
   const style = document.createElement('style');
   style.textContent = `
@@ -1653,15 +1667,16 @@ function ensureStatusBar() {
       /* Auto-grow for long messages instead of clipping them off the right
          edge (a full-sentence #404 notice ran past the viewport — unreadable). */
       min-height: 56px;
-      /* SOLID accent blue, opaque. This used to have to match the panel's
-         "Bot's view" bar (.botview-bar) directly above it in the column so the
-         two read as one surface; that bar is gone now that the view is hidden by
-         default, but opaque still beats the old rgba(...,0.82), which over the
-         white Meet page rendered lighter than the dark panel behind it and made
-         the seam obvious. Opaque #8ab4f8 looks the same whatever is behind it.
-         (Was partially transparent to keep Google's UI visible beneath — the
-         solid look wins; the banner is click-through and auto-fades on hover.) */
-      background: #8ab4f8; color: #ffffff;
+      /* SOLID cream, opaque: the app's own surface colour (--cream), so the
+         window reads as ours at a glance (Stan, 2026-09-24). It replaced a
+         Google blue (#8ab4f8) left over from the old dark-Material panel.
+         Opaque matters: the old rgba(...,0.82) rendered patchy over the white
+         Meet page. The ink rule along the bottom keeps it distinct from the
+         cream idle page (/bot-view) it sits on when there is no call. The
+         banner is click-through and auto-fades on hover, so Google's UI
+         underneath stays usable. */
+      background: #FFF4DA; color: #4A3140;
+      border-bottom: 1.5px solid #4A3140;
       /* ...and click-through so they stay USABLE for debugging — the banner
          never intercepts pointer events (#bot-view banner is purely a label).
          KEEP THIS even though the banner now auto-fades on hover: an element at
@@ -1671,27 +1686,32 @@ function ensureStatusBar() {
       /* Fades out when the cursor is over it (see the mousemove handler below),
          so it never hides the Meet UI a human is trying to look at. */
       transition: opacity 0.15s ease;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
       /* Drop shadow along the bottom edge so the banner reads as FLOATING above
          the real Meet/huddle content beneath it, rather than being part of it. */
-      box-shadow: 0 6px 14px rgba(0, 0, 0, 0.38);
+      box-shadow: 0 6px 14px rgba(74, 49, 64, 0.28);
       font-family: 'Google Sans', 'Roboto', sans-serif; font-size: 22px;
       font-weight: 500;
-      display: flex; align-items: baseline; padding: 8px 24px; box-sizing: border-box;
+      display: flex; align-items: center; padding: 8px 24px; box-sizing: border-box;
+      /* The host page's alignment leaks in otherwise (/bot-view centres its body
+         text, which floated the status into the middle of the bar). */
+      text-align: left;
       z-index: 999999; user-select: none;
       letter-spacing: 0.3px;
     }
-    #vibeconf-status-bar .icon { margin-right: 14px; font-size: 26px; flex: none; }
-    #vibeconf-status-bar .label { color: #e8f0fe; margin-right: 12px; flex: none; white-space: nowrap; }
+    #vibeconf-status-bar .icon { margin-right: 14px; font-size: 26px; flex: none; line-height: 0; }
+    #vibeconf-status-bar .icon img { width: 32px; height: 32px; display: block; }
+    /* Magenta (--magenta, 6.3:1 on cream), the panel's accent for labels, so
+       "Bot's view" reads as a label and the status after it as the message. */
+    #vibeconf-status-bar .label { color: #9F0BA4; margin-right: 12px; flex: none; white-space: nowrap; }
     /* The status text takes the remaining width and WRAPS (up to a few lines)
        so the whole message is readable rather than truncated. */
     #vibeconf-status-bar .status {
-      color: #ffffff; flex: 1; min-width: 0;
+      color: #4A3140; flex: 1; min-width: 0;
       font-size: 17px; line-height: 1.3;
       white-space: normal; overflow-wrap: anywhere;
       display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden;
     }
-    #vibeconf-status-bar .status.error { color: #fce8e6; font-weight: 700; }
+    #vibeconf-status-bar .status.error { color: #B31199; font-weight: 700; }
     /* While a call recording runs, the banner must not grow: the recording
        keeps Meet's video tiles (record-region.js), the banner overlays the top
        of the page, and a wrapped multi-line notice reached down over the top
@@ -1699,7 +1719,7 @@ function ensureStatusBar() {
        text is in the session log either way. */
     #vibeconf-status-bar.recording { max-height: 56px; overflow: hidden; }
     #vibeconf-status-bar.recording .status { -webkit-line-clamp: 1; white-space: nowrap; text-overflow: ellipsis; }
-    #vibeconf-status-bar .status.active { color: #ffffff; }
+    #vibeconf-status-bar .status.active { color: #4A3140; }
     body { padding-top: 56px !important; }
   `;
   document.head.appendChild(style);

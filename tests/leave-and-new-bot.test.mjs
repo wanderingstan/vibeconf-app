@@ -165,8 +165,13 @@ test('every row in the bot menu highlights on hover', () => {
   // that CREATES something looked inert while the passive ones (open folder,
   // open logs) lit up. Asserted across all four rather than for that one item,
   // since the bug was an inconsistency, not a missing feature.
+  // The COLOUR is not the guarantee — it moved from a hardcoded '#3c4043' to
+  // var(--paper-lo) when the panel went onto palette tokens (#713/#794), and a
+  // test pinned to the literal failed while every row still highlighted
+  // correctly. What must hold is that each row sets SOME background on enter
+  // and clears it on leave.
   for (const v of ['row', 'folder', 'logs', 'add']) {
-    assert.match(panelJs, new RegExp(`\\b${v}\\.onmouseenter = \\(\\) => \\{ ${v}\\.style\\.background = '#3c4043'; \\};`),
+    assert.match(panelJs, new RegExp(`\\b${v}\\.onmouseenter = \\(\\) => \\{ ${v}\\.style\\.background = '[^']+'; \\};`),
       `${v} should highlight on hover`);
     assert.match(panelJs, new RegExp(`\\b${v}\\.onmouseleave = \\(\\) => \\{ ${v}\\.style\\.background = ''; \\};`),
       `${v} should clear the highlight`);

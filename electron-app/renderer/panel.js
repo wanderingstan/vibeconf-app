@@ -79,7 +79,7 @@ function showSettingsError(msg) {
     el.id = 'settingsErrorBanner';
     el.setAttribute('role', 'alert');
     el.style.cssText = 'position:sticky;top:0;z-index:99;margin:0 0 8px;padding:8px 10px;'
-      + 'background:#5c1f1f;color:#ffd7d7;border:1px solid #a04040;border-radius:6px;'
+      + 'background:var(--paper);color:var(--pink-deep);border:1.5px solid var(--pink-deep);border-radius:6px;'
       + 'font-size:12px;line-height:1.4;cursor:pointer';
     el.title = 'Click to dismiss';
     el.addEventListener('click', () => el.remove());
@@ -443,7 +443,7 @@ function paintAvatarBgPreviewFace(dataUri, emojiChar) {
 function setAvatarBgStatus(text, isError) {
   if (!avatarBgStatus) return;
   avatarBgStatus.textContent = text || '';
-  avatarBgStatus.style.color = isError ? '#f28b82' : '#81c995';
+  avatarBgStatus.style.color = isError ? 'var(--pink-deep)' : 'var(--ink-soft)';
 }
 
 chooseAvatarBgBtn?.addEventListener('click', async () => {
@@ -1717,25 +1717,25 @@ function closeProfileMenu() {
 function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(74,49,64,0.45);display:flex;align-items:center;justify-content:center';
     const box = document.createElement('div');
-    box.style.cssText = 'background:#2a2d31;border:1px solid #5f6368;border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:0 10px 40px rgba(0,0,0,0.6)';
+    box.style.cssText = 'background:var(--paper);border:1.5px solid var(--ink);border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:var(--shadow)';
     const t = document.createElement('div');
     t.textContent = title;
     // pre-line so a caller can put a blank line between a warning and the ask.
     // textContent is still what's set — the title stays untrusted text, never HTML.
-    t.style.cssText = 'color:#e8eaed;font-size:13px;margin-bottom:10px;line-height:1.4;white-space:pre-line';
+    t.style.cssText = 'color:var(--ink);font-size:13px;margin-bottom:10px;line-height:1.4;white-space:pre-line';
     const input = document.createElement('input');
     input.type = 'text'; input.value = initial; input.placeholder = placeholder;
-    input.style.cssText = 'width:100%;box-sizing:border-box;background:#202124;border:1px solid #5f6368;border-radius:6px;color:#e8eaed;padding:8px;font-size:13px;outline:none';
+    input.style.cssText = 'width:100%;box-sizing:border-box;background:var(--cream);border:1.5px solid var(--ink-faint);border-radius:6px;color:var(--ink);padding:8px;font-size:13px;font-family:var(--font-body);outline:none';
     const btns = document.createElement('div');
     btns.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:12px';
     const cancel = document.createElement('button');
     cancel.textContent = 'Cancel';
-    cancel.style.cssText = 'background:none;border:1px solid #5f6368;color:#9aa0a6;border-radius:18px;padding:6px 14px;cursor:pointer';
+    cancel.style.cssText = 'width:auto;margin:0;background:none;border:1.5px solid var(--ink-faint);color:var(--ink-soft);border-radius:18px;padding:6px 14px;cursor:pointer';
     const ok = document.createElement('button');
     ok.textContent = okLabel;
-    ok.style.cssText = 'background:#8ab4f8;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
+    ok.style.cssText = 'width:auto;margin:0;background:var(--go);border:none;color:var(--ink);border-radius:18px;padding:6px 14px;font-weight:700;cursor:pointer';
     const close = (val) => { overlay.remove(); resolve(val); };
     cancel.onclick = () => close(null);
     ok.onclick = () => close(input.value.trim() || null);
@@ -1758,19 +1758,19 @@ function inlinePrompt({ title, placeholder = '', initial = '', okLabel = 'OK' })
 function basicAuthPrompt({ host = '', realm = '' }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div');
-    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:200;background:rgba(74,49,64,0.45);display:flex;align-items:center;justify-content:center';
     const box = document.createElement('div');
-    box.style.cssText = 'background:#2a2d31;border:1px solid #5f6368;border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:0 10px 40px rgba(0,0,0,0.6)';
+    box.style.cssText = 'background:var(--paper);border:1.5px solid var(--ink);border-radius:10px;padding:16px;width:min(360px,86vw);box-shadow:var(--shadow)';
     const t = document.createElement('div');
     t.textContent = `Sign in to ${host || 'this site'}`;
-    t.style.cssText = 'color:#e8eaed;font-size:13px;margin-bottom:4px';
+    t.style.cssText = 'color:var(--ink);font-size:13px;margin-bottom:4px';
     const sub = document.createElement('div');
     sub.textContent = realm ? `This site is password-protected (${realm}). It stays signed in for the rest of the session.` : 'This site is password-protected. It stays signed in for the rest of the session.';
-    sub.style.cssText = 'color:#9aa0a6;font-size:11px;margin-bottom:10px;line-height:1.4';
+    sub.style.cssText = 'color:var(--ink-soft);font-size:11px;margin-bottom:10px;line-height:1.4';
     const mkInput = (type, ph) => {
       const el = document.createElement('input');
       el.type = type; el.placeholder = ph;
-      el.style.cssText = 'width:100%;box-sizing:border-box;background:#202124;border:1px solid #5f6368;border-radius:6px;color:#e8eaed;padding:8px;font-size:13px;outline:none;margin-bottom:8px';
+      el.style.cssText = 'width:100%;box-sizing:border-box;background:var(--cream);border:1.5px solid var(--ink-faint);border-radius:6px;color:var(--ink);font-family:var(--font-body);padding:8px;font-size:13px;outline:none;margin-bottom:8px';
       return el;
     };
     const userIn = mkInput('text', 'Username');
@@ -1779,10 +1779,10 @@ function basicAuthPrompt({ host = '', realm = '' }) {
     btns.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:4px';
     const cancel = document.createElement('button');
     cancel.textContent = 'Cancel';
-    cancel.style.cssText = 'background:none;border:1px solid #5f6368;color:#9aa0a6;border-radius:18px;padding:6px 14px;cursor:pointer';
+    cancel.style.cssText = 'width:auto;margin:0;background:none;border:1.5px solid var(--ink-faint);color:var(--ink-soft);border-radius:18px;padding:6px 14px;cursor:pointer';
     const ok = document.createElement('button');
     ok.textContent = 'Sign in';
-    ok.style.cssText = 'background:#8ab4f8;border:none;color:#202124;border-radius:18px;padding:6px 14px;font-weight:600;cursor:pointer';
+    ok.style.cssText = 'width:auto;margin:0;background:var(--go);border:none;color:var(--ink);border-radius:18px;padding:6px 14px;font-weight:700;cursor:pointer';
     const close = (val) => { overlay.remove(); resolve(val); };
     const submit = () => { const u = userIn.value.trim(); close(u ? { user: u, password: passIn.value } : null); };
     cancel.onclick = () => close(null);
@@ -1875,7 +1875,7 @@ function renderProfileMenu(data) {
   if (!profiles.length) {
     const empty = document.createElement('div');
     empty.textContent = 'No saved bots yet.';
-    empty.style.cssText = 'padding:6px 8px;color:#9aa0a6';
+    empty.style.cssText = 'padding:6px 8px;color:var(--ink-soft)';
     profileMenu.appendChild(empty);
   }
   for (const p of profiles) {
@@ -1885,14 +1885,14 @@ function renderProfileMenu(data) {
     const displayName = p.botName || dirName;
     const row = document.createElement('div');
     row.title = `Profile folder: ${p.name}`;
-    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:6px;cursor:' + (p.isCurrent ? 'default' : 'pointer');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 8px;border-radius:6px;cursor:' + (p.isCurrent ? 'default' : 'pointer');
     if (p.isCurrent) {
       // Picking the bot you're already on is a no-op — but it must still close
       // the menu. Leaving it inert meant a natural "never mind" gesture left the
       // dropdown stuck open.
       row.onclick = () => closeProfileMenu();
     } else {
-      row.onmouseenter = () => { row.style.background = '#3c4043'; };
+      row.onmouseenter = () => { row.style.background = 'var(--paper-lo)'; };
       row.onmouseleave = () => { row.style.background = ''; };
       // Default click SWITCHES this window to that profile (#379). ⌥-click opens
       // it in a SEPARATE new window instead (additive, advanced).
@@ -1903,30 +1903,32 @@ function renderProfileMenu(data) {
     const mark = document.createElement('span');
     mark.style.cssText = 'width:14px;flex:0 0 auto;text-align:center';
     if (p.isCurrent) {
-      mark.textContent = '✓'; mark.style.color = '#8ab4f8'; mark.title = 'current bot (this window)';
+      mark.textContent = '✓'; mark.style.color = 'var(--magenta)'; mark.title = 'current bot (this window)';
     } else {
-      mark.textContent = '●'; mark.style.color = p.running ? '#81c995' : '#5f6368';
+      mark.textContent = '●'; mark.style.color = p.running ? 'var(--go-deep)' : 'var(--ink-faint)';
       mark.title = p.running ? `running on port ${p.port}` : 'not running';
     }
     const label = document.createElement('div');
     label.style.cssText = 'flex:1;min-width:0';
     const top = document.createElement('div');
     top.textContent = displayName;
-    top.style.cssText = 'font-weight:600;color:#e8eaed;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    top.style.cssText = 'font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     const sub = document.createElement('div');
     // Prefer the most identifying remembered fact: bound account email, then the
     // remembered Meet/Slack display name (#282). The Bot Name is the top line
     // now, so it's no longer a useful sub-line — fall back to the profile dir.
     sub.textContent = p.meetAccountEmail || p.lastMeetName || p.lastSlackName || dirName;
-    sub.style.cssText = 'color:#9aa0a6;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    sub.style.cssText = 'color:var(--ink-soft);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     label.appendChild(top); label.appendChild(sub);
     // Avatar thumbnail: the small PNG each bot rasterises of its own avatar
     // (see refreshAvatarThumb), else a neutral monogram so every row aligns.
     const avatar = document.createElement('div');
     // Rounded SQUARE (not a circle) to match the main agent avatar and show more
     // of the background — the most customizable part of the icon (emojis all read
-    // about the same). 6px ≈ the main avatar's 14px/54px proportion at 24px.
-    avatar.style.cssText = 'width:24px;height:24px;flex:0 0 auto;border-radius:6px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:#3c4043;color:#9aa0a6;font-size:11px;font-weight:600';
+    // about the same). 34px: it fills the row's two text lines, top to bottom,
+    // so the picture is the thing you recognise a bot by (Stan, 2026-09-24).
+    // 8px radius ≈ the main avatar's 14px/54px proportion at this size.
+    avatar.style.cssText = 'width:34px;height:34px;flex:0 0 auto;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--line);color:var(--ink-soft);font-size:14px;font-weight:600';
     if (p.avatarThumb) {
       const img = document.createElement('img');
       img.src = p.avatarThumb;
@@ -1941,10 +1943,10 @@ function renderProfileMenu(data) {
   }
   const add = document.createElement('div');
   add.textContent = '＋ New bot…';
-  add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid #5f6368;color:#8ab4f8;cursor:pointer';
+  add.style.cssText = 'padding:6px 8px;margin-top:4px;border-top:1px solid var(--line);color:var(--magenta);cursor:pointer';
   // Hover, like every other row in this menu. It was the only item without it,
   // so the one entry that CREATES something was also the one that looked inert.
-  add.onmouseenter = () => { add.style.background = '#3c4043'; };
+  add.onmouseenter = () => { add.style.background = 'var(--paper-lo)'; };
   add.onmouseleave = () => { add.style.background = ''; };
   // No prompt. The name it used to ask for was the profile DIRECTORY, from when
   // that was also the bot's name — it isn't any more, so this asked people to
@@ -1963,15 +1965,15 @@ function renderProfileMenu(data) {
   // #379: discoverability hint for the additive path.
   const hint = document.createElement('div');
   hint.textContent = '⌥-click a bot profile to open it in a new window instead';
-  hint.style.cssText = 'padding:4px 8px 2px;color:#5f6368;font-size:10px';
+  hint.style.cssText = 'padding:4px 8px 2px;color:var(--ink-faint);font-size:10px';
   profileMenu.appendChild(hint);
 
   // Debugging help: reveal the bot-profiles folder so the user can delete/rename
   // profile dirs directly (#282).
   const folder = document.createElement('div');
   folder.innerHTML = uiIcon('folder', 'lead') + 'Open bot profiles folder';
-  folder.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
-  folder.onmouseenter = () => { folder.style.background = '#3c4043'; };
+  folder.style.cssText = 'padding:6px 8px;color:var(--ink-soft);cursor:pointer';
+  folder.onmouseenter = () => { folder.style.background = 'var(--paper-lo)'; };
   folder.onmouseleave = () => { folder.style.background = ''; };
   folder.onclick = () => { closeProfileMenu(); api.invoke('open-profiles-folder').catch(() => {}); };
   profileMenu.appendChild(folder);
@@ -1979,8 +1981,8 @@ function renderProfileMenu(data) {
   // Reveal the session-log folder — quick path to past calls' logs (#292).
   const logs = document.createElement('div');
   logs.innerHTML = uiIcon('clipboard', 'lead') + 'Open call logs folder';
-  logs.style.cssText = 'padding:6px 8px;color:#9aa0a6;cursor:pointer';
-  logs.onmouseenter = () => { logs.style.background = '#3c4043'; };
+  logs.style.cssText = 'padding:6px 8px;color:var(--ink-soft);cursor:pointer';
+  logs.onmouseenter = () => { logs.style.background = 'var(--paper-lo)'; };
   logs.onmouseleave = () => { logs.style.background = ''; };
   logs.onclick = () => { closeProfileMenu(); api.invoke('open-logs-folder').catch(() => {}); };
   profileMenu.appendChild(logs);
@@ -1999,7 +2001,7 @@ async function refreshProfilesCache() {
     if (profileMenu && profileMenu.style.display === 'block') renderProfileMenu(cachedProfiles);
   } catch {
     if (!cachedProfiles && profileMenu && profileMenu.style.display === 'block') {
-      profileMenu.innerHTML = '<div style="padding:6px 8px;color:#f28b82">Failed to load profiles</div>';
+      profileMenu.innerHTML = '<div style="padding:6px 8px;color:var(--pink-deep)">Failed to load profiles</div>';
     }
   }
 }
@@ -2024,7 +2026,7 @@ if (profileMenuBtn && profileMenu) {
     // dismiss" — did nothing at all.
     document.body.dataset.menuOpen = 'true';
     if (cachedProfiles) renderProfileMenu(cachedProfiles);           // instant from cache
-    else profileMenu.innerHTML = '<div style="padding:6px 8px;color:#9aa0a6">Loading…</div>';
+    else profileMenu.innerHTML = '<div style="padding:6px 8px;color:var(--ink-soft)">Loading…</div>';
     refreshProfilesCache();                                          // refresh in the background (re-renders if still open)
   });
   document.addEventListener('click', (e) => {
@@ -2388,7 +2390,7 @@ function setUserRow(signedIn, who) {
     userIdStatus.textContent = signedIn ? who : '⚠ not signed in';
     // Signed in is the normal case — let it sit quiet in the footer's grey.
     // Only the actionable "not signed in" state earns a colour.
-    userIdStatus.style.color = signedIn ? '' : '#fdd663';
+    userIdStatus.style.color = signedIn ? '' : 'var(--magenta)';
   }
   if (userSignInMainBtn) userSignInMainBtn.style.display = signedIn ? 'none' : 'inline-block';
   if (userSignOutMainBtn) userSignOutMainBtn.style.display = signedIn ? 'inline-block' : 'none';
@@ -2886,6 +2888,7 @@ function updateBotNameBig() {
   // Friendly name first (the Bot Name preference); fall back to the on-disk
   // profile name only if there isn't one, so the heading is never empty.
   botNameBig.textContent = botNameDisplay || currentBotName || appProfileName || 'Default';
+  fitBotName();
   // The pre-call button says the bot's name too ("Call Jimmy now"), so it has
   // to follow a rename. One choke point keeps the two from drifting.
   updateJoinBtnState();
@@ -2898,6 +2901,34 @@ function updateBotNameBig() {
   // same reasoning: a rename should not leave the title above it stale.
   updateSettingsHeading();
 }
+
+// The name is set in Syne, which runs wider than the Google Sans it replaced, so
+// a long one ("Optimus Prime") overflows the 380px banner where the old face
+// still fit. Step the size down from the stylesheet's 26px to a 15px floor;
+// only past that does the ellipsis take over. Measured against the button that
+// wraps the name, since that is the box the name actually has. Runs on every
+// rename and on resize, and is a no-op when the name fits at full size.
+function fitBotName() {
+  if (!botNameBig) return;
+  // Measure against the BANNER, which is the window's width. Neither the name
+  // row nor the button around the name is a reliable bound: both are flex boxes
+  // that grow to fit their content, so asking them always says "fits".
+  // 8 + 44 = the row's padding (clear of the gear); 60 = the chip + caret.
+  const hero = botNameBig.closest('.bot-hero');
+  if (!hero) return;
+  botNameBig.style.fontSize = '';           // start from the stylesheet size
+  const max = parseFloat(getComputedStyle(botNameBig).fontSize) || 26;
+  const room = Math.max(0, hero.clientWidth - 8 - 44 - 60);
+  let size = max;
+  while (size > 15 && botNameBig.scrollWidth > room) {
+    size -= 1;
+    botNameBig.style.fontSize = `${size}px`;
+  }
+}
+window.addEventListener('resize', fitBotName);
+// Syne is a vendored webfont and can land AFTER the first name paint; a size
+// measured against the fallback face is wrong once the real one arrives.
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(fitBotName);
 
 // "Jimmy Settings" — same shape and fallback as updateSetupCallBtnLabel, so a
 // bot with no name yet reads the same way in both places.
@@ -3357,13 +3388,13 @@ if (simulateSpeechBtn) {
     const speaker = SIMULATED_SPEAKER;
     if (!text) {
       simulateSpeechStatus.textContent = 'Enter some text first.';
-      simulateSpeechStatus.style.color = '#fdd663';
+      simulateSpeechStatus.style.color = 'var(--magenta)';
       simulateText.focus();
       return;
     }
     simulateSpeechBtn.disabled = true;
     simulateSpeechStatus.textContent = 'Sending…';
-    simulateSpeechStatus.style.color = '#9aa0a6';
+    simulateSpeechStatus.style.color = 'var(--ink-soft)';
     try {
       const result = await api.invoke('simulate-speech', { text, speaker });
       if (result?.ok) {
@@ -3371,15 +3402,15 @@ if (simulateSpeechBtn) {
         // feed the user can see. Truncate so the status line stays compact.
         const echo = text.length > 80 ? text.slice(0, 80) + '…' : text;
         simulateSpeechStatus.textContent = `Sent as ${speaker}: "${echo}"`;
-        simulateSpeechStatus.style.color = '#81c995';
+        simulateSpeechStatus.style.color = 'var(--ink-soft)';
         simulateText.value = '';
       } else {
         simulateSpeechStatus.textContent = `Failed: ${result?.error || 'unknown'}`;
-        simulateSpeechStatus.style.color = '#ea4335';
+        simulateSpeechStatus.style.color = 'var(--pink-deep)';
       }
     } catch (err) {
       simulateSpeechStatus.textContent = `Error: ${err.message}`;
-      simulateSpeechStatus.style.color = '#ea4335';
+      simulateSpeechStatus.style.color = 'var(--pink-deep)';
     } finally {
       simulateSpeechBtn.disabled = false;
       // Refocus so the user is primed to type the next message immediately.
@@ -3711,7 +3742,7 @@ async function refreshAgentClaudeMd() {
 refreshAgentClaudeMd();
 saveAgentClaudeMdBtn?.addEventListener('click', async () => {
   if (!agentClaudeMdEl) return;
-  if (agentClaudeMdStatus) { agentClaudeMdStatus.style.color = '#81c995'; agentClaudeMdStatus.textContent = 'Saving…'; }
+  if (agentClaudeMdStatus) { agentClaudeMdStatus.style.color = 'var(--ink-soft)'; agentClaudeMdStatus.textContent = 'Saving…'; }
   // #557: this used to be `.catch(() => ({ ok: false }))` — every possible
   // cause, from a rejected invoke to a disk error, collapsed into the same two
   // words in an 11px span. When it actually happened nobody could tell whether
@@ -3721,7 +3752,7 @@ saveAgentClaudeMdBtn?.addEventListener('click', async () => {
     .catch((err) => ({ ok: false, error: err && err.message ? err.message : String(err) }));
   if (!r?.ok) reportSettingFailure('Personality (CLAUDE.md)', r?.error || 'unknown error');
   if (agentClaudeMdStatus) {
-    agentClaudeMdStatus.style.color = r?.ok ? '#81c995' : '#f28b82';
+    agentClaudeMdStatus.style.color = r?.ok ? 'var(--ink-soft)' : 'var(--pink-deep)';
     // Keep the reason where the eye already is, as well as in the banner.
     agentClaudeMdStatus.textContent = r?.ok ? 'Saved ✓' : `Save failed — ${r?.error || 'unknown error'}`;
     // Only the SUCCESS message self-clears. A failure that quietly wipes itself

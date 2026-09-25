@@ -28,7 +28,40 @@
 // matchesCalendarEvent) specifically so the "is this actionable right now"
 // check stays independently testable from wall-clock time — see
 // isEventUpcoming below.
-const DEFAULT_LOOKAHEAD_MS = 5 * 60 * 1000; // 5 minutes
+//
+// #639: this is now the window for NOTICING an event, and it has to open
+// before the pre-call lead time below or the feature is inert for exactly the
+// bots that asked for it — an agent given 5 minutes to prepare must be seen at
+// least 5 minutes out. 10 minutes leaves headroom for a ~60s poll tick and for
+// a lead time someone nudges upward later.
+const DEFAULT_LOOKAHEAD_MS = 10 * 60 * 1000; // 10 minutes
+
+// How late an event may already be and still be worth acting on. Was folded
+// into DEFAULT_LOOKAHEAD_MS as a symmetric default, which meant widening the
+// lookahead for #639 would ALSO have widened this — two different jobs moving
+// as one number. Split so each can be set on its own merits (#783 wants this
+// side wider; #639 wants the other side wider).
+//
+// Kept at the 5 minutes that shipped, deliberately: making a bot join meetings
+// it is further and further late for is a real behaviour change and belongs to
+// #783, which argues the right bound is the event's own end time rather than
+// any fixed grace at all.
+const DEFAULT_PAST_GRACE_MS = 5 * 60 * 1000; // 5 minutes
+
+// #639: how long before an event's start the agent is spawned to do its
+// pre-call work — compaction, reading documents, whatever it needs to be ready
+// before anyone is listening. The bot does NOT join at this point; only the
+// agent starts. The join still fires at the real start time.
+//
+// Stan, 2026-09-17, ballparking the upper limit: "I'm fine with us moving the
+// poller to detect a call even 10 minutes out if that buys us more time. I'm
+// ballparking that we should allow 5 minutes for the agent to complete all of
+// its pre-call work as an upper limit."
+//
+// An upper limit, not a reservation: the agent signals it is ready and the
+// window closes early. A bot idling five minutes on a cloud box is real money,
+// which is the argument in #639 against a "how long do I need" knob.
+const DEFAULT_PRECALL_LEAD_MS = 5 * 60 * 1000; // 5 minutes
 
 // Default dedupe retention: how long a joined event id is remembered before
 // evictStaleEventIds forgets it. 24h comfortably outlives any single day's
@@ -140,16 +173,35 @@ function msUntilStart(event, now) {
 // out is not. Events already well in the past (e.g. yesterday's recurring
 // instance the API still echoed back) are excluded via a small grace window
 // so a bot doesn't auto-join something that's long over.
-// `pastGraceMs` defaults to symmetric with `lookaheadMs` (as late as it is
-// early) — right for the 5-minute join-scheduling check this was designed
-// for. A caller using a much wider `lookaheadMs` purely for display (see
-// selectUpcomingMatches below) should pass an explicit, much smaller
-// `pastGraceMs` — otherwise a 24h lookahead would also mean showing an event
-// as "upcoming" up to 24h AFTER it started.
-function isEventUpcoming(event, now, lookaheadMs = DEFAULT_LOOKAHEAD_MS, pastGraceMs = lookaheadMs) {
+// `pastGraceMs` used to default to symmetric with `lookaheadMs`. It no longer
+// does (#639): the lookahead moved to 10 minutes so a pre-call agent can be
+// spawned in time, and inheriting that on the past side would have quietly
+// doubled how late a bot will join something — a behaviour change nobody asked
+// for, arriving as a side effect of an unrelated one. The two sides now carry
+// their own defaults and a caller that wants them linked says so.
+function isEventUpcoming(event, now, lookaheadMs = DEFAULT_LOOKAHEAD_MS, pastGraceMs = DEFAULT_PAST_GRACE_MS) {
   const delta = msUntilStart(event, now);
   if (delta === null) return false;
   return delta <= lookaheadMs && -delta <= pastGraceMs;
+}
+
+// #639: how long from `now` until this event's pre-call work should START —
+// `leadMs` before its actual start. Clamped at 0, so an event first seen
+// INSIDE its own lead window (the app launched at 09:57 for a 10:00 meeting)
+// starts its pre-call work immediately with whatever time is left, rather than
+// computing a negative delay and firing instantly by accident.
+//
+// Returns null for an event with no parseable start, matching msUntilStart —
+// callers treat that as "not schedulable" rather than "now".
+//
+// Deliberately NOT "is there enough time to be worth it": a bot that gets 40
+// seconds of prep is better off than one that gets none, and the agent itself
+// is the only thing that knows whether its prep fits. That judgement belongs
+// in the pre-call skill, not in this scheduler.
+function msUntilPreCallWork(event, now, leadMs = DEFAULT_PRECALL_LEAD_MS) {
+  const untilStart = msUntilStart(event, now);
+  if (untilStart === null) return null;
+  return Math.max(0, untilStart - leadMs);
 }
 
 // The key an event is remembered under once it's been joined (or scheduled).
@@ -231,8 +283,9 @@ function selectUpcomingMatches(events, {
   calendarIdentityEmail, botName, now, lookaheadMs = 24 * 60 * 60 * 1000,
   // Small, NOT symmetric with the 24h lookahead — otherwise a meeting from
   // 20 hours ago would still read as "upcoming". Matches the join-gate's own
-  // 5-minute grace, so a meeting that just started still shows briefly.
-  pastGraceMs = DEFAULT_LOOKAHEAD_MS,
+  // grace, so a meeting that just started still shows briefly. Names the grace
+  // constant directly rather than the lookahead it used to equal (#639).
+  pastGraceMs = DEFAULT_PAST_GRACE_MS,
 } = {}) {
   return (events || [])
     .filter((e) => e && e.id
@@ -302,6 +355,9 @@ function shouldSkipCalendarJoin(meetUrl, { currentRoom, callStatus } = {}) {
 
 module.exports = {
   DEFAULT_LOOKAHEAD_MS,
+  DEFAULT_PAST_GRACE_MS,
+  DEFAULT_PRECALL_LEAD_MS,
+  msUntilPreCallWork,
   DEFAULT_DEDUPE_MAX_AGE_MS,
   matchesCalendarEvent,
   ownerHasConfirmed,

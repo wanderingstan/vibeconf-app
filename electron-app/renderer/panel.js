@@ -1382,6 +1382,41 @@ function setJoinPhase(phase) {
   updateJoinBtnState();
 }
 
+// ── The bot is busy without being in a call (#639) ─────────────────────────
+//
+// Two windows bracket a call where an agent is working but the bot is in no
+// meeting: preparing for a scheduled one, and writing up the one that just
+// ended. callStatus reads 'idle' through both, so the panel used to offer
+// "Call <bot> now" into them — which spawns a second agent on top of the one
+// already running, or cuts a wrap-up short.
+//
+// null when free; otherwise { kind: 'pre-call' | 'after-call', summary, start }.
+let agentBusy = null;
+
+function busyNoticeText(busy) {
+  if (!busy) return '';
+  if (busy.kind === 'after-call') {
+    return `${currentBotName || 'Your bot'} is finishing up after the last call`;
+  }
+  // Name the meeting when we know it: "getting ready" with no object reads as
+  // a stuck spinner, and this window is minutes long.
+  const when = busy.start ? new Date(busy.start) : null;
+  const at = when && !Number.isNaN(when.getTime())
+    ? when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : null;
+  const what = busy.summary ? `“${busy.summary}”` : 'a scheduled call';
+  return `${currentBotName || 'Your bot'} is getting ready for ${what}${at ? ` at ${at}` : ''}`;
+}
+
+function renderAgentBusy() {
+  const el = document.getElementById('agentBusyNotice');
+  if (el) {
+    el.textContent = busyNoticeText(agentBusy);
+    el.hidden = !agentBusy;
+  }
+  updateJoinBtnState();
+}
+
 // ── Option-held: the Call button becomes "Chat with <bot>" (#500 follow-up) ──
 //
 // A bot keeps ONE Claude session named after itself, so the session it uses on
@@ -1499,6 +1534,17 @@ function updateJoinBtnState() {
     return;
   }
   joinBtn.title = 'Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.';
+
+  // #639. Deliberately AFTER the Option-held branch above: "Chat with <bot>"
+  // stays available, and is in fact the most useful thing to offer here — it
+  // reaches the very session that is busy, rather than starting a rival one.
+  if (agentBusy) {
+    joinBtn.textContent = agentBusy.kind === 'after-call' ? 'Finishing up…' : 'Getting ready…';
+    joinBtn.disabled = true;
+    joinBtn.title = `${busyNoticeText(agentBusy)}. Starting a call now would run a second agent `
+      + `on top of the one already working. Hold ⌥ to open its session instead.`;
+    return;
+  }
 
   if (addMode) {
     joinBtn.textContent = `Add ${name} to call`;
@@ -3974,6 +4020,11 @@ api.on('call-status-changed', ({ status, provider }) => {
   }
   // 'joining' / 'waiting-to-be-admitted' stay in the pre-call UI — the join
   // button hides itself once clicked, and the user sees the Meet view loading.
+});
+
+api.on('agent-busy', (busy) => {
+  agentBusy = busy || null;
+  renderAgentBusy();
 });
 
 api.on('call-failed', (data) => {

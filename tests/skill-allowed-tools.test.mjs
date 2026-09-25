@@ -34,9 +34,26 @@ const PREFIX = 'mcp__vibeconferencing__';
 // The only legitimate reason for a tool to be missing: it IS the other command.
 // Anything else absent is a bug, not a policy.
 const OWN_COMMAND_ONLY = {
-  'join-call-skill.md': ['start_call'],  // start_call creates a new Meet — that's /call
-  'call-skill.md': ['join_call'],        // join_call enters an existing Meet — that's /join-call
-
+  // wait_for_call_start parks an agent that was spawned BEFORE its meeting and
+  // has not joined anything yet (#639). Inside a call there is nothing for it
+  // to wait for, and offering it there invites a bot mid-conversation to park
+  // on a call that has already started.
+  'join-call-skill.md': [
+    'start_call',           // start_call creates a new Meet — that's /call
+    'wait_for_call_start',  // pre-call only — that's /pre-call-work
+  ],
+  'call-skill.md': [
+    'join_call',            // join_call enters an existing Meet — that's /join-call
+    'wait_for_call_start',  // pre-call only — that's /pre-call-work
+  ],
+  // #639. Runs before a call and then hands over to /join-call's loop in the
+  // SAME session, so it needs that command's whole toolset as well as its own
+  // parking tool — a whitelist that stopped at the handover would leave the bot
+  // unable to speak in the call it just waited for.
+  'pre-call-work-skill.md': [
+    'start_call',           // creating a new Meet is /call, and this one is scheduled
+    'join_call',            // the APP joins; an agent that calls this duplicates the bot (#249)
+  ],
 };
 
 function registeredTools() {

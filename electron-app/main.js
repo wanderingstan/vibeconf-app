@@ -32,7 +32,7 @@ const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
 const recordRegion = require('./record-region.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
-const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl, shouldSkipCalendarJoin } = require('./calendar-auto-join.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, msUntilPreCallWork, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl, meetCodeFromUrl, shouldSkipCalendarJoin, DEFAULT_LOOKAHEAD_MS, DEFAULT_PRECALL_LEAD_MS } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 const {
@@ -2958,6 +2958,10 @@ const localServer = new globalThis.LocalServer({
     // entry is denied, since that 15s grace window leaves the button visible
     // while we wait for the denial page to be detected.
     broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : 'meet' });
+    // #639: after-call work is the other "busy but not in a call" state, and it
+    // is expressed as a callStatus rather than a flag — so this transition is
+    // where the panel learns about it. Same event, one rule at the far end.
+    broadcastAgentBusy();
     // Rebuild the menu bar for the same reason: Call Now and Hang Up are a
     // pair, and exactly one of them should be available. A handful of rebuilds
     // per call (idle → joining → in-call → idle), not a poll.
@@ -7876,7 +7880,81 @@ function notifyClaudeSignInNeeded() {
   }).catch(() => { /* dismissed */ });
 }
 
-async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendarEvent = null } = {}) {
+// #639: one answer to "is the bot busy even though it is not in a call?", so
+// the panel does not have to assemble it from two unrelated signals.
+//
+// TWO states qualify, and they bracket a call rather than being part of one:
+//
+//   pre-call   an agent is preparing for a meeting that has not started
+//   after-call the bot has left, and its agent is still writing things up
+//
+// Both look identical from callStatus's point of view — the bot is in no
+// meeting — which is exactly why "Call <bot> now" stayed enabled through both.
+// Pressing it during after-call work has always been able to cut a wrap-up
+// short; the pre-call window just made the same hole wider and more likely.
+// Stan asked for both to be covered, 2026-09-18.
+//
+// Returns null when the bot is genuinely free.
+function agentBusyState() {
+  const pre = localServer.preCallWork;
+  if (pre) {
+    return {
+      kind: 'pre-call',
+      summary: pre.summary || null,
+      start: pre.start || null,
+      since: pre.since || null,
+    };
+  }
+  if (localServer.callStatus === 'after-call-work') {
+    return { kind: 'after-call', summary: null, start: null, since: null };
+  }
+  return null;
+}
+
+function broadcastAgentBusy() {
+  try { broadcastToRenderers('agent-busy', agentBusyState()); }
+  catch (err) { console.warn('[electron] agent-busy broadcast failed:', err.message); }
+}
+
+// #639: the lead time, in ms, from the preference. 0 disables pre-call work
+// entirely — the agent then spawns at join time exactly as it always did,
+// which is the right behaviour for anyone who doesn't want a Terminal window
+// opening five minutes before their meeting.
+//
+// Clamped to the schema's own bounds rather than trusted: this arms a timer and
+// widens a poll window, and a garbage value should degrade to the default
+// rather than schedule something absurd.
+function preCallWorkLeadMs() {
+  const raw = Number(prefValue('preCallWorkLeadMinutes'));
+  if (!Number.isFinite(raw) || raw < 0) return DEFAULT_PRECALL_LEAD_MS;
+  return Math.min(raw, 30) * 60 * 1000;
+}
+
+// #639: is there already an agent session attached to this profile?
+//
+// Two signals, neither complete on its own:
+//   - the headless child, which we own outright and can simply look at;
+//   - the local server's liveness read, which covers a Terminal-hosted agent
+//     we spawned and any session a human started by hand.
+//
+// KNOWN GAP, and the reason this is a skip rather than an assertion: the
+// liveness read infers attachment from request timing (see agent-liveness.js),
+// so an agent that is alive but quiet — which is precisely what a pre-call
+// agent doing five minutes of compaction looks like — reads as 'away'. This
+// therefore answers "is something obviously driving the bot right now", not
+// "does a session exist". It is used only to avoid spawning ON TOP of an
+// evidently-live agent; the authoritative no-double-spawn guard for the case
+// this feature creates is preCallAgentsStarted, which is a fact we recorded
+// rather than a timing inference.
+function agentIsRunning() {
+  if (headlessAgentChild) return true;
+  try {
+    const { agentIsAbsent } = require('./agent-liveness.js');
+    return !agentIsAbsent(localServer.agentState());
+  } catch { return false; }
+}
+
+async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendarEvent = null, preCall = false } = {}) {
   const { execFile } = require('child_process');
   // Test fleets drive the bot from the harness over MCP — they have no use for a
   // spawned agent, and every start_call left another Terminal window on the
@@ -8068,15 +8146,29 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
   const plan = planAgentSession(claudeDir, botName);
   const resumeFlag = claudeResumeFlag(plan.resumeSessionId);
   const nameFlag = claudeNameFlag(plan.sessionName);
-  const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
-  const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  // #639: a pre-call spawn runs /pre-call-work instead. Same session, same
+  // workdir, same MCP pin — the ONLY difference is which skill it opens with,
+  // and that skill ends by handing over to the ordinary /join-call loop once
+  // the app actually enters the room. Deliberately not a flag on /join-call:
+  // "prepare, then wait" and "join now" are different enough instructions that
+  // folding them into one skill would mean an agent reading both and choosing,
+  // which is exactly where a bot joins five minutes early.
+  //
+  // Shared with the headless and Linux launchers (agent-spawn.js) rather than a
+  // third copy of the same ternary — see agentSlashCommand's header.
+  const { agentSlashCommand, agentSlashPrompt } = require('./agent-spawn.js');
+  const slashCmd = agentSlashCommand({ onboardingCall, preCall });
+  const slashPrompt = agentSlashPrompt({
+    slashCmd, meetCode, botName: botName.replace(/"/g, ''), preCall,
+  });
+  const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"${slashPrompt}\\"`;
 
   // #242: run the agent as our own child instead, when asked to. Everything
   // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
   // only difference is who owns the process and therefore who can see it work.
   if (store.get('agentHosting') === 'headless') {
     const launched = launchClaudeHeadless({
-      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall, preCall,
     });
     // Falling through to the Terminal path on refusal is deliberate. The
     // alternative is joining a call with an agent that never starts, which
@@ -8098,7 +8190,7 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
   // then headless, then a loud failure — never a silent no-agent.
   if (process.platform === 'linux') {
     const launched = launchClaudeLinuxTerminal({
-      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall, preCall,
     });
     if (launched) return;
     // No terminal emulator AND no tmux. Headless is the last automatic option,
@@ -8106,7 +8198,7 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
     // the allowlist mode that would make this refusal much rarer).
     console.log('[electron] no Linux terminal available — trying headless');
     const headless = launchClaudeHeadless({
-      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall, preCall,
     });
     if (headless) return;
     // Loud, because the alternative is the failure this whole issue exists to
@@ -8261,7 +8353,7 @@ function binaryExists(bin) {
 // Returns true if the agent is now running in a Linux terminal, false to fall
 // back to headless. See linux-terminal.js for the shapes and why tmux is an
 // upgrade rather than a requirement.
-function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
+function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false, preCall = false }) {
   const { spawn, execFileSync } = require('child_process');
   const {
     detectTerminalEmulator, chooseAgentTerminalPlan, tmuxSessionName,
@@ -8294,6 +8386,7 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
     mcpConfigPath,
     ...planAgentSession(claudeDir, botName),
     onboardingCall,
+    preCall,
   })];
 
   // Same env contract as the headless spawn: strip the parent Claude session's
@@ -8386,7 +8479,7 @@ let headlessAgentCallOver = false;
 let headlessAgentGeneration = 0;
 
 // Returns true if the agent is now running headlessly, false to fall back.
-function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
+function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false, preCall = false }) {
   const { buildAgentArgs, headlessBlockedReason, spawnHeadlessAgent } = require('./agent-spawn.js');
 
   const blocked = headlessBlockedReason({ dangerous: dangerousMode });
@@ -8475,6 +8568,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
     mcpConfigPath,
     ...planAgentSession(claudeDir, botName),
     onboardingCall,
+    preCall,
   });
 
   // The stream becomes the activity source BEFORE the spawn, so the very first
@@ -9099,7 +9193,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '66';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '67';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -9218,6 +9312,35 @@ function ensureClaudeIntegration() {
     }
   } catch (err) {
     console.warn('[electron] /onboarding-call skill install failed:', err.message);
+  }
+
+  // --- Ensure global skill in ~/.claude/skills/pre-call-work/ ---
+  // #639: the skill a PRE-CALL spawn opens with. Prepare while nobody is
+  // waiting, park on wait_for_call_start, then hand over to /join-call's loop
+  // when the app actually enters the room. Same version gate, own directory.
+  //
+  // Installed unconditionally, not gated on the preference: turning the lead
+  // time off should stop the app SPAWNING pre-call agents, not leave a broken
+  // /pre-call-work behind for anyone who runs it by hand.
+  try {
+    const preCallSkillDir = path.join(claudeDir, 'skills', 'pre-call-work');
+    const preCallVersionFile = path.join(preCallSkillDir, '.version');
+    let preCallInstalled = '';
+    try { preCallInstalled = fs.readFileSync(preCallVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
+    if (preCallInstalled !== SKILL_VERSION) {
+      fs.mkdirSync(preCallSkillDir, { recursive: true });
+      fs.writeFileSync(path.join(preCallSkillDir, 'SKILL.md'), fs.readFileSync(
+        isPackaged
+          ? path.join(process.resourcesPath, 'mcp-server', 'pre-call-work-skill.md')
+          : path.join(__dirname, '..', 'mcp-server', 'pre-call-work-skill.md'),
+        'utf-8',
+      ));
+      fs.writeFileSync(preCallVersionFile, SKILL_VERSION);
+      console.log(`[electron] Installed/updated /pre-call-work skill v${SKILL_VERSION}`);
+      changed = true;
+    }
+  } catch (err) {
+    console.warn('[electron] /pre-call-work skill install failed:', err.message);
   }
 
   // --- Ensure global skill in ~/.claude/skills/emoji-set/ ---
@@ -10104,6 +10227,23 @@ allURLs`;
   // process that no longer exists.
   const scheduledCalendarJoins = new Map();
 
+  // #639: eventDedupeKey -> Timeout handle for the PRE-CALL WORK spawn, armed
+  // a lead time before the event's start. Same in-memory-only reasoning as
+  // scheduledCalendarJoins above: a spawn that was merely scheduled in a
+  // process that no longer exists must be re-decided from scratch, not
+  // remembered as done.
+  const scheduledPreCallWork = new Map();
+
+  // #639: eventDedupeKey -> true for events whose agent has ALREADY been
+  // spawned by the pre-call path. Read by performScheduledCalendarJoin to
+  // decide whether the join should spawn an agent at all — spawning a second
+  // one is not a degraded outcome, it is two drivers fighting over
+  // wait_for_speech, the exact 2026-07-29 failure joinMeetUrl's `spawnAgent`
+  // flag exists to prevent.
+  //
+  // A Set, not a count: one event, one agent.
+  const preCallAgentsStarted = new Set();
+
   // Recomputes the module-scope latestUpcomingCalendarEvents (declared near
   // the other cross-closure state, ~line 2723 — setupIPC's
   // get-upcoming-calendar-events handler reads it from there, and is a
@@ -10147,9 +10287,22 @@ allURLs`;
   // passed. The event still gets marked handled above: its start has arrived and
   // the bot IS in its room, which is the outcome auto-join was after.
   function performScheduledCalendarJoin(event, meetUrl) {
-    scheduledCalendarJoins.delete(eventDedupeKey(event));
+    const key = eventDedupeKey(event);
+    scheduledCalendarJoins.delete(key);
+    // #639: read-and-clear, at the TOP, so it happens on every exit from this
+    // function and not just the one that reaches the join. The #588 stand-down
+    // below returns early, and leaving the key set there would keep one event's
+    // entry forever — harmless to behaviour (the bot is already in that room,
+    // so a parked pre-call agent sees 'in-call' and carries on regardless) but
+    // it is a set that only ever grows, which is how a leak starts.
+    const agentAlreadyRunning = preCallAgentsStarted.delete(key);
+    // The pre-call window is over the moment the join runs, on every exit from
+    // this function — including the #588 stand-down below, where the bot is
+    // already in the room and is therefore no longer merely "preparing".
+    localServer.setPreCallWork(null);
+    broadcastAgentBusy();
     const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
-    store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
+    store.set('joinedCalendarEventIds', { ...joinedIds, [key]: Date.now() });
     // #588 — see the note above this function.
     if (shouldSkipCalendarJoin(meetUrl, { currentRoom: localServer.roomId, callStatus: localServer.callStatus })) {
       console.log(`[calendar] Not auto-joining "${event.summary || event.id}" — already `
@@ -10157,9 +10310,103 @@ allURLs`;
         + 'Rejoining would drop the screen share and wipe the whiteboard.');
       return;
     }
-    console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
+    // #639: if the pre-call path already spawned this event's agent, that
+    // session is alive and parked in wait_for_call_start — joining must NOT
+    // spawn another. Two agents on one call fight over wait_for_speech, which
+    // is the 2026-07-29 failure joinMeetUrl's `spawnAgent` flag exists for. The
+    // running agent notices the join through its own poll and carries straight
+    // on into the call.
+    console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`
+      + (agentAlreadyRunning ? ' — its pre-call agent is already running, not spawning another' : ''));
     activateMeetProvider(); // no-op if already on a live Meet view
-    joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
+    joinMeetUrl(meetUrl, { spawnAgent: !agentAlreadyRunning, calendarEvent: event });
+  }
+
+  // #639: spawn the agent ahead of the call so its slow work — compaction
+  // above all, but equally reading documents or warming a cache — happens
+  // while nobody is waiting, instead of mid-conversation.
+  //
+  // This does NOT join. The bot appears in the room at the real start time,
+  // exactly as before; only the brain behind it starts early. Keeping those
+  // two moments separate is the whole feature: an early JOIN would put a
+  // silent face in an empty room five minutes before the meeting, which is
+  // #732's bug, not a feature.
+  function performPreCallWork(event, meetUrl) {
+    const key = eventDedupeKey(event);
+    scheduledPreCallWork.delete(key);
+    // Any stand-down below leaves the bot NOT busy; only the spawn at the end
+    // sets it. Cleared up front so an earlier window's state cannot survive a
+    // skipped spawn and leave the panel permanently refusing to make a call.
+    localServer.setPreCallWork(null);
+
+    // Conditions can have changed in the minutes since this was armed. Each of
+    // these means the spawn is now wrong, and each is quiet rather than an
+    // error — they are ordinary outcomes of a moving world.
+    if (localServer.callStatus === 'in-call') {
+      console.log(`[calendar] Skipping pre-call work for "${event.summary || event.id}" — `
+        + `already in a call (${localServer.roomId}). Its agent is busy being a bot.`);
+      return;
+    }
+    if (agentIsRunning()) {
+      console.log(`[calendar] Skipping pre-call work for "${event.summary || event.id}" — `
+        + 'an agent session is already running for this profile.');
+      return;
+    }
+    // The join timer is the authority on whether this event is still happening.
+    // If it is gone (the event was deselected, the app is shutting down), there
+    // is nothing to prepare for.
+    if (!scheduledCalendarJoins.has(key)) {
+      console.log(`[calendar] Skipping pre-call work for "${event.summary || event.id}" — `
+        + 'its join is no longer scheduled.');
+      return;
+    }
+
+    const meetCode = meetCodeFromUrl(meetUrl);
+    if (!meetCode) return;
+    const leadS = Math.round(Math.max(0, msUntilStart(event, Date.now()) || 0) / 1000);
+    console.log(`[calendar] Pre-call work for "${event.summary || event.id}" — spawning the agent `
+      + `${leadS}s before it starts. It will prepare, then wait for the join.`);
+    preCallAgentsStarted.add(key);
+    // The meeting's title, description and times, so get_room_info can answer
+    // "what am I preparing for?" before there is a call to ask about. Without
+    // this the pre-call agent's very first instruction returns a bare "Not in
+    // a call" and it has nothing to prepare AGAINST.
+    //
+    // Safe to set this early: the join a few minutes later calls setRoom (which
+    // clears it) and then sets it again from the same event, so this is the same
+    // value arriving sooner, not a second source of truth.
+    localServer.setCalendarEventContext(event);
+    // Mark the bot busy (#639). callStatus stays 'idle' — correctly, the bot has
+    // joined nothing — so without this the panel offers "Call now" into a window
+    // where an agent is already working and a second one would be spawned on top
+    // of it. Stan, 2026-09-18, after watching the first live run.
+    localServer.setPreCallWork({ summary: event.summary || null, start: event.start || null });
+    broadcastAgentBusy();
+    // No activateMeetProvider(), no loadMeetURL, no setRoom: none of the call
+    // is set up yet, and deliberately so — an early JOIN would put a silent bot
+    // in an empty room. The agent is told which room it is FOR via the slash
+    // command, and blocks until the app actually enters it.
+    launchClaudeTerminal(meetCode, { calendarEvent: event, preCall: true });
+  }
+
+  // #639: arm the pre-call spawn alongside the join. Idempotent in the same
+  // way scheduleCalendarJoin is — a later poll re-seeing the same event is a
+  // no-op once the timer exists.
+  //
+  // Reads the lead time at ARM time rather than baking in the default, so
+  // changing the preference takes effect for the next meeting rather than the
+  // next app restart. Same live-settable spirit as afterCallWorkSeconds.
+  function schedulePreCallWork(event, meetUrl) {
+    const key = eventDedupeKey(event);
+    if (scheduledPreCallWork.has(key)) return;
+    const leadMs = preCallWorkLeadMs();
+    if (leadMs <= 0) return;   // 0 disables the feature, per the preference's own docs
+    const delayMs = msUntilPreCallWork(event, Date.now(), leadMs);
+    if (delayMs === null) return;
+    console.log(`[calendar] Scheduling pre-call work for "${event.summary || event.id}" in `
+      + `${Math.round(delayMs / 1000)}s (${Math.round(leadMs / 60000)}m before it starts)`);
+    const timer = setTimeout(() => performPreCallWork(event, meetUrl), delayMs);
+    scheduledPreCallWork.set(key, timer);
   }
 
   // Schedules (rather than immediately performing) the join for a just-
@@ -10175,6 +10422,11 @@ allURLs`;
     console.log(`[calendar] Scheduling auto-join for "${event.summary || event.id}" in ${Math.round(delayMs / 1000)}s`);
     const timer = setTimeout(() => performScheduledCalendarJoin(event, meetUrl), delayMs);
     scheduledCalendarJoins.set(key, timer);
+    // #639. Deliberately AFTER the join is in the map: performPreCallWork
+    // treats a scheduled join as its proof the event is still live, so arming
+    // the two in the other order would race on the zero-delay case (an event
+    // first seen inside its own lead window fires immediately).
+    schedulePreCallWork(event, meetUrl);
   }
 
   // Near-term fix for "the bot that should join isn't even running": ANY
@@ -10279,7 +10531,7 @@ allURLs`;
         const upcoming = isEventUpcoming(e, now);
         const already = !!(e && e.id && Object.prototype.hasOwnProperty.call(excludeIds, eventDedupeKey(e)));
         const confirmed = ownerHasConfirmed(e);
-        const reason = already ? 'already handled/scheduled' : !upcoming ? 'outside 5m window' : !matched ? 'no identity/tag match' : !confirmed ? `owner has not accepted (selfResponseStatus=${e && e.selfResponseStatus})` : 'MATCH';
+        const reason = already ? 'already handled/scheduled' : !upcoming ? `outside ${Math.round(DEFAULT_LOOKAHEAD_MS / 60000)}m window` : !matched ? 'no identity/tag match' : !confirmed ? `owner has not accepted (selfResponseStatus=${e && e.selfResponseStatus})` : 'MATCH';
         return `"${(e && e.summary) || (e && e.id) || '(untitled)'}" (raw start="${e && e.start}", starts ${minutesUntil == null ? '?' : minutesUntil + 'm'} from now, ${reason})`;
       });
       console.log(`[calendar] Poll saw ${events.length} event(s): ${summaries.join('; ')}`);

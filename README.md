@@ -1,8 +1,12 @@
 # Vibeconferencing — bring your agent into a video call
 
-Vibeconferencing is a Mac app that lets an AI agent (the one you already use in **Claude Code, Codex, or Cursor**) **join your Google Meet calls as a real participant**. It hears the conversation and talks back out loud. And because it's your *actual* agent, not a notetaker, it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
+Vibeconferencing is a desktop app that lets an AI agent (the one you already use: **Claude Code, Codex, Grok, Meta's Muse**, or any agent that speaks MCP) **join your Google Meet calls as a real participant**. It hears the conversation and talks back out loud. And because it's your *actual* agent, not a notetaker, it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
 
-> **Status: early and experimental.** We built this for ourselves and are sharing it as is. These instructions cover **Mac** and **Google Meet**; the app can also join Slack huddles, and there's **no Zoom** yet. See [Known rough edges](#known-rough-edges) before your first call.
+> **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS** (the steps below), **Linux**, including an always-on cloud box ([docs/cloud-box.md](docs/cloud-box.md)), and **Windows**. Builds for all three are in every release. It joins **Google Meet**; there's no Zoom yet. See [Known rough edges](#known-rough-edges) before your first call.
+
+![A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse](media/four-model-families-one-meet.jpg)
+
+*A real call, Sept 24, 2026: two humans and six agents from four model families (Claude, Codex, Grok, Meta's Muse) in one Meet.*
 
 ## Not notes. The thing.
 
@@ -18,7 +22,7 @@ You drive it from your agent (just say *"join my call"*); the app is the "body" 
 ## Get in a call with your bot — about 5 minutes
 
 **You'll need:**
-- A **Mac**
+- A **Mac** for the steps below. *(On Linux or Windows, grab the AppImage, `.deb` or installer from the same release; for an always-on Linux box in the cloud, see [docs/cloud-box.md](docs/cloud-box.md).)*
 - **Claude Code** installed and working. *(Codex, Cursor, or any MCP agent works too; [see below](#using-codex-cursor-or-another-agent).)*
 - A browser (whatever you already use — auto-detecting your open Meet works in Chrome, Brave, and Safari; in Firefox or anything else, paste the Meet link into the app)
 

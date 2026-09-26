@@ -33,6 +33,10 @@ You drive it from your agent (just say *"join my call"*); the app is the "body" 
 ### 1. Download and install
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
 
+<img src="media/app-window.png" width="340" alt="The Vibeconferencing app window: the bot's name at the top, its emoji avatar over a desert background, and a green Call button">
+
+*The app is your bot's window: its name, its face, and one button to bring it into a call.*
+
 ### 2. Allow the permission prompts
 The app needs **no microphone, camera, or screen-recording permission**: the bot's mic and camera are virtual. One optional prompt may appear, **Browser Automation**, which lets the app find your open Meet by itself. Skip it and just paste the Meet link into the app.
 

@@ -14,8 +14,11 @@
 // Vision PREFERS the `claude` CLI — it uses the machine's Claude subscription, so
 // no ANTHROPIC_API_KEY is needed (see claudeCliSees below). The API key is only a
 // fallback for a host where the CLI isn't logged in. If NEITHER is available the
-// test still captures B's screenshot and prints the path for a manual eyeball
-// (no hard assertion) — it degrades to capture-and-look rather than failing.
+// test still captures B's screenshot and prints the path for a manual eyeball,
+// and records the nonce check as SKIPPED — not as a pass (#627). It had recorded
+// `true` with an honest note, and only the ✅ survived into a digest or a glance,
+// so the one check that proves a viewer can SEE the share read green on a machine
+// where it had never once run.
 //
 // PREREQ: two bots running:
 //   scripts/spawn-test-fleet.sh 2
@@ -29,7 +32,7 @@
 import { readFileSync } from 'fs';
 import { execFile } from 'child_process';
 import { dirname } from 'path';
-import { Bot, sleep, report, record } from './meet-test-lib.mjs';
+import { Bot, sleep, report, record, skip } from './meet-test-lib.mjs';
 
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
 const ROOM = arg('room', 'paz-sqoa-npe');
@@ -140,9 +143,12 @@ async function run() {
   if (shot.ok) {
     const seen = await visionSeesText(shot.path, NONCE);
     if (seen === null) {
-      // Neither the claude CLI nor an API key was available: capture-and-eyeball,
-      // not a failure.
-      record(b.name, 'nonceVisible', true, `SKIPPED vision (no claude CLI + no ANTHROPIC_API_KEY) — eyeball: ${shot.path}`);
+      // Neither the claude CLI nor an API key was available. Capture-and-eyeball,
+      // and record it as SKIPPED: not a failure, but emphatically not a pass —
+      // nothing here checked that the nonce reached B (#627). Give the host the
+      // credential (LaunchAgent EnvironmentVariables, NOT ~/.zshrc — `zsh -lc`
+      // never sources it) or put `claude` on the login-shell PATH.
+      skip(b.name, 'nonceVisible', `vision UNAVAILABLE (no claude CLI + no ANTHROPIC_API_KEY) — nonce NOT verified; eyeball: ${shot.path}`);
     } else {
       record(b.name, 'nonceVisible', seen,
         seen ? `vision confirms "${NONCE}" is on the shared screen` : `vision did NOT see "${NONCE}" — share may not have delivered. ${shot.path}`);

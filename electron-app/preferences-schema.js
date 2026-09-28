@@ -311,6 +311,22 @@ const PREFERENCES = {
       'default; verbose on disk. Env VIBECONF_RECORD_CALL=1 ' +
       'forces it on (used by the test fleet so a nightly stall comes with a recording).',
   },
+  subtitleOffsetMs: {
+    type: 'number',
+    default: 0,
+    label: 'Subtitle timing offset (ms)',
+    description:
+      'Shift every subtitle cue in call-recording.srt/.vtt by this many ' +
+      'milliseconds. Negative pulls them EARLIER. The cue timings are exact ' +
+      'in the sense that they are when the caption appeared — but Meet\'s ' +
+      'recognizer publishes a caption a beat after the words were actually ' +
+      'audible, so subtitles built from them run slightly late against the ' +
+      'video. How late depends on the recognizer and the speaker; -500 to ' +
+      '-1000 is a reasonable starting point if yours look behind. 0 (no ' +
+      'shift) by default, since the raw timings are the honest record of what ' +
+      'the bot heard and when. Only affects the sidecar files; nothing else ' +
+      'reads it.',
+  },
   keepCallRecordingTracks: {
     type: 'boolean',
     default: false,

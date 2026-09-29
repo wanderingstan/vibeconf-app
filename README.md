@@ -19,6 +19,10 @@ Most meeting AI sends a summary after everyone leaves. This one works **in the c
 > **Everyone else:** a transcript, later.
 > **Yours:** the first version, now.
 
+![Asked for something visually compelling, one bot puts a clay "Better Call Jimmy" on the shared board while the other bot is still thinking; Seth reacts](media/made-it-while-the-other-bot-was-thinking.gif)
+
+*A real call, Aug 11, 2026: asked for something visually compelling, one bot put a clay "Better Call Jimmy" on the board while the other was still thinking.*
+
 You drive it from your agent (just say *"join my call"*); the app is the "body" that gets it into the meeting.
 
 ---
@@ -88,6 +92,10 @@ Talk in plain language, no commands needed:
 ## Using Codex, Cursor, or another agent
 
 Any MCP-capable agent can drive the bot. **Claude Code is wired up automatically** when you install the app. For other agents you point them at the app's bundled MCP server once. See **[docs/codex.md](docs/codex.md)** (Codex CLI) and the **[Quickstart](docs/quickstart.md)**.
+
+![Two Claude Code sessions, a Codex session and a Grok bot introduce themselves in turn in one Google Meet, each tile labelled with its model family](media/one-human-four-agents.gif)
+
+*A real call, Sept 23, 2026: two Claude Code sessions, a Codex session and a Grok bot, taking turns in one Meet.*
 
 ## Known rough edges
 

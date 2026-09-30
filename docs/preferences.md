@@ -8,9 +8,76 @@ Every persisted setting the bot exposes to agents lives in `electron-app/prefere
 |---|---|
 | **Panel UI** | Open the app's panel window → cog icon (top right) → Settings. Most user-facing prefs have a labeled input. |
 | **Claude / Codex / MCP** | `list_preferences` returns all keys with current values, defaults, types, and descriptions. `set_preference({key, value})` writes one. |
-| **Config file** | `~/Library/Application Support/Vibeconferencing/config.json` (or `…/profiles/<name>/config.json` for a profiled instance). Hand-edit only if the app is closed. |
+| **Config file** | `--config=<path.json>` at launch, or hand-edit `config.json`. The only route that works with no screen — see [Headless setup](#headless-setup-no-screen). |
 
 The schema is authoritative — this page is generated from it. If the two diverge, the schema wins.
+
+## Headless setup (no screen)
+
+On a box with no display — a Muse VM, an AWS instance, anything an agent sets up
+by itself — the other two routes don't exist. App Settings is a window, and
+`set_preference` needs a running MCP server, so it can only change a bot that is
+already up. Neither can configure anything *before* first launch.
+
+### `--config=<path.json>`
+
+```bash
+cat > /tmp/bot.json <<'EOF'
+{
+  "botName": "Nova",
+  "ttsApiKey": "sk-...",
+  "ttsProvider": "elevenlabs",
+  "remoteLogging": true
+}
+EOF
+
+Vibeconferencing --config=/tmp/bot.json
+```
+
+Applied before anything reads a preference, validated against the same schema
+`set_preference` uses, and each key routed to the app-level or per-profile file
+by itself — you don't need to know which is which.
+
+**It is fatal on a bad file, on purpose.** One unknown key, one out-of-range
+value, one JSON syntax error and *nothing* is applied and the app exits
+non-zero, naming every problem. A partly-applied config on an unattended box is
+the worst case available: it runs, it looks healthy, and it matches no file
+anyone can inspect. A near-miss key is told what it probably meant, so
+`ttsAPIKey` says `did you mean 'ttsApiKey'?` rather than silently doing nothing.
+
+**API keys work here and nowhere else.** `ttsApiKey` and `realtimeApiKey` are
+absent from the schema by design, so no agent can reach them through
+`set_preference` — which is why a headless box with a perfectly good key kept
+speaking through espeak. `--config=` is an operator channel, not the agent-facing
+one, so it may set them. Key *names* are logged to confirm the file took effect;
+values never are.
+
+A credential or a trust decision is refused with its reason: `vcSessionToken`,
+`dangerousMode` and the app's own bookkeeping cannot be set from a file.
+
+### Editing `config.json` by hand
+
+| Scope | Path |
+|---|---|
+| App-level (API keys, login, update channel) | `<userData>/config.json` |
+| A profile's own settings | `<userData>/profiles/<name>/agent/config.json` |
+
+where `<userData>` is `~/Library/Application Support/Vibeconferencing` on macOS
+and `~/.config/Vibeconferencing` on Linux. Older profiles may still have a loose
+`profiles/<name>/config.json`; it is migrated into `agent/` on next launch and
+left in place as a safety net.
+
+Two sharp edges make `--config=` the better route where you have the choice:
+
+- **A profile's store is cached in memory.** Edit that file while the app is
+  running and the change is invisible until restart — and the app's next write
+  persists its cached copy over the top, silently discarding your edit. Stop the
+  app first. (The app-level file is re-read per access, so edits to it *do* take
+  effect live.)
+- **Nothing validates a hand-written file.** A typo'd key or a string where a
+  number belongs is accepted and behaves exactly like an unset default, with
+  nothing ever saying so.
+
 
 ## Reference
 

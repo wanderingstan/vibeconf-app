@@ -1,6 +1,6 @@
 # Vibeconferencing — bring your agent into a video call
 
-Vibeconferencing is a desktop app that lets an AI agent (the one you already use: **Claude Code, Codex, Grok, Meta's Muse**, or any agent that speaks MCP) **join your Google Meet calls as a real participant**. It hears the conversation and talks back out loud. And because it's your *actual* agent, not a notetaker, it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
+[Vibeconferencing](https://vibeconferencing.com/) is a desktop app that lets an AI agent (the one you already use: **Claude Code, Codex, Grokbot, Meta's Muse**, or any agent that speaks MCP) **join your Google Meet calls as a real participant**. It hears the conversation and talks back out loud. And because it's your *actual* agent, not a notetaker, it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
 
 > **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS** (the steps below), **Linux**, including an always-on cloud box ([docs/cloud-box.md](docs/cloud-box.md)), and **Windows**. Builds for all three are in every release. It joins **Google Meet**; there's no Zoom yet. See [Known rough edges](#known-rough-edges) before your first call.
 
@@ -36,6 +36,10 @@ You drive it from your agent (just say *"join my call"*); the app is the "body" 
 
 ### 1. Download and install
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
+
+<img src="media/app-window.png" width="340" alt="The Vibeconferencing app window: the bot's name at the top, its emoji avatar over a desert background, and a green Call button">
+
+*The app is your bot's window: its name, its face, and one button to bring it into a call.*
 
 ### 2. Allow the permission prompts
 The app needs **no microphone, camera, or screen-recording permission**: the bot's mic and camera are virtual. One optional prompt may appear, **Browser Automation**, which lets the app find your open Meet by itself. Skip it and just paste the Meet link into the app.
@@ -141,7 +145,7 @@ Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issue
     whiteboard, …)                                        virtual camera)        participant)
 ```
 
-The agent never touches WebRTC. It calls MCP tools; the app does the real-time media work (captures call audio for transcription, plays synthesized speech into a virtual mic, renders the avatar/whiteboard into a virtual camera) and drives the Meet/Slack UI.
+The agent never touches WebRTC. It calls MCP tools; the app does the real-time media work (plays synthesized speech into a virtual mic, renders the avatar/whiteboard into a virtual camera) and drives the Meet/Slack UI.
 
 **Build** (Node ≥ 18 and [pnpm](https://pnpm.io)):
 

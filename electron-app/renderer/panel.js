@@ -302,14 +302,23 @@ document.addEventListener('keydown', (e) => {
   if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
   showScreen(mainScreen);
 });
+// 🧠 opens the agent's activity feed in its own window.
+//
+// #547: this used to be a single getElementById, because the button only
+// existed in the in-call row — so it disappeared the moment a call ended, which
+// is exactly when after-call work (issue filing, call notes) is running and you
+// most want to watch the agent. It is now scoped like 👀: one button per row,
+// both driven from here as a set, so neither row can quietly lose its handler.
+for (const btn of document.querySelectorAll('.brain-open-btn')) {
+  btn.addEventListener('click', () => {
+    api.invoke('open-brain-window').catch(() => {});
+  });
+}
+
 // ⓘ opens Troubleshooting in its OWN window, so the panel keeps showing the
 // avatar and the call controls. (The screen's own ⧉ Pop out can't do this: it
 // re-parents the single panelView, which leaves the main window with no panel
 // and falling back to a full-size Meet view.)
-document.getElementById('openBrainBtn')?.addEventListener('click', () => {
-  api.invoke('open-brain-window').catch(() => {});
-});
-
 document.getElementById('openTroubleshootingBtn')?.addEventListener('click', () => {
   api.invoke('open-troubleshooting-window').catch(() => {});
 });

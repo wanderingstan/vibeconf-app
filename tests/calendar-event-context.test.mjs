@@ -46,7 +46,9 @@ test('setCalendarEventContext keeps the event end time', () => {
 });
 
 test('get_room_info prints End alongside Start', () => {
-  assert.match(mcp, /if \(cal\.end\) calLines\.push\(`  End: \$\{cal\.end\}`\)/);
+  // #639 moved this into formatCalendarContext, shared by the in-call and
+  // pre-call renderings — the line moved, the guarantee did not.
+  assert.match(mcp, /if \(cal\.end\) lines\.push\(`  End: \$\{cal\.end\}`\)/);
 });
 
 test('the /api/sync/:roomId status payload includes calendarEventContext', () => {
@@ -70,8 +72,15 @@ test('performScheduledCalendarJoin passes the matched event through as calendarE
   // Window widened from 600 in #588, which added the "already in this room"
   // stand-down ahead of the join. Only the slice grew — the assertion below is
   // unchanged, and it is still scoped to this one function's body.
-  const body = main.slice(start, start + 1400);
-  assert.match(body, /joinMeetUrl\(meetUrl, \{ spawnAgent: true, calendarEvent: event \}\);/);
+  // Widened again in #639, which added the pre-call read-and-clear at the top.
+  const body = main.slice(start, start + 2600);
+  // spawnAgent is no longer the literal `true`: a pre-call agent is already
+  // running for this event and must not be duplicated (#639). The event still
+  // has to reach the join, which is what this test is actually about.
+  assert.match(body, /joinMeetUrl\(meetUrl, \{ spawnAgent: !agentAlreadyRunning, calendarEvent: event \}\);/);
+  // And the flag must come from the pre-call set, not from anywhere else —
+  // a stray `true` here would spawn a second driver for the same call.
+  assert.match(body, /const agentAlreadyRunning = preCallAgentsStarted\.delete\(key\);/);
 });
 
 test('get_room_info surfaces a Calendar context section when present', () => {

@@ -331,6 +331,7 @@ class LocalServer {
     // Room state (single room — the active call)
     this.roomId = null;
     this.callId = null;          // first-class per-join call ID (#292), minted in setRoom
+    this.preCallWork = null;     // #639: { summary, start, since } while an agent preps for a scheduled call
     this.callStartedAt = null;   // ISO timestamp the current call's room was set
     this.currentUrl = null;      // the meet/slack URL currently loaded (set by loadMeetURL),
                                  // surfaced to the panel so the URL field reflects CLI launches
@@ -676,6 +677,19 @@ class LocalServer {
   // join was triggered by one — so the spawned agent can see WHY it's here
   // (the event's title/description/start) via get_room_info, instead of
   // walking into a call cold. Call AFTER setRoom (setRoom clears this).
+  // #639: the pre-call window — an agent is up and working, minutes before a
+  // meeting, with no call to show for it. Nothing else in the app models this:
+  // callStatus is still 'idle' (correctly — the bot has joined nothing), so
+  // from every existing surface the bot looks free when it is not.
+  //
+  // { summary, start } or null. Read by the panel to say what the bot is doing
+  // and to refuse a "Call now" that would collide with it.
+  setPreCallWork(info) {
+    this.preCallWork = info
+      ? { summary: info.summary || null, start: info.start || null, since: Date.now() }
+      : null;
+  }
+
   setCalendarEventContext(event) {
     if (!event) { this.calendarEventContext = null; return; }
     this.calendarEventContext = {
@@ -2188,6 +2202,7 @@ class LocalServer {
       // Calendar auto-join (#299): only present when this join was matched
       // from a Google Calendar event — see setCalendarEventContext.
       calendarEventContext: this.calendarEventContext || null,
+      preCallWork: this.preCallWork || null,
       botState: this.botState,
       anyoneSpeaking: this.anyoneSpeaking,
       // #343: concurrent-speaker count (interruptibility signal) + the busiest
@@ -5460,6 +5475,14 @@ class LocalServer {
         status: {
           callStatus: this.callStatus,
           mode: this.mode,
+          // #639: the pre-call window is the one time an agent is running with
+          // NO room, and still needs to know what is coming. The room-scoped
+          // status has carried this since #299; this payload is the only one
+          // reachable before a join, so without it here a pre-call agent is
+          // blind to the meeting it was started for. Found live on 2026-09-18:
+          // the agent's own receipt read "NO CALENDAR CONTEXT".
+          calendarEventContext: this.calendarEventContext || null,
+          preCallWork: this.preCallWork || null,
           localServerUrl: this.getLocalServerUrl(),
           localServerPort: this.port,
           localProfile: this.localProfile,

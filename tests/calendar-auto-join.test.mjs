@@ -18,6 +18,7 @@ const {
   ownerHasConfirmed,
   isEventUpcoming,
   msUntilStart,
+  msUntilPreCallWork,
   eventDedupeKey,
   evictStaleEventIds,
   selectEventToJoin,
@@ -26,6 +27,8 @@ const {
   meetCodeFromUrl,
   shouldSkipCalendarJoin,
   DEFAULT_LOOKAHEAD_MS,
+  DEFAULT_PAST_GRACE_MS,
+  DEFAULT_PRECALL_LEAD_MS,
   DEFAULT_DEDUPE_MAX_AGE_MS,
 } = require('../electron-app/calendar-auto-join.js');
 
@@ -170,9 +173,59 @@ test('isEventUpcoming: false for an event that started well in the past', () => 
 
 test('isEventUpcoming: respects a custom lookaheadMs', () => {
   const now = Date.parse('2026-08-08T10:00:00Z');
-  const event = makeEvent({ start: '2026-08-08T10:09:00Z' });
+  // 12 minutes out: past the 10-minute default, inside an explicit 20.
+  const event = makeEvent({ start: '2026-08-08T10:12:00Z' });
   assert.equal(isEventUpcoming(event, now, DEFAULT_LOOKAHEAD_MS), false);
-  assert.equal(isEventUpcoming(event, now, 10 * 60 * 1000), true);
+  assert.equal(isEventUpcoming(event, now, 20 * 60 * 1000), true);
+});
+
+// #639 split the one constant into two. These guard the split itself: the
+// point is not the numbers, it is that widening one side must not move the
+// other. Before the split, `pastGraceMs` defaulted to `lookaheadMs`, so
+// raising the lookahead to 10 minutes silently doubled how late a bot would
+// join a meeting it had missed the start of.
+test('isEventUpcoming: the lookahead opens at 10 minutes for #639 pre-call work', () => {
+  const now = Date.parse('2026-08-08T10:00:00Z');
+  assert.equal(isEventUpcoming(makeEvent({ start: '2026-08-08T10:10:00Z' }), now), true);
+  assert.equal(isEventUpcoming(makeEvent({ start: '2026-08-08T10:11:00Z' }), now), false);
+});
+
+test('isEventUpcoming: widening the lookahead does NOT widen the past grace', () => {
+  const now = Date.parse('2026-08-08T10:00:00Z');
+  // 8 minutes LATE. Inside the 10-minute lookahead if the grace were still
+  // symmetric with it; outside the 5-minute grace that actually applies.
+  assert.equal(isEventUpcoming(makeEvent({ start: '2026-08-08T09:52:00Z' }), now), false);
+  // 4 minutes late still joins, exactly as before the split.
+  assert.equal(isEventUpcoming(makeEvent({ start: '2026-08-08T09:56:00Z' }), now), true);
+  // And an explicit grace is still honoured — this is the knob #783 will use.
+  assert.equal(isEventUpcoming(makeEvent({ start: '2026-08-08T09:52:00Z' }), now,
+    DEFAULT_LOOKAHEAD_MS, 30 * 60 * 1000), true);
+});
+
+// ── msUntilPreCallWork: when the AGENT starts, as distinct from when the bot
+//    joins (#639) ────────────────────────────────────────────────────────
+test('msUntilPreCallWork: fires one lead time before the start', () => {
+  const now = Date.parse('2026-08-08T10:00:00Z');
+  const event = makeEvent({ start: '2026-08-08T10:08:00Z' });
+  // 8 minutes out, 5 minutes of lead: prep starts in 3.
+  assert.equal(msUntilPreCallWork(event, now), 3 * 60 * 1000);
+  assert.equal(msUntilPreCallWork(event, now, 2 * 60 * 1000), 6 * 60 * 1000);
+});
+
+test('msUntilPreCallWork: clamps to 0 inside the lead window, never negative', () => {
+  const now = Date.parse('2026-08-08T10:00:00Z');
+  // The app launched at 09:57 for a 10:00 meeting: start prep NOW with what is
+  // left, rather than computing -180000 and reading as "overdue".
+  assert.equal(msUntilPreCallWork(makeEvent({ start: '2026-08-08T10:03:00Z' }), now), 0);
+  assert.equal(msUntilPreCallWork(makeEvent({ start: '2026-08-08T10:00:00Z' }), now), 0);
+  // Already started, inside the past grace: still 0, not negative.
+  assert.equal(msUntilPreCallWork(makeEvent({ start: '2026-08-08T09:58:00Z' }), now), 0);
+});
+
+test('msUntilPreCallWork: null for an event with no usable start', () => {
+  const now = Date.parse('2026-08-08T10:00:00Z');
+  assert.equal(msUntilPreCallWork(makeEvent({ start: undefined }), now), null);
+  assert.equal(msUntilPreCallWork(makeEvent({ start: 'not-a-date' }), now), null);
 });
 
 test('isEventUpcoming: false for a missing/unparseable start', () => {

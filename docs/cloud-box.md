@@ -66,25 +66,57 @@ box. CI cannot (it needs live AWS), so run it by hand after changing `--run`.
 
 ## Seeing the screen
 
+Every box is on the tailnet and already serves its screen there, so the short
+answer is one Finder → Go → Connect to Server away — no tunnel to hold open, no
+second terminal:
+
 ```bash
-vibeconf-attach --screen      # leave this running; it holds the tunnel open
-open vnc://localhost:5900     # in another terminal, or Finder → Go → Connect to Server
+open vnc://vibeconf-<name>.tail468cd7.ts.net       # e.g. vibeconf-seth
+vibeconf-attach <name> --run 'cat ~/.vnc/plain'   # the password
 ```
 
-macOS Screen Sharing is a VNC client, so there is nothing to install. The box
-runs `xvfb`, `x11vnc` and `noVNC` as systemd services, with x11vnc bound to
-loopback — so it is not exposed to the internet and must be tunnelled. The
-password is in `~/.vnc/passwd` on the box.
+macOS Screen Sharing is a VNC client, so there is nothing to install.
 
-You need this for the one-time logins below, and any time you want to see what
-the app is actually showing.
+**Why this works when `vnc://localhost` doesn't.** x11vnc binds to loopback, so
+the box does not expose VNC to the internet and never has. What makes the
+tailnet address work is `tailscale serve`, set up at bring-up, forwarding
+`tcp://<box>:5900` → `127.0.0.1:5900` — tailnet only. Confirm it on any box
+with `tailscale serve status`. That gives Screen Sharing a real hostname to
+connect to, which matters because Screen Sharing refuses `vnc://localhost`
+outright: it decides you are connecting to your own Mac and says it cannot
+connect to itself, regardless of port. So the tunnel route below cannot be used
+with Screen Sharing at all.
+
+The same `tailscale serve` config also proxies noVNC in a browser, again with
+no tunnel:
+
+```
+https://vibeconf-<name>.tail468cd7.ts.net
+```
+
+**The tunnel fallback**, for when you are off the tailnet. `--screen` forwards
+**6080** (noVNC) over SSM and opens a browser — it does NOT give you a
+`vnc://localhost:5900` you can point Screen Sharing at:
+
+```bash
+vibeconf-attach --screen       # leave this running; it holds the tunnel open
+vibeconf-attach --screen-vnc   # forwards 5900 instead, for a NON-Apple VNC client
+```
+
+Two passwords live on the box and they are not interchangeable: `~/.vnc/plain`
+is the one you type, `~/.vnc/passwd` is x11vnc's obfuscated copy of it.
+
+You need the screen for the one-time logins below, and any time you want to see
+what the app is actually showing.
 
 ## Setting up a new box (once per person)
 
 The AMI carries the software. It deliberately does NOT carry anyone's identity,
 so each box needs its own logins. See wanderingstan/vibeconferencing#508.
 
-1. `vibeconf-attach --screen`, connect with Screen Sharing.
+1. Connect to the screen: `open vnc://vibeconf-<name>.tail468cd7.ts.net`
+   (see **Seeing the screen** — `--screen` is the off-tailnet fallback and
+   cannot be used with Screen Sharing).
 2. In the app, **sign in to vibeconferencing.com** and **connect Calendar
    access**. This is the one that matters: calendar auto-join reads *your*
    Google Calendar through the website and matches events against this bot.

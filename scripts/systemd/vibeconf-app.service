@@ -10,6 +10,12 @@ Wants=network-online.target
 # Requires, not Wants: with no X display the app cannot start at all, so there
 # is no useful degraded mode to fall back to.
 Requires=xvfb.service
+# StartLimit* stops a genuinely broken build from spinning in a crash loop all
+# night — after 5 failures in 5 minutes it stays down, which is a state a human
+# can actually notice. These are [Unit] directives: in [Service] systemd parses
+# neither of them and the rate limit is silently lost.
+StartLimitBurst=5
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
@@ -21,13 +27,10 @@ Environment=DISPLAY=:99
 ExecStart=/opt/Vibeconferencing/vibeconferencing-agent --no-sandbox
 
 # An always-on bot is worth restarting. RestartSec gives Xvfb a moment if they
-# race on boot, and StartLimit* stops a genuinely broken build from spinning in
-# a crash loop all night — after 5 failures in 5 minutes it stays down, which is
-# a state a human can actually notice.
+# race on boot. The rate limit that stops a crash loop lives in [Unit] above,
+# where systemd actually parses StartLimit*.
 Restart=always
 RestartSec=10
-StartLimitBurst=5
-StartLimitIntervalSec=300
 
 [Install]
 WantedBy=multi-user.target

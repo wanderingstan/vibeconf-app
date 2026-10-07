@@ -514,6 +514,121 @@ test('set-config is the only write path that evicts, and it reads the pair first
     'a bot rename must NOT evict — planAgentSession carries that session over');
 });
 
+// --- #546, second half: the edit that arrives as TWO writes -------------------
+//
+// Everything above tests one preference changing at a time, which is how the
+// working-directory field behaves. The session name/id field does NOT: the panel
+// saves it as `setConfig('agentSessionAuto', …)` followed by
+// `setConfig('agentSession', …)`, two round trips to main with a moment in
+// between where the store holds the NEW auto flag beside the OLD field value.
+//
+// That moment is where the first version of this fix leaked. Only `claudeWorkDir`
+// and `agentSession` were guarded, so the auto write slipped through unread and
+// the guarded write that followed compared a pair the app had never actually
+// been in. Clearing a hand-typed name — the single most likely edit here, since
+// it is how you hand a bot back to following its own name — evicted nothing and
+// orphaned the typed name's session, which is the "silently resume an unrelated
+// session" half of #546 rather than the cosmetic accumulate-junk half.
+//
+// So these tests replay whole edits, write by write, instead of calling
+// staleSessionCacheKey once.
+
+const { sessionPairFor } = require('../electron-app/agent-session.js');
+
+// Which keys set-config guards, read OUT of main.js rather than restated here —
+// the bug was the contents of that set, so a copy in the test would have agreed
+// with the bug.
+const sessionKeyedKeys = (() => {
+  const decl = main.slice(main.indexOf('const sessionKeyed = key ==='));
+  return new Set([...decl.slice(0, decl.indexOf(';')).matchAll(/key === '([^']+)'/g)].map((m) => m[1]));
+})();
+
+// One set-config call against a fake store: the write plus the eviction it
+// triggers. Mirrors the handler and forgetStaleAgentSession, including the
+// invitee-suffixed children (#570) that hang off a key.
+function applyConfigWrite(prefs, cache, key, value) {
+  const pair = () => sessionPairFor({
+    cwd: prefs.claudeWorkDir,
+    field: prefs.agentSession,
+    botName: prefs.botName,
+    auto: prefs.agentSessionAuto !== false,
+  });
+  const keyed = sessionKeyedKeys.has(key);
+  const before = keyed ? pair() : null;
+  prefs[key] = value;
+  if (!keyed) return;
+  const dead = staleSessionCacheKey(before, pair());
+  if (!dead) return;
+  Object.keys(cache)
+    .filter((k) => k === dead || k.startsWith(`${dead}\n`))
+    .forEach((k) => delete cache[k]);
+}
+
+test('clearing a hand-typed session name evicts it, across BOTH panel writes', () => {
+  // A bot with two sessions to its name: the one it made while following its own
+  // name, and the one it made after someone typed "realtime-voice" in the field.
+  const prefs = {
+    claudeWorkDir: '/Users/x/proj', agentSession: 'realtime-voice',
+    agentSessionAuto: false, botName: 'Bramble',
+  };
+  const typed = sessionCacheKey('/Users/x/proj', 'realtime-voice');
+  const own = sessionCacheKey('/Users/x/proj', 'Bramble');
+  const cache = { [typed]: '0c7d62da-e284-4670-a089-1ab02ece1b15', [own]: '11111111-2222-3333-4444-555555555555' };
+
+  // Verbatim what emptying the field does — auto first, then the field.
+  applyConfigWrite(prefs, cache, 'agentSessionAuto', true);
+  applyConfigWrite(prefs, cache, 'agentSession', '');
+
+  assert.ok(!(typed in cache),
+    'the typed name\'s session is now unreachable by any setting — retyping the name later must not silently resume it');
+  assert.ok(own in cache,
+    'the session the very next launch resumes must survive; evicting it is the memory loss this whole area exists to prevent');
+});
+
+test('taking the field over evicts only once the name really moves', () => {
+  // The same edit in reverse, and the reason the auto write cannot just evict
+  // unconditionally: turning auto OFF while the field still holds the bot's own
+  // name leaves the pair exactly where it was. Nothing has moved yet.
+  const prefs = {
+    claudeWorkDir: '/Users/x/proj', agentSession: 'Bramble',
+    agentSessionAuto: true, botName: 'Bramble',
+  };
+  const own = sessionCacheKey('/Users/x/proj', 'Bramble');
+  const cache = { [own]: '0c7d62da-e284-4670-a089-1ab02ece1b15' };
+
+  applyConfigWrite(prefs, cache, 'agentSessionAuto', false);
+  assert.ok(own in cache, 'the first of the two writes must not evict — the pair has not moved');
+
+  applyConfigWrite(prefs, cache, 'agentSession', 'realtime-voice');
+  assert.ok(!(own in cache), 'the second write moves the pair, so the old name is the orphan');
+});
+
+test('a working-directory edit still evicts on its own single write', () => {
+  // The one-write case, kept alongside the two-write ones so a future change to
+  // the guarded key set cannot fix one shape by breaking the other.
+  const prefs = {
+    claudeWorkDir: '/Users/x/proj-a', agentSession: '',
+    agentSessionAuto: true, botName: 'Bramble',
+  };
+  const cache = { [sessionCacheKey('/Users/x/proj-a', 'Bramble')]: '0c7d62da-e284-4670-a089-1ab02ece1b15' };
+  applyConfigWrite(prefs, cache, 'claudeWorkDir', '/Users/x/proj-b');
+  assert.deepEqual(Object.keys(cache), []);
+});
+
+test('the auto flag is guarded, because the panel writes it before the field', () => {
+  // Belt and braces on the two above: they read the key set from main.js, so if
+  // the guard were dropped they would fail with a confusing cache assertion.
+  // This one says why.
+  assert.ok(sessionKeyedKeys.has('agentSessionAuto'),
+    'agentSessionAuto feeds agentSessionPair, and the panel writes it FIRST — leaving it unguarded means the '
+    + 'agentSession write that follows compares against a pair the app was never in');
+  const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+  const handler = panel.slice(panel.indexOf("agentSessionIdInput?.addEventListener('change'"));
+  const body = handler.slice(0, handler.indexOf('\n});'));
+  assert.ok(body.indexOf("setConfig('agentSessionAuto'") < body.indexOf("setConfig('agentSession'"),
+    'this is the ordering the guard is written for; if it flips, re-check the eviction still lands');
+});
+
 // --- #570: one session per calendar meeting ---------------------------------
 //
 // A bot has one Claude session, so everyone it meets shares one pile of context

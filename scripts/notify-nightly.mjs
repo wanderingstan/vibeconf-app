@@ -96,6 +96,9 @@ function statusLine(label, r) {
   const bits = [];
   if (r.stalls !== undefined) bits.push(`${r.stalls} stall${r.stalls === '1' ? '' : 's'}`);
   if (r.fails !== undefined) bits.push(`${r.fails} fail${r.fails === '1' ? '' : 's'}`);
+  // A skipped step is a check that did not run (#627) — shown only when there is
+  // one, because an exit-0 line with a gap in it is not the same as a clean pass.
+  if (r.skips !== undefined && Number(r.skips) > 0) bits.push(`${r.skips} skipped/unverified`);
   const note = v === 'yellow' ? ' — provisional (Meet flakiness, not our code)' : '';
   return `${VERDICT_ICON[v]} ${label}: exit ${r.exit}${bits.length ? ` (${bits.join(', ')})` : ''}${note}`;
 }

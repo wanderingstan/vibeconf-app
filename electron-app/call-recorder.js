@@ -84,6 +84,10 @@ const MANIFEST_REFRESH_MS = 15000;
 // succeeded. See _writeRecoveryNote().
 const RECOVERY_NOTE = 'RECOVERY.md';
 
+// Dedupe map bound for captionTurns(). Generous — a turn id is small and a
+// long call is exactly the case this feature exists for — but not unbounded.
+const MAX_CAPTION_IDS = 5000;
+
 class CallRecordingSession {
   // dir: per-call output directory (created if missing).
   // meta: { room, botName, startedAt } — startedAt anchors every track's offset.
@@ -107,6 +111,8 @@ class CallRecordingSession {
     this.tracks = new Map(); // track name -> state
     this.names = new Map();  // track name -> attributed participant name (#209)
     this._lastManifestWrite = 0;
+    this._captionFd = null;
+    this._captionSeen = new Map(); // turn id -> last text written (dedupe)
     fs.mkdirSync(dir, { recursive: true });
     this._writeRecoveryNote();
   }
@@ -139,6 +145,51 @@ class CallRecordingSession {
     try {
       fs.writeSync(this._speakerFd, JSON.stringify({ at: Number(at) || Date.now(), name: String(name), speaking: !!speaking }) + '\n');
     } catch { /* keep recording even if the sidecar write fails */ }
+  }
+
+  // Append caption turns to captions.jsonl — the source for the .srt/.vtt
+  // subtitle sidecars built after the merge.
+  //
+  // WHY A FILE AND NOT A SNAPSHOT AT STOP: local-server caps `turns` at
+  // maxTurns (200) and prunes the oldest, so by the end of a long call the
+  // first half of the conversation is simply gone from memory. Streaming it
+  // here is also the only version that survives a crash — same reasoning, and
+  // the same append-only shape, as speaker-events.jsonl above.
+  //
+  // Turns arrive as repeated snapshots of a growing utterance, so only an
+  // actual text change is written; the builder takes the last record per id.
+  captionTurns(turns) {
+    if (this.closed || !Array.isArray(turns) || !turns.length) return;
+    if (!this._captionFd) {
+      try { this._captionFd = fs.openSync(path.join(this.dir, 'captions.jsonl'), 'w'); }
+      catch { this._captionFd = null; return; }
+    }
+    let lines = '';
+    for (const turn of turns) {
+      if (!turn || typeof turn.text !== 'string') continue;
+      const text = turn.text.trim();
+      if (!text) continue;
+      const id = turn.id != null ? String(turn.id) : null;
+      if (!id || !Number.isFinite(turn.firstSeen)) continue;
+      if (this._captionSeen.get(id) === text) continue;
+      this._captionSeen.set(id, text);
+      lines += JSON.stringify({
+        id,
+        speaker: turn.speaker ? String(turn.speaker) : '',
+        text,
+        firstSeen: turn.firstSeen,
+        lastUpdated: Number.isFinite(turn.lastUpdated) ? turn.lastUpdated : turn.firstSeen,
+        settled: !!turn.settled,
+      }) + '\n';
+    }
+    if (!lines) return;
+    // Bound the dedupe map the same way local-server bounds `turns` — this
+    // runs for the whole call and must not grow without limit.
+    while (this._captionSeen.size > MAX_CAPTION_IDS) {
+      this._captionSeen.delete(this._captionSeen.keys().next().value);
+    }
+    try { fs.writeSync(this._captionFd, lines); }
+    catch { /* keep recording even if the sidecar write fails */ }
   }
 
   _track(name, mime, startWallClock, kind) {
@@ -293,6 +344,9 @@ node scripts/merge-call-audio.mjs "${this.dir}"
 - \`*.webm\` — one file per audio track, plus \`video.webm\` (the bot's Meet view)
   and \`share.webm\` (a shared whiteboard) when those were captured.
 - \`speaker-events.jsonl\` — who-spoke-when, wall-clock stamped.
+- \`captions.jsonl\` — what was said, wall-clock stamped. The source for the
+  \`.srt\`/\`.vtt\` subtitle sidecars; regenerate them with
+  \`node scripts/build-subtitles.mjs "${this.dir}"\`.
 ${finalized
     ? '\nThe tracks were closed cleanly and the manifest is complete, so only the\nmerge is outstanding.\n'
     : '\nWritten when recording STARTED. If the app is still running and recording,\nthis is expected and the file will be removed when the call finishes.\n'}`;
@@ -323,6 +377,7 @@ ${finalized
       try { fs.closeSync(t.fd); } catch { /* already closed */ }
     }
     if (this._speakerFd) { try { fs.closeSync(this._speakerFd); } catch { /* already closed */ } this._speakerFd = null; }
+    if (this._captionFd) { try { fs.closeSync(this._captionFd); } catch { /* already closed */ } this._captionFd = null; }
     const m = this.manifest();
     this._writeManifest();
     this._writeRecoveryNote(); // rewritten: tracks are closed, only the merge is left

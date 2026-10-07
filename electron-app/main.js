@@ -6364,11 +6364,11 @@ function configureMeetSession(sess) {
 
 // ---------------------------------------------------------------------------
 // CLI argument parsing — supports --meet-url, --bot-name, --sync-url,
-// --website-url, --local-port, --profile, --devtools, --bot-view
+// --website-url, --local-port, --profile, --devtools, --bot-view, --config
 // ---------------------------------------------------------------------------
 
 // Flags that take a value; used to catch the silently-ignored space form below.
-const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'bot-name', 'bot-view']);
+const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'bot-name', 'bot-view', 'config']);
 
 function parseCLIArgs() {
   const args = process.argv.slice(1); // skip electron binary
@@ -9464,6 +9464,25 @@ app.whenReady().then(async () => {
     const profileStore = new Store(profileConfigDir);
     migrateAppLevelKeys(appLevelStore, profileStore);
     store = new ScopedStore(appLevelStore, profileStore);
+
+    // --config=<path.json>: apply a file of settings before ANYTHING reads a
+    // preference (#805). This is the only configuration route that works on a
+    // box with no screen — App Settings is a window, and set_preference needs a
+    // bot already running, so neither can set anything up FRONT.
+    //
+    // Fatal on a bad file, by design. An unattended box that boots with a
+    // half-applied config is the worst case available: it runs, looks healthy,
+    // and behaves according to no file anyone can inspect. A non-zero exit is
+    // something an install script can actually detect.
+    if (cliArgs.config) {
+      try {
+        require('./config-file.js').applyConfigFile(cliArgs.config, store);
+      } catch (err) {
+        console.error(`[config-file] ${err.message}`);
+        app.exit(1);
+        return;
+      }
+    }
 
     // `onboardingCallComplete`'s schema default is true — see
     // preferences-schema.js — so every profile that predates this preference

@@ -6171,6 +6171,25 @@ function notifyMeetSignInNeeded(email) {
 // ground truth for "logged into Slack". We can't name the workspace/user from
 // the cookie alone (that needs the huddle DOM — #283), but we CAN say
 // connected-vs-not, which is all the main panel needs.
+// Zoom's sign-in page, for the bot's Zoom identity (#318).
+const ZOOM_SIGN_IN_URL = 'https://zoom.us/signin';
+
+// Signed into Zoom? Observed on a real sign-in (Google SSO, 2026-10-14): Zoom
+// set _zm_kms (HttpOnly, ~3-month expiry) at the moment of login, and it's the
+// only non-analytics cookie that did. _zm_ssid is Zoom's session id when
+// present. (_zm_everlogin_type is NOT a signal: it means "has ever logged in".)
+// Any failure reads as "not signed in", like the Slack check.
+const ZOOM_SESSION_COOKIES = ['_zm_kms', '_zm_ssid'];
+async function isSignedInToZoom(sess) {
+  try {
+    const all = await sess.cookies.get({});
+    return all.some((c) => /(^|\.)zoom\.us$/.test((c.domain || '').replace(/^\./, ''))
+      && ZOOM_SESSION_COOKIES.includes(c.name) && c.value);
+  } catch {
+    return false;
+  }
+}
+
 async function isSignedInToSlack(sess) {
   try {
     const all = await sess.cookies.get({ domain: '.slack.com' });
@@ -13866,6 +13885,13 @@ function setupIPC() {
     return { signedIn };
   });
 
+  // Is this profile signed into Zoom (#318)? Same cookie-authoritative idea as
+  // Slack. A signed-in bot joins without the guest page and its reCAPTCHA.
+  ipcMain.handle('get-zoom-mode', async () => {
+    const signedIn = await isSignedInToZoom(session.fromPartition(SESSION_PARTITION));
+    return { signedIn };
+  });
+
   // Which Google account the bot is ACTUALLY signed in as (not just "signed in"
   // — the real email). Surfaces the gap that hid #250: the app knew the mode but
   // never the identity, so a silently-logged-out bot looked "signed in". Reads
@@ -14158,6 +14184,35 @@ function setupIPC() {
     activateSlackProvider('https://app.slack.com/', { autojoin: false });
     // Signing out drops you on Slack's login page, and the usual reason to sign
     // out is to sign back in as someone else — so show the view here too.
+    revealBotViewForSignIn();
+    return { ok: true };
+  });
+
+  // --- Bot Zoom identity (#318) — parity with Slack above. Opens Zoom's
+  // sign-in page in the bot's view (visible, #498) on the shared partition. ---
+  ipcMain.handle('zoom-sign-in', () => {
+    activateZoomProvider(ZOOM_SIGN_IN_URL);
+    revealBotViewForSignIn();
+    return { ok: true };
+  });
+
+  // Remove ONLY zoom.us cookies (Google and Slack logins preserved), then show
+  // the sign-in page, since signing out is usually a prelude to signing back in.
+  ipcMain.handle('zoom-sign-out', async () => {
+    try {
+      const sess = session.fromPartition(SESSION_PARTITION);
+      let removed = 0;
+      for (const c of await sess.cookies.get({})) {
+        const d = (c.domain || '').replace(/^\./, '');
+        if (/(^|\.)zoom\.us$/.test(d)) {
+          try { await sess.cookies.remove(`https://${d}${c.path || '/'}`, c.name); removed++; } catch { /* best-effort */ }
+        }
+      }
+      console.log('[electron] Zoom sign-out — removed', removed, 'zoom.us cookies (Google/Slack logins preserved)');
+    } catch (err) {
+      console.warn('[electron] zoom-sign-out failed:', err.message);
+    }
+    activateZoomProvider(ZOOM_SIGN_IN_URL);
     revealBotViewForSignIn();
     return { ok: true };
   });

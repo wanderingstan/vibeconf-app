@@ -159,6 +159,8 @@ const meetSignInBtn = document.getElementById('meetSignInBtn');
 const meetSignOutBtn = document.getElementById('meetSignOutBtn');
 const slackSignInBtn = document.getElementById('slackSignInBtn');
 const slackSignOutBtn = document.getElementById('slackSignOutBtn');
+const zoomSignInBtn = document.getElementById('zoomSignInBtn');
+const zoomSignOutBtn = document.getElementById('zoomSignOutBtn');
 
 // Settings
 const botNameInput = document.getElementById('botName');
@@ -2244,6 +2246,7 @@ function loadConfigIntoControls() {
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
   refreshSlackIdentity();
+  refreshZoomIdentity();
   try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
   // The headline shows the RESOLVED name with a provenance tag for launched/named
   // test bots ("Alice [CLI name]") — the biggest cue when monitoring tests — while
@@ -2989,6 +2992,14 @@ async function refreshSlackIdentity() {
 }
 refreshSlackIdentity();
 
+// Zoom identity (#318): same shape as Slack's. Cookie check via get-zoom-mode.
+async function refreshZoomIdentity() {
+  let signedIn = false;
+  try { signedIn = !!(await api.invoke('get-zoom-mode'))?.signedIn; } catch { /* treat as unknown */ }
+  if (zoomSignOutBtn) zoomSignOutBtn.style.display = signedIn ? '' : 'none';
+}
+refreshZoomIdentity();
+
 botSignOutMainBtn?.addEventListener('click', async () => {
   botSignOutMainBtn.disabled = true;
   try { await api.invoke('meet-sign-out-bot'); applyMeetMode('guest'); } catch { /* ignore */ }
@@ -3016,8 +3027,9 @@ setInterval(() => {
     }
     // else: stable (guest, or account with email already shown) → just the cheap cookie read above
   }).catch(() => {});
-  // Keep the Slack row honest too — same cheap cookie read (get-slack-mode).
+  // Keep the Slack and Zoom rows honest too — same cheap cookie reads.
   refreshSlackIdentity();
+  refreshZoomIdentity();
 }, 7000);
 
 // (The "⚡ Fast model" health line + its 7s reachability poll lived here. The
@@ -3225,6 +3237,36 @@ slackSignInBtn?.addEventListener('click', async () => {
     slackSignInBtn.disabled = false;
     slackSignInBtn.textContent = 'Sign into Slack as bot';
     refreshSlackIdentity();
+  }, 1500);
+});
+
+zoomSignInBtn?.addEventListener('click', async () => {
+  zoomSignInBtn.disabled = true;
+  zoomSignInBtn.textContent = 'Opening Zoom…';
+  try {
+    await api.invoke('zoom-sign-in');
+  } catch (err) {
+    showError('Zoom sign-in failed: ' + err.message);
+  }
+  setTimeout(() => {
+    zoomSignInBtn.disabled = false;
+    zoomSignInBtn.textContent = 'Sign into Zoom as bot';
+    refreshZoomIdentity();
+  }, 1500);
+});
+
+zoomSignOutBtn?.addEventListener('click', async () => {
+  zoomSignOutBtn.disabled = true;
+  zoomSignOutBtn.textContent = 'Signing out of Zoom…';
+  try {
+    await api.invoke('zoom-sign-out');
+  } catch (err) {
+    showError('Zoom sign-out failed: ' + err.message);
+  }
+  setTimeout(() => {
+    zoomSignOutBtn.disabled = false;
+    zoomSignOutBtn.textContent = 'Sign out of Zoom';
+    refreshZoomIdentity();
   }, 1500);
 });
 

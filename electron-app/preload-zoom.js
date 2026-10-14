@@ -229,13 +229,19 @@ function tick() {
     // Hearing: the caption overlay, attributed by avatar (#318). captions-state
     // follows whether the overlay exists (Show Captions is on), checked after
     // ~10s of setup so a slow enable doesn't flap it.
-    const captionsOn = !!provider.doc().querySelector(ZOOM.captions.subtitle);
+    // The overlay box mounts when Show Captions is on; #live-transcription-
+    // subtitle only appears with the first words, so it can't be the test.
+    const captionsOn = !!provider.doc().querySelector(ZOOM.captions.overlayBox);
     if (captionsReported !== captionsOn && Date.now() - inCallAt > 10000) {
       captionsReported = captionsOn;
       emit(CALL_EVENTS.captionsState, { on: captionsOn });
       if (!captionsOn) console.warn('[zoom] captions are off — the bot cannot hear until Show Captions is on');
     }
-    const rows = provider.readOverlay();
+    // Drop the bot's own lines (its TTS gets captioned too), as Meet does, so it
+    // never answers itself. Self = the roster row marked "me", or the name we
+    // joined as if the roster isn't readable.
+    const selfName = (parts.find((p) => p.isSelf) || {}).name || botName;
+    const rows = provider.readOverlay().filter((r) => !selfName || r.speaker !== selfName);
     if (rows.length && !fiberProbed) { fiberProbed = true; provider.probeCaptionFiber(); }
     if (captions.update(rows)) {
       const turns = captions.snapshot();

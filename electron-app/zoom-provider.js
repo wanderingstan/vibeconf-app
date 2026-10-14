@@ -69,6 +69,21 @@ function findByText(doc, selector, text, { contains = false, visibleOnly = true 
   return null;
 }
 
+// The Zoom user a caption row belongs to, from React's props: a few fibers up
+// from the caption <span>, a component receives messageItem.user. Internal, so
+// it can vanish in any Zoom release; callers fall back to the avatar match.
+function captionUser(el) {
+  try {
+    const key = Object.keys(el).find((k) => k.startsWith('__reactFiber$'));
+    let f = key && el[key];
+    for (let i = 0; f && i < 6; i++, f = f.return) {
+      const user = f.memoizedProps && f.memoizedProps.messageItem && f.memoizedProps.messageItem.user;
+      if (user) return user;
+    }
+  } catch { /* fiber shape changed */ }
+  return null;
+}
+
 class ZoomProvider extends CallProvider {
   static get id() { return 'zoom'; }
 
@@ -330,27 +345,42 @@ class ZoomProvider extends CallProvider {
     return !!box && !box.classList.contains(ZOOM.captions.overlayHiddenClass);
   }
 
-  // The overlay's current rows as [{ key, speaker, text }]: one row per avatar,
-  // text = the spans that follow it. Without an avatar img (someone with no
-  // profile photo, unverified) the row is 'unknown'.
+  // The overlay's current rows as [{ key, speaker, text }]. Speaker, best first:
+  //   1. React props: the caption row's component gets messageItem.user
+  //      ({ userId, displayName, avatar }) — verified live 2026-10-14. Works
+  //      for people without a profile photo, unlike (2).
+  //   2. The avatar <img> src, matched to the participants list.
+  // Neither → 'unknown'.
   readOverlay() {
     const c = ZOOM.captions;
     const root = this.doc().querySelector(c.subtitle);
     if (!root || !this.overlayVisible()) return [];
-    const names = this.avatarNames();
+    let names = null; // avatar map, built only if (1) fails
     const rows = [];
     let row = null;
     for (const el of root.children) {
       if (el.matches(c.subtitleAvatar)) {
-        const who = names.get(el.src);
-        row = { key: el.src || 'unknown', speaker: who ? who.name : 'unknown', text: '' };
+        row = { key: el.src || 'unknown', speaker: 'unknown', text: '', src: el.src };
         rows.push(row);
       } else if (el.matches(c.subtitleItem)) {
         if (!row) { row = { key: 'unknown', speaker: 'unknown', text: '' }; rows.push(row); }
         row.text = norm(row.text + ' ' + el.textContent);
+        const user = captionUser(el);
+        if (user && user.displayName) {
+          row.speaker = user.displayName;
+          if (user.userId != null) row.key = 'user:' + user.userId;
+        }
       }
     }
-    return rows.filter((r) => r.text && r.text !== 'Captions are on');
+    for (const r of rows) {
+      if (r.speaker !== 'unknown' || !r.src) continue;
+      names = names || this.avatarNames();
+      const who = names.get(r.src);
+      if (who) r.speaker = who.name;
+    }
+    return rows
+      .filter((r) => r.text && r.text !== 'Captions are on')
+      .map(({ key, speaker, text }) => ({ key, speaker, text }));
   }
 
   // Recon: the overlay DOM names nobody (img alt="" aria-hidden, no title or

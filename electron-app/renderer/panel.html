@@ -411,7 +411,8 @@
         <h2>Identity &amp; Calendar</h2>
         <p class="helper-text" style="margin:0 0 8px">
           Optional. Sign the bot into Google so it's auto-admitted to invite-only
-          Meets, or into Slack so it can join huddles. Signing in uses that
+          Meets, into Slack so it can join huddles, or into Zoom so it isn't
+          stopped by Zoom's guest CAPTCHA. Signing in uses that
           account's name instead of the one above. Logins persist across launches.
         </p>
         <div id="meetAccountEmail" class="account-email" style="display:none"></div>
@@ -419,6 +420,8 @@
         <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
         <button id="slackSignInBtn">Sign into Slack as bot</button>
         <button id="slackSignOutBtn" style="display:none">Sign out of Slack</button>
+        <button id="zoomSignInBtn">Sign into Zoom as bot</button>
+        <button id="zoomSignOutBtn" style="display:none">Sign out of Zoom</button>
 
         <!-- Calendar auto-join identity (#299): add this address as a guest on
              a Google Calendar event (it never needs to resolve to a real

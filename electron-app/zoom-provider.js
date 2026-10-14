@@ -102,6 +102,12 @@ class ZoomProvider extends CallProvider {
     return true;
   }
 
+  // Zoom's reCAPTCHA rejected the guest join. A human has to deal with it (or
+  // the bot signs in to a Zoom account); the bot must not keep clicking Join.
+  captchaFailed() {
+    return lower(this.doc().body && this.doc().body.innerText).includes(ZOOM.join.captchaFailedText.toLowerCase());
+  }
+
   inWaitingRoom() {
     const body = lower(this.doc().body && this.doc().body.innerText);
     return ZOOM.join.waitingRoomTexts.some((t) => body.includes(t.toLowerCase()));
@@ -305,6 +311,80 @@ class ZoomProvider extends CallProvider {
     await delay(1500);
     this.logTranscriptCandidates();
     return true;
+  }
+
+  // avatar src → { name, isSelf } from the participants list. The caption
+  // overlay names nobody; its avatar <img> is how a line is attributed.
+  avatarNames() {
+    const map = new Map();
+    for (const li of this.doc().querySelectorAll(ZOOM.people.item)) {
+      const img = li.querySelector(ZOOM.people.avatar);
+      const p = ZOOM.parseParticipantAria(li.getAttribute('aria-label'));
+      if (img && img.src && p) map.set(img.src, { name: p.name, isSelf: p.isSelf });
+    }
+    return map;
+  }
+
+  overlayVisible() {
+    const box = this.doc().querySelector(ZOOM.captions.overlayBox);
+    return !!box && !box.classList.contains(ZOOM.captions.overlayHiddenClass);
+  }
+
+  // The overlay's current rows as [{ key, speaker, text }]: one row per avatar,
+  // text = the spans that follow it. Without an avatar img (someone with no
+  // profile photo, unverified) the row is 'unknown'.
+  readOverlay() {
+    const c = ZOOM.captions;
+    const root = this.doc().querySelector(c.subtitle);
+    if (!root || !this.overlayVisible()) return [];
+    const names = this.avatarNames();
+    const rows = [];
+    let row = null;
+    for (const el of root.children) {
+      if (el.matches(c.subtitleAvatar)) {
+        const who = names.get(el.src);
+        row = { key: el.src || 'unknown', speaker: who ? who.name : 'unknown', text: '' };
+        rows.push(row);
+      } else if (el.matches(c.subtitleItem)) {
+        if (!row) { row = { key: 'unknown', speaker: 'unknown', text: '' }; rows.push(row); }
+        row.text = norm(row.text + ' ' + el.textContent);
+      }
+    }
+    return rows.filter((r) => r.text && r.text !== 'Captions are on');
+  }
+
+  // Recon: the overlay DOM names nobody (img alt="" aria-hidden, no title or
+  // data-*), but Zoom's React component picked that avatar from SOME user
+  // record. Walk the fiber up from the caption row and log any props that look
+  // like a name or user id. Run once per call; remove when attribution settles.
+  probeCaptionFiber() {
+    const root = this.doc().querySelector(ZOOM.captions.subtitle);
+    if (!root) return null;
+    const start = root.querySelector(ZOOM.captions.subtitleItem) || root;
+    const fiberKey = Object.keys(start).find((k) => k.startsWith('__reactFiber$'));
+    if (!fiberKey) { console.log('[zoom] [CC] fiber probe: no React fiber on the caption row'); return null; }
+    const hits = [];
+    const seen = new Set();
+    const scan = (obj, path, depth) => {
+      if (!obj || typeof obj !== 'object' || depth > 3 || seen.has(obj)) return;
+      seen.add(obj);
+      for (const k of Object.keys(obj)) {
+        if (k === 'children' || k.startsWith('_')) continue;
+        let v;
+        try { v = obj[k]; } catch { continue; }
+        if (v && typeof v === 'object' && !(v instanceof Node)) scan(v, path + '.' + k, depth + 1);
+        else if (/name|user|speaker|display|avatar|id$/i.test(k) && (typeof v === 'string' || typeof v === 'number')) {
+          hits.push(path + '.' + k + '=' + String(v).slice(0, 80));
+        }
+      }
+    };
+    let f = start[fiberKey];
+    for (let i = 0; f && i < 12; i++, f = f.return) {
+      const name = typeof f.type === 'string' ? f.type : (f.type && (f.type.displayName || f.type.name)) || '?';
+      scan(f.memoizedProps, '[' + i + ' ' + name + ']', 0);
+    }
+    console.log('[zoom] [CC] fiber probe (' + hits.length + '):', JSON.stringify(hits.slice(0, 40)));
+    return hits;
   }
 
   // v1 transcript source: the "Full transcript" panel. False until its

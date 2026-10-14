@@ -13,14 +13,15 @@
 //   zoomProvider.enableCaptions()    zoomProvider.leave()
 //   zoomProvider.micLevel()          // footer VU meter, px (0 = silent)
 //
-// Hearing: none yet. v1 reads only the host-enabled "Full transcript" panel,
-// whose selectors are unharvested, so the bot joins, speaks and chats but gets no
-// transcript. That's reported once (captions-state on:false + a log line).
+// Hearing: the caption overlay (Show Captions), one ephemeral line attributed
+// by the speaker's avatar → participants-list name. zoom-captions.js turns it
+// into the caption-turns snapshots the app already ingests from Meet.
 
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { ZoomProvider } = require('./zoom-provider');
+const { ZoomCaptionTracker } = require('./zoom-captions');
 const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider');
 const { ZOOM } = require('./zoom-selectors');
 
@@ -154,19 +155,32 @@ let botName = '';
 ipcRenderer.invoke('get-meet-bot-name').then((n) => { botName = n || ''; }).catch(() => {});
 
 let prejoinTried = false;
+let captchaReported = false;
 let audioJoinTried = false;
 let waitingLogged = false;
 let reportedInCall = false;
-let transcriptReported = null; // null = not checked yet; true/false once known
+let captionsReported = null; // null = not checked yet; true/false once known
+let fiberProbed = false;
+const captions = new ZoomCaptionTracker();
 let inCallAt = 0;
 let lastRoster = '';
-let lastTranscript = '';
 
 function tick() {
   try {
     provider.dismissModals();
 
     if (!provider.inMeeting()) {
+      if (provider.captchaFailed()) {
+        if (!captchaReported) {
+          captchaReported = true;
+          prejoinTried = true; // never click Join again on our own
+          console.warn('[zoom] Zoom rejected the guest join (reCAPTCHA). Not retrying. '
+            + 'Sign the bot in to a Zoom account (--zoom-url=https://zoom.us/signin), or click Join in the bot view yourself.');
+          emit(CALL_EVENTS.statusUpdate, 'Error: Zoom blocked the guest join (reCAPTCHA). Sign the bot in to a Zoom account, or click Join in the bot view.');
+          emit('page-inject-log', '[zoom] join blocked by Zoom reCAPTCHA');
+        }
+        return;
+      }
       if (provider.inWaitingRoom()) {
         if (!waitingLogged) { waitingLogged = true; console.log('[zoom] in the waiting room — the host has to admit the bot'); }
         return;
@@ -212,26 +226,22 @@ function tick() {
     const newest = newestOtherChatId(provider.scrapeChatMessages());
     if (newest && newest !== lastReadChatId) setChatUnread(true);
 
-    // Give captions setup ~10s, then say once whether there's a transcript.
-    const hasTranscript = provider.transcriptAvailable();
-    if (transcriptReported !== hasTranscript && Date.now() - inCallAt > 10000) {
-      transcriptReported = hasTranscript;
-      emit(CALL_EVENTS.captionsState, { on: hasTranscript });
-      if (!hasTranscript) {
-        console.warn('[zoom] no Full transcript panel in this meeting — the bot can speak and chat but cannot hear. '
-          + 'Zoom v1 needs the host account\'s "Full transcript" setting (#318).');
-      }
+    // Hearing: the caption overlay, attributed by avatar (#318). captions-state
+    // follows whether the overlay exists (Show Captions is on), checked after
+    // ~10s of setup so a slow enable doesn't flap it.
+    const captionsOn = !!provider.doc().querySelector(ZOOM.captions.subtitle);
+    if (captionsReported !== captionsOn && Date.now() - inCallAt > 10000) {
+      captionsReported = captionsOn;
+      emit(CALL_EVENTS.captionsState, { on: captionsOn });
+      if (!captionsOn) console.warn('[zoom] captions are off — the bot cannot hear until Show Captions is on');
     }
-    if (hasTranscript) {
-      const lines = provider.scrapeTranscript();
-      const last = lines[lines.length - 1];
-      const key = last ? last.speaker + '::' + last.text : '';
-      if (last && key !== lastTranscript) {
-        lastTranscript = key;
-        emit(CALL_EVENTS.captionTurns, {
-          turns: lines.map((c, i) => ({ turnId: i + 1, speaker: c.speaker, text: c.text, isBottommost: i === lines.length - 1 })),
-        });
-      }
+    const rows = provider.readOverlay();
+    if (rows.length && !fiberProbed) { fiberProbed = true; provider.probeCaptionFiber(); }
+    if (captions.update(rows)) {
+      const turns = captions.snapshot();
+      emit(CALL_EVENTS.captionTurns, { turns });
+      const last = turns[turns.length - 1];
+      if (last) console.log('[zoom] caption:', JSON.stringify({ speaker: last.speaker, text: last.text }));
     }
   } catch { /* DOM not ready yet */ }
 }

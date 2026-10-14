@@ -115,6 +115,8 @@ const ZOOM = {
     headerCountRe: /Participants\s*\((\d+)\)/i,
     list: '#participants-ul', // aria-label "Participants list"
     item: '.participants-li', // one per (visible) participant; id participants-list-<n>
+    avatar: 'img.participants-item__avatar', // src matches the caption overlay's avatar
+    displayName: '.participants-item__display-name',
     // The item aria-label encodes name + av state in one string:
     //   "Stan (Host, me),computer audio muted,video off"
     // Split at the first comma OUTSIDE parentheses: the role parens hold one
@@ -237,6 +239,9 @@ const ZOOM = {
     overlayHiddenClass: 'live-transcription-subtitle__box--hide',
     subtitle: '#live-transcription-subtitle',
     subtitleItem: '.live-transcription-subtitle__item', // <span> caption text
+    // Verified 2026-10-14: each row is the speaker's avatar <img> then the text
+    // span(s); no name. The img src equals that person's roster avatar src.
+    subtitleAvatar: 'img',
     enabledToastText: 'You have turned on live transcription',
     // v1 caption source (Stan's decision on #318): the host-enabled "Full
     // transcript" side panel, read as a log like Slack's. All TBD until a call
@@ -287,6 +292,9 @@ const ZOOM = {
     passcodeInput: '#input-for-pwd', // TBD verify (skipped when ?pwd= in URL)
     joinButtonText: 'Join', // TBD verify (.preview-join-button)
     waitingRoomTexts: ['waiting for the host', 'will let you in soon'], // TBD verify
+    // Guest join page is behind invisible reCAPTCHA (verified 2026-10-14: four
+    // joins in ten minutes from one profile tripped it). Never retry past it.
+    captchaFailedText: 'failed the CAPTCHA verification',
     // Dialog-dismiss affordances observed in-meeting (Meet's dismissTexts
     // analog): promo/info modals with a primary "Got it".
     dismissTexts: ['Got it', 'OK', 'Close', 'Not Now', 'Cancel'],

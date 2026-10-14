@@ -11470,8 +11470,17 @@ function setupZoomRoom(zoomUrl) {
 function activateZoomProvider(zoomUrl) {
   if (!mainWindow || mainWindow.isDestroyed()) return null;
   const { ZOOM } = require('./zoom-selectors');
-  const webUrl = ZOOM.webClientJoinUrl(zoomUrl);
-  if (!webUrl) { console.warn('[electron] Zoom: not a meeting link —', zoomUrl); return null; }
+  // A meeting link joins. Any other zoom.us page (e.g. https://zoom.us/signin)
+  // just loads, so the bot's Zoom account can be signed in to in this profile:
+  // a signed-in bot skips the guest join page and its reCAPTCHA.
+  let webUrl = ZOOM.webClientJoinUrl(zoomUrl);
+  const isMeeting = !!webUrl;
+  if (!isMeeting) {
+    let host = '';
+    try { host = new URL(zoomUrl).hostname.toLowerCase(); } catch { /* not a URL */ }
+    if (host !== 'zoom.us' && !host.endsWith('.zoom.us')) { console.warn('[electron] Zoom: not a zoom.us link —', zoomUrl); return null; }
+    webUrl = zoomUrl;
+  }
   console.log('[electron] Activating Zoom provider:', webUrl);
   destroyProviderView();
   slackProviderMode = false;
@@ -11487,7 +11496,7 @@ function activateZoomProvider(zoomUrl) {
   });
   attachMeetViewForState();
   layoutViews();
-  const room = setupZoomRoom(zoomUrl);
+  const room = isMeeting ? setupZoomRoom(zoomUrl) : null;
   meetView.webContents.loadURL(webUrl);
   return room;
 }

@@ -114,13 +114,15 @@ const ZOOM = {
     item: '.participants-li', // one per (visible) participant; id participants-list-<n>
     // The item aria-label encodes name + av state in one string:
     //   "Stan (Host, me),computer audio muted,video off"
-    // Split on commas: [0]=display name (+role parens), rest=state phrases.
-    itemAriaRe: /^([^,]+?)(?:,(.*))?$/,
+    // Split at the first comma OUTSIDE parentheses: the role parens hold one
+    // too ("(Host, me)"). [1]=display name (+role parens), [2]=state phrases.
+    itemAriaRe: /^((?:[^,(]|\([^)]*\))+)(?:,(.*))?$/,
     audioMutedPhrase: 'computer audio muted',
     audioUnmutedPhrase: 'computer audio unmuted',
     videoOffPhrase: 'video off',
     videoOnPhrase: 'video on', // TBD verify exact phrase with camera on
-    selfMarker: '(me)', // inside the name segment, e.g. "Stan (Host, me)"
+    // "me" inside the role parens: "(me)", "(Host, me)", "(Co-host, me)".
+    selfRe: /\((?:[^)]*,\s*)?me\)/i,
     hostMarker: '(Host', // "(Host)" or "(Host, me)"
     // Roster rows carry state as lazy-loaded SVG icons whose CLASS NAME encodes
     // the state: "lazy-icon-icons/participants-list/<state>" — observed:
@@ -221,6 +223,15 @@ const ZOOM = {
     subtitle: '#live-transcription-subtitle',
     subtitleItem: '.live-transcription-subtitle__item', // <span> caption text
     enabledToastText: 'You have turned on live transcription',
+    // v1 caption source (Stan's decision on #318): the host-enabled "Full
+    // transcript" side panel, read as a log like Slack's. All TBD until a call
+    // with the panel open is harvested (checklist item 3); null means "not
+    // known yet", and the provider treats it as "no transcript in this call".
+    viewFullTranscriptText: 'View Full Transcript', // TBD verify (Captions submenu)
+    transcriptPanel: null, // TBD: panel container
+    transcriptRow: null, // TBD: one attributed line
+    transcriptSpeaker: null, // TBD: speaker name inside a row
+    transcriptText: null, // TBD: text inside a row
   },
 
   // -------------------------------------------------------------------------
@@ -315,6 +326,32 @@ ZOOM.isMeetingUrl = (url) => {
   }
 };
 
+// True for any zoom.us link the bot can join from: an invite (/j/<n>) or a
+// web-client meeting path (/wc/...). Host match is suffix-based (tenant subdomains).
+ZOOM.isZoomUrl = (url) => {
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    if (host !== ZOOM.url.host && !host.endsWith('.' + ZOOM.url.host)) return false;
+    return ZOOM.meetingNumberFromUrl(u.href) !== null;
+  } catch {
+    return false;
+  }
+};
+
+// The web-client join URL for any zoom.us meeting link. The bot loads this
+// directly instead of the /j/ "launch meeting" page (which pushes the desktop
+// app first) or the PWA shell (which puts the meeting in the #webclient iframe).
+// A direct /wc/ URL renders the meeting top-level, so the preload sees it. The
+// invite's ?pwd= passcode is carried over so the passcode prompt is skipped.
+ZOOM.webClientJoinUrl = (url) => {
+  const n = ZOOM.meetingNumberFromUrl(url);
+  if (!n) return null;
+  let pwd = null;
+  try { pwd = new URL(url).searchParams.get('pwd'); } catch { /* bare string, no query */ }
+  return `https://app.zoom.us/wc/join/${n}` + (pwd ? `?pwd=${encodeURIComponent(pwd)}` : '');
+};
+
 // Stable vibeconferencing room code — a Zoom meeting number is globally unique.
 ZOOM.roomCodeFor = (meetingNumber) => `zoom-${meetingNumber}`;
 ZOOM.roomCodeFromUrl = (url) => {
@@ -325,13 +362,13 @@ ZOOM.roomCodeFromUrl = (url) => {
 // Parse a participants-item aria-label → { name, isSelf, isHost, audioMuted,
 // videoOn } (nulls where the phrase wasn't present, e.g. audio not joined).
 ZOOM.parseParticipantAria = (aria) => {
-  const parts = (aria || '').split(',').map((s) => s.trim());
-  if (!parts[0]) return null;
-  const name = parts[0];
-  const rest = parts.slice(1).join(',');
+  const m = (aria || '').trim().match(ZOOM.people.itemAriaRe);
+  if (!m || !m[1].trim()) return null;
+  const name = m[1].trim();
+  const rest = m[2] || '';
   return {
     name: name.replace(/\s*\((Host|Co-host)?,?\s*me\)|\s*\((Host|Co-host)\)/gi, '').trim(),
-    isSelf: name.includes(ZOOM.people.selfMarker),
+    isSelf: ZOOM.people.selfRe.test(name),
     isHost: name.includes(ZOOM.people.hostMarker),
     audioMuted: rest.includes(ZOOM.people.audioMutedPhrase)
       ? true

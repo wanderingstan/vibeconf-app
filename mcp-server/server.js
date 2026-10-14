@@ -3325,9 +3325,9 @@ server.tool(
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a call — a Google Meet OR a Slack huddle. Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle.",
+  "Tell the Vibeconferencing app to join a call — a Google Meet, a Slack huddle, or (experimental) a Zoom meeting. Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle. For Zoom, pass the meeting link (zoom.us/j/<number>, passcode included); the bot joins through the Zoom web client.",
   {
-    room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), OR a Slack huddle URL (https://app.slack.com/client/<team>/<channel>)."),
+    room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), a Slack huddle URL (https://app.slack.com/client/<team>/<channel>), OR a Zoom meeting link (https://zoom.us/j/<number>?pwd=...)."),
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running (see list_call_instances) — the profile keeps its own display name, so `/join-call <code> alice2` joins as whatever alice2 is named. If the name matches no profile and only one instance is running, it is used as a one-off Meet display name instead. Omit to use the sole running instance, or the one this session is pinned to, under its configured name — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
     force: z.boolean().optional().describe("Rebuild the session even if the bot is already in this call. Default false, which makes a repeat join a harmless no-op. Only pass true when the live session is genuinely wedged and you mean to drop and rejoin — it tears down the working call. It also skips the same-name collision check."),
   },
@@ -3362,6 +3362,44 @@ server.tool(
             text: `Bot identity is locked to "${BOT_NAME}" while the current call is active. Leave the call first (the lock clears automatically once the call ends) or restart the agent.`,
           }],
         };
+      }
+
+      // Zoom meeting? (#318) Any zoom.us link carrying a meeting number: an
+      // invite (/j/<n>) or a web-client path (/wc/<n>/join, /wc/join/<n>). Parsed
+      // inline, not via electron-app/zoom-selectors.js: mcp-server must not import
+      // electron-app (#708). Keep the two in step.
+      const zoomMatch = /^https?:\/\/([a-z0-9-]+\.)*zoom\.us\//i.test(String(room_id))
+        && String(room_id).match(/\/(?:j|wc(?:\/join)?)\/(\d{9,11})/);
+      if (zoomMatch) {
+        const zoomRoomId = `zoom-${zoomMatch[1]}`;
+        const zresp = await vfetch(`${BASE_URL}/api/sync/${zoomRoomId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(botSyncPayload(joinedBotName, { meta: { action: "join-zoom", url: room_id } })),
+        });
+        const zdata = await zresp.json();
+        if (zdata.results?.join?.ok) {
+          ROOM_ID = zoomRoomId;
+          BOT_NAME = joinedBotName;
+          botNameLocked = true;
+          lastPollTime = null;
+          return {
+            content: [{
+              type: "text",
+              text: [
+                `Joining the Zoom meeting as "${joinedBotName}"${routedNote} through the Zoom web client. Use \`${zoomRoomId}\` as room_id for all tool calls.`,
+                ``,
+                `**Zoom support is experimental, and you cannot hear yet.** The bot can speak, send and read chat, and see who is in the meeting, but it gets no transcript, so \`wait_for_speech\` will not return anything people say. Tell the room that early on, and use chat as the way people can talk to you.`,
+                `If the host has to admit the bot from a waiting room, it will sit there until they do.`,
+                ``,
+                `1. Once in the meeting, \`speak\` a brief greeting that says you can talk and read chat but can't hear yet.`,
+                `2. Then loop as usual: \`wait_for_speech\` (it flags unread chat) → \`read_chat\` → optionally \`speak\` / \`send_chat\` → \`wait_for_speech\`.`,
+                `**Do not send a final response to the user while the call is active.** When the call ends or you're asked to leave, call \`leave_call\`.`,
+              ].join('\n'),
+            }],
+          };
+        }
+        return { content: [{ type: "text", text: `Couldn't join the Zoom meeting: ${zdata.results?.join?.error || zdata.error || 'unknown error'}.` }] };
       }
 
       // Slack huddle? room_id is an app.slack.com/client/<team>/<channel> URL —

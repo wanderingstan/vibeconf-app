@@ -105,8 +105,11 @@ const ZOOM = {
   // anyway). List is ReactVirtualized (see VIRTUALIZATION NOTE).
   // -------------------------------------------------------------------------
   people: {
+    // Host sees "open the manage participants list pane,…"; a guest (verified
+    // 2026-10-14) sees "open the participants list pane,[2] particpants".
     toggleLabelPrefix: 'open the manage participants list pane',
-    button: 'button[aria-label^="open the manage participants list pane" i]',
+    button: 'button[aria-label^="open the manage participants list pane" i], button[aria-label^="open the participants list pane" i]',
+    buttonCountRe: /(\d+)\]?\s*partic/i, // "…,3 particpants" (host) / "…,[2] particpants" (guest)
     pane: '#wc-container-right', // right side-panel host (participants/chat)
     header: '.participants-header__header', // text "Participants (N)"
     headerCountRe: /Participants\s*\((\d+)\)/i,
@@ -158,6 +161,9 @@ const ZOOM = {
     toggle: 'button[aria-label="open the chat panel" i]',
     container: '.chat-container', // whole pane (inside #wc-container-right)
     editor: 'div.tiptap.ProseMirror', // contenteditable compose box
+    // 2026-10-14 UI: a send button now exists, disabled (class) while empty.
+    sendButton: 'button.chat-rtf-box__send',
+    sendDisabledClass: 'chat-rtf-box__send--disabled',
     // Recipient picker — read it before sending to avoid DMing by accident.
     receiverButton: '.chat-receiver-list__receiver', // text e.g. "Meeting Group Chat"
     receiverEveryone: 'Meeting Group Chat',
@@ -212,7 +218,16 @@ const ZOOM = {
   // the speaker labels item 3 needs.
   // -------------------------------------------------------------------------
   captions: {
-    moreButtonText: 'More', // footer button — NO aria-label; match by text
+    // 2026-10-14 UI (guest, verified): More opens a GRID of item boxes, with
+    // "Show Captions" directly in it (no Captions submenu any more).
+    moreButton: 'button.more-button__dropdown-toggle', // aria "More meeting control "
+    moreMenu: '.more-button__pop-menu.show',
+    moreItem: 'button.more-button__item-box', // aria-label = item name
+    showCaptionsItem: 'button.more-button__item-box[aria-label="Show Captions" i]',
+    hideCaptionsItem: 'button.more-button__item-box[aria-label="Hide Captions" i]', // TBD verify
+    // July 2026 UI (host): More → "Captions" submenu → "Show Captions". Kept as
+    // a fallback in case hosts still get the submenu.
+    moreButtonText: 'More',
     captionsItem: '.dropdown-item[aria-label="Captions"]',
     showCaptionsText: 'Show Captions', // submenu .dropdown-item
     hideCaptionsText: 'Hide Captions', // present (visible) only when CC is ON
@@ -272,7 +287,11 @@ const ZOOM = {
     // Dialog-dismiss affordances observed in-meeting (Meet's dismissTexts
     // analog): promo/info modals with a primary "Got it".
     dismissTexts: ['Got it', 'OK', 'Close', 'Not Now', 'Cancel'],
-    gotItButton: 'button.zmu-btn--primary', // scope to visible modal, match text
+    // Feature coachmarks ("Introducing My Notes…", "Continue the Conversation")
+    // are NOT role=dialog; their only button is a primary "Got it" (verified
+    // 2026-10-14). Matched by class + exact text, nothing else.
+    gotItButton: 'button.zm-btn--primary, button.zmu-btn--primary',
+    gotItText: 'Got it',
   },
 
   // -------------------------------------------------------------------------

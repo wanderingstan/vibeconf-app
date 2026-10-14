@@ -129,6 +129,11 @@ class ZoomProvider extends CallProvider {
         if (b) { b.click(); n++; console.log('[zoom] dismissed modal via', JSON.stringify(text)); break; }
       }
     }
+    for (const b of d.querySelectorAll(ZOOM.join.gotItButton)) {
+      if (isVisible(b) && norm(b.textContent) === ZOOM.join.gotItText) {
+        b.click(); n++; console.log('[zoom] dismissed coachmark ("Got it")');
+      }
+    }
     return n;
   }
 
@@ -208,6 +213,32 @@ class ZoomProvider extends CallProvider {
     const d = this.doc();
     const footer = d.querySelector(ZOOM.footer.bar);
     if (!footer) { console.warn('[zoom] [CC] not in meeting yet'); return false; }
+    const c = ZOOM.captions;
+    const moreBtn = footer.querySelector(c.moreButton);
+    if (moreBtn) {
+      // Current UI: a grid menu with the caption toggle as one item box.
+      if (!d.querySelector(c.moreMenu)) moreBtn.click();
+      const menu = await waitFor(() => d.querySelector(c.moreMenu), 3000);
+      if (!menu) { console.warn('[zoom] [CC] More menu did not open'); return false; }
+      const items = [...menu.querySelectorAll(c.moreItem)].map((b) => b.getAttribute('aria-label'));
+      console.log('[zoom] [CC] More menu items:', JSON.stringify(items));
+      const hide = menu.querySelector(c.hideCaptionsItem);
+      const show = menu.querySelector(c.showCaptionsItem);
+      if (show) show.click();
+      if (d.querySelector(c.moreMenu)) moreBtn.click(); // close it either way
+      if (hide && !show) { console.log('[zoom] [CC] captions already on'); return true; }
+      if (!show) { console.warn('[zoom] [CC] no "Show Captions" item in the More menu'); return false; }
+      const dlg = await waitFor(() => d.querySelector(c.languageDialog), 2000);
+      if (dlg) {
+        const save = findByText(dlg, 'button', c.languageSaveText);
+        if (save) { save.click(); console.log('[zoom] [CC] saved caption language'); }
+      }
+      console.log('[zoom] [CC] clicked "Show Captions"');
+      await delay(1500);
+      this.logTranscriptCandidates();
+      return true;
+    }
+    // July 2026 UI: More → Captions submenu → Show Captions.
     const more = findByText(footer, 'button', ZOOM.captions.moreButtonText, { visibleOnly: false });
     if (!more) { console.warn('[zoom] [CC] footer "More" button not found'); return false; }
     more.click();
@@ -230,6 +261,23 @@ class ZoomProvider extends CallProvider {
     }
     console.log('[zoom] [CC] captions enabled');
     return true;
+  }
+
+  // Recon aid while the transcript panel is unmapped: log every visible control
+  // or element that mentions a transcript, so a test call shows where it lives.
+  logTranscriptCandidates() {
+    const d = this.doc();
+    const hits = [];
+    for (const el of d.querySelectorAll('button, [role="button"], [role="menuitem"], a, [aria-label], [class*="transcri"], [id*="transcri"]')) {
+      const label = el.getAttribute('aria-label') || '';
+      const text = norm(el.textContent).slice(0, 60);
+      const cls = String(el.className || '');
+      if (/transcri/i.test(label + ' ' + cls + ' ' + (el.id || '')) || (/transcri/i.test(text) && text.length < 60)) {
+        hits.push({ tag: el.tagName.toLowerCase(), id: el.id || undefined, cls: cls.slice(0, 80), label: label.slice(0, 60), text, visible: isVisible(el) });
+      }
+    }
+    console.log('[zoom] [CC] transcript candidates (' + hits.length + '):', JSON.stringify(hits.slice(0, 15)));
+    return hits;
   }
 
   // v1 transcript source: the "Full transcript" panel. False until its
@@ -313,9 +361,14 @@ class ZoomProvider extends CallProvider {
       editor.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: text, bubbles: true, cancelable: true }));
     }
     await delay(100);
-    const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-    editor.dispatchEvent(new KeyboardEvent('keydown', enter));
-    editor.dispatchEvent(new KeyboardEvent('keyup', enter));
+    const send = d.querySelector(ZOOM.chat.sendButton);
+    if (send && !send.disabled && !send.classList.contains(ZOOM.chat.sendDisabledClass)) {
+      send.click();
+    } else {
+      const enter = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+      editor.dispatchEvent(new KeyboardEvent('keydown', enter));
+      editor.dispatchEvent(new KeyboardEvent('keyup', enter));
+    }
     await delay(200);
     // Confirm: the editor clears on a successful send.
     return !norm(editor.textContent);
@@ -345,7 +398,7 @@ class ZoomProvider extends CallProvider {
   // with the pane closed, unlike getParticipants().
   participantCount() {
     const b = this.doc().querySelector(ZOOM.people.button);
-    const m = (b && b.getAttribute('aria-label') || '').match(/(\d+)\s*partic/i);
+    const m = (b && b.getAttribute('aria-label') || '').match(ZOOM.people.buttonCountRe);
     return m ? Number(m[1]) : null;
   }
 

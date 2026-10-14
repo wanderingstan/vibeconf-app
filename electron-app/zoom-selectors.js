@@ -242,7 +242,10 @@ const ZOOM = {
     // transcript" side panel, read as a log like Slack's. All TBD until a call
     // with the panel open is harvested (checklist item 3); null means "not
     // known yet", and the provider treats it as "no transcript in this call".
-    viewFullTranscriptText: 'View Full Transcript', // TBD verify (Captions submenu)
+    // The caption overlay's gear (verified 2026-10-14, guest). Its menu is the
+    // likeliest home for "View Full Transcript" on the web client.
+    captionSettingsButton: 'button.live-transcription-subtitle__settings-btn',
+    viewFullTranscriptText: 'View Full Transcript', // TBD verify
     transcriptPanel: null, // TBD: panel container
     transcriptRow: null, // TBD: one attributed line
     transcriptSpeaker: null, // TBD: speaker name inside a row

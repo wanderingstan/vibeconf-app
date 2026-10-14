@@ -236,6 +236,7 @@ class ZoomProvider extends CallProvider {
       console.log('[zoom] [CC] clicked "Show Captions"');
       await delay(1500);
       this.logTranscriptCandidates();
+      await this.openFullTranscript();
       return true;
     }
     // July 2026 UI: More → Captions submenu → Show Captions.
@@ -278,6 +279,32 @@ class ZoomProvider extends CallProvider {
     }
     console.log('[zoom] [CC] transcript candidates (' + hits.length + '):', JSON.stringify(hits.slice(0, 15)));
     return hits;
+  }
+
+  // Open the full transcript from the caption overlay's gear menu, if this
+  // meeting offers it. Logs the menu either way: the item names are recon.
+  async openFullTranscript() {
+    const d = this.doc();
+    const gear = d.querySelector(ZOOM.captions.captionSettingsButton);
+    if (!gear) { console.warn('[zoom] [CC] caption settings button not found'); return false; }
+    const before = new Set(d.querySelectorAll('*'));
+    gear.click();
+    await delay(600);
+    const fresh = [...d.querySelectorAll('button, [role="menuitem"], [role="menuitemcheckbox"], [role="option"], li, .dropdown-item')]
+      .filter((el) => !before.has(el) && isVisible(el));
+    const items = fresh.map((el) => ({ tag: el.tagName.toLowerCase(), cls: String(el.className || '').slice(0, 70), label: (el.getAttribute('aria-label') || '').slice(0, 50), text: norm(el.textContent).slice(0, 50) }));
+    console.log('[zoom] [CC] caption settings menu (' + items.length + '):', JSON.stringify(items.slice(0, 20)));
+    const item = fresh.find((el) => /full transcript|view transcript|transcript/i.test(el.getAttribute('aria-label') || '') || /full transcript|view transcript/i.test(norm(el.textContent)));
+    if (!item) {
+      gear.click(); // close the menu
+      console.warn('[zoom] [CC] no transcript item in caption settings');
+      return false;
+    }
+    item.click();
+    console.log('[zoom] [CC] clicked', JSON.stringify(norm(item.textContent) || item.getAttribute('aria-label')));
+    await delay(1500);
+    this.logTranscriptCandidates();
+    return true;
   }
 
   // v1 transcript source: the "Full transcript" panel. False until its

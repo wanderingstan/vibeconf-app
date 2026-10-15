@@ -35,6 +35,10 @@ require('./slack-ua').installClientHintsShim();
   console.error = wrap(console.error.bind(console));
 })();
 
+// Recon (#814): log where Teams' call audio lives. Off unless
+// VIBECONF_AUDIO_PROBE=1. Installed before page-inject and Teams' scripts.
+if (process.env.VIBECONF_AUDIO_PROBE === '1') require('./audio-probe').installAudioProbe('[teams]');
+
 // The Meet-shaped RTCPeerConnection audio hook is unused here; keep the
 // getUserMedia virtual mic + play-tts path (as Slack and Zoom do).
 window.__vibeconf_disableAudioCapture = true;

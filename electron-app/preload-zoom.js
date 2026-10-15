@@ -44,6 +44,10 @@ require('./slack-ua').installClientHintsShim();
   console.error = wrap(console.error.bind(console));
 })();
 
+// Recon (#814): log where Zoom's call audio lives. Off unless
+// VIBECONF_AUDIO_PROBE=1. Installed before page-inject and Zoom's scripts.
+if (process.env.VIBECONF_AUDIO_PROBE === '1') require('./audio-probe').installAudioProbe('[zoom]');
+
 // The RTCPeerConnection audio-capture hook is Meet-shaped and unused here (we
 // don't read call audio); keep the getUserMedia virtual mic + play-tts path.
 // Same call Slack made for Chime. Must be set before the eval below.

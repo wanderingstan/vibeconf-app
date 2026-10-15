@@ -20,14 +20,12 @@ const idx = (s) => {
   return i;
 };
 
-// Step 4's sub-steps are lettered, and the letters shift every time one is
-// inserted: "Personality / role" and "What you can do" both arrived later and
-// pushed Emoji set 4d→4e, Background 4e→4f, After-call routine 4h→4i. None of
-// these tests care WHICH letter a step got — only that the step exists and what
-// it says — so match on the title and let the letter float.
+// The per-setting know-how lives under "Changing one setting (reference)" since
+// the one-screen setup (2026-10-15); it was Step 4's lettered walk before that.
+// Match on the title only — these tests care what a section says, not where.
 const substep = (title) => {
-  const m = skill.match(new RegExp(`^### 4[a-z]\\. ${title}\\b`, 'm'));
-  assert.ok(m, `expected the skill to contain a Step 4 sub-step titled: ${title}`);
+  const m = skill.match(new RegExp(`^### ${title}\\b`, 'm'));
+  assert.ok(m, `expected the skill to contain a reference section titled: ${title}`);
   return m.index;
 };
 
@@ -77,12 +75,12 @@ test('the demo step puts its offer on the whiteboard', () => {
 });
 
 test('leaving and inviting are offered only AFTER the demo', () => {
-  // The bug: Step 5 said "tell me when you're done and I'll drop off" one
+  // The bug: the wrap-up said "tell me when you're done and I'll drop off" one
   // sentence before the demo, so people took the exit and never saw the half of
-  // the product that makes the bot worth keeping.
-  const step5 = skill.slice(idx('## Step 5:'), idx('## Step 6:'));
-  assert.doesNotMatch(step5, /I'll drop off/, 'the exit offer must not live in Step 5');
-  assert.match(step5, /Do NOT offer to leave yet/);
+  // the product that makes the bot worth keeping. Nothing before the demo step
+  // (card, sentence, three paths) may offer the exit.
+  const beforeDemo = skill.slice(0, idx('## Step 6:'));
+  assert.doesNotMatch(beforeDemo, /drop off/, 'no exit offer before the demo');
 
   const step6 = skill.slice(idx('## Step 6:'));
   assert.match(step6, /I'll drop off/, 'it moved to the end of the demo step');

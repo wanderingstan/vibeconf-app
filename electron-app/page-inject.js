@@ -94,6 +94,11 @@
     // face progressing rather than three unrelated ones.
     static SETTLING_EMOJI = '\u{1FAE4}'; // 🫤 heard you, waiting to see if you're finished
 
+    // Total length of the "heard my name" pulse in _render (attack + hold +
+    // release). The posture's sit-up move is timed to this, so the pulse's
+    // release lands on the held, attentive pose instead of fighting it.
+    static MENTION_PULSE_MS = 150 + 900 + 380;
+
     constructor(width, height) {
       this.canvas = document.createElement('canvas');
       this.canvas.width = width || config.canvasWidth;
@@ -616,6 +621,9 @@
       // the terminal launching and the agent's first tool call. Stillness there
       // is truthful (nothing is happening yet), and claudeReady would be the
       // signal to cover it if that gap ever wants filling.
+      // Rotation pivot for the face, as a fraction of its size below centre: 2/3
+      // of the way down the face is 1/6 below its middle.
+      const NECK_PIVOT_FROM_CENTRE = 2 / 3 - 1 / 2;
       const PEEK_TILT_SCALE = 0.34;
       const PEEK_SHIFT_PX = 26;
 
@@ -740,16 +748,31 @@
       const peeking = ghostRise > 0;
       const agentTiltNow = peeking ? agentTilt * PEEK_TILT_SCALE : agentTilt;
       const peekShift = peeking ? (this._agentJostleDir || 0) * PEEK_SHIFT_PX : 0;
-      ctx.translate(cx + thinkSway + peekShift, cy + bob - speakBounce + ghostRise);
+      // Resting posture + occasional shifts (avatar-posture.js). Under every
+      // other motion: it moves the face's home, and bob/sway/tilts play around
+      // that. Null when the pref is off or the module didn't load → centred.
+      let post = null;
+      try { post = currentAvatarPosture(w, h, this.speaking); } catch (e) { post = null; }
+      const postX = post ? post.dx * w : 0;
+      const postY = post ? post.dy * h : 0;
+      const postScale = post ? post.scale : 1;
+      ctx.translate(cx + postX + thinkSway + peekShift, cy + postY + bob - speakBounce + ghostRise);
       if (speakTilt || tickTilt || agentTiltNow || deadFlip || mentionTilt || gateTilt) {
+        // Tilt around a "neck", not the face's centre. Rotating about the middle
+        // spun the face like a wheel; a pivot two-thirds of the way down reads
+        // as a head tilting (Stan, 2026-10-15). Not at the very bottom — that
+        // swings the top too far for the same angle.
+        const neckY = emojiSize * NECK_PIVOT_FROM_CENTRE;
+        ctx.translate(0, neckY);
         ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip + mentionTilt + gateTilt);
+        ctx.translate(0, -neckY);
       }
       if (this.speaking) {
-        ctx.scale(speakScaleX * tickPop * mentionPop, speakScaleY * tickPop * mentionPop);
+        ctx.scale(speakScaleX * tickPop * mentionPop * postScale, speakScaleY * tickPop * mentionPop * postScale);
       } else {
         // Idle/listening/thinking breathing — keeps the glyph subtly alive
         // without the loud jaw motion of the speaking path. (#223)
-        ctx.scale(breathe * tickPop * mentionPop, breathe * tickPop * mentionPop);
+        ctx.scale(breathe * tickPop * mentionPop * postScale, breathe * tickPop * mentionPop * postScale);
       }
       // Twemoji set (#316): draw the bundled SVG centered at the origin (all the
       // bob/breathe/lip-sync transforms are already applied, so the image is just
@@ -1537,6 +1560,41 @@
   let emojiFontGlobal = '';      // a family installed on the user's machine, or '' for the system font
   let emojiFontColorGlobal = ''; // fill colour for a monochrome font; '' = leave the canvas default
 
+  // Avatar posture (avatar-posture.js, exposed by preload-meet as
+  // globalThis.__vibeAvatarPosture): where the face rests in its tile and when
+  // it shifts. ONE state for the page, not per camera — a camera re-created
+  // mid-call (camera toggle, Meet re-acquire) must keep the pose, not jump.
+  // Seed + enabled are pushed from main ('set-avatar-posture'); until then the
+  // bot name seeds it, which is already distinct per bot.
+  let avatarPostureEnabledGlobal = true;
+  let avatarPostureSeedGlobal = '';
+  let avatarPostureState = null;
+  let avatarPostureWasSpeaking = false;
+  function avatarPostureApi() {
+    const P = globalThis.__vibeAvatarPosture;
+    return (P && typeof P.stepPosture === 'function') ? P : null;
+  }
+  function ensureAvatarPostureState(P, now) {
+    if (!avatarPostureState) {
+      avatarPostureState = P.createPostureState(avatarPostureSeedGlobal || config.botName || '', now);
+    }
+    return avatarPostureState;
+  }
+  // Called per frame. Speaking-END is detected here as the falling edge of
+  // cam.speaking, which every playback path clears (TTS queue drained in
+  // _ttsMaybeFinish, 'set-speaking', the direct speech-audio onended), so the
+  // after-speech shift needs no hook in any of them. Module-level edge, so two
+  // cameras rendering the same frame don't report the same ending twice.
+  function currentAvatarPosture(w, h, speaking) {
+    const P = avatarPostureApi();
+    if (!P || !avatarPostureEnabledGlobal) return null;
+    const now = Date.now();
+    const s = ensureAvatarPostureState(P, now);
+    if (avatarPostureWasSpeaking && !speaking) P.noteSpeakingEnded(s, now);
+    avatarPostureWasSpeaking = !!speaking;
+    return P.stepPosture(s, now, w, h, !!speaking);
+  }
+
   // The family name goes straight into the canvas font SHORTHAND, which is CSS.
   // A name containing a quote, semicolon or brace could close the family and
   // append declarations, and a malformed shorthand makes ctx.font a silent no-op
@@ -2181,6 +2239,15 @@
           cam._mentionTiltSign = -(cam._mentionTiltSign || 1);
           cam._mentionTiltMag = mag;
         }
+        // And sit up: ease to a more centred, larger pose and hold it; the
+        // ordinary posture shifts move it on later (avatar-posture.js). Timed to the pulse, so the pulse
+        // releases onto the attentive pose rather than two animations fighting.
+        try {
+          const P = avatarPostureApi();
+          if (P && avatarPostureEnabledGlobal) {
+            P.noteNameMentioned(ensureAvatarPostureState(P, Date.now()), Date.now(), VirtualCamera.MENTION_PULSE_MS);
+          }
+        } catch (e) { /* posture is cosmetic */ }
         console.debug('[bots-in-calls] Name mentioned — avatar reaction fired');
         break;
       }
@@ -2406,6 +2473,21 @@
           console.log('[bots-in-calls] Emoji set:', emojiSetGlobal,
             emojiFontGlobal ? '(font: ' + emojiFontGlobal
               + (emojiFontColorGlobal ? ' ' + emojiFontColorGlobal : '') + ')' : '');
+        }
+        break;
+
+      case 'set-avatar-posture':
+        // Per-bot resting posture + occasional shifts (avatarPostureShifts
+        // pref). A new seed re-derives the resting pose; turning it off
+        // returns the face to dead centre.
+        if (payload) {
+          avatarPostureEnabledGlobal = payload.enabled !== false;
+          const seed = String(payload.seed || '');
+          if (seed && seed !== avatarPostureSeedGlobal) {
+            avatarPostureSeedGlobal = seed;
+            avatarPostureState = null;
+          }
+          console.log('[bots-in-calls] Avatar posture:', avatarPostureEnabledGlobal ? 'on' : 'off');
         }
         break;
 

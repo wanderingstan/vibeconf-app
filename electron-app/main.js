@@ -1392,6 +1392,21 @@ function revokeCallLogShare(reason) {
   _sharingWeEnabled = false;
 }
 
+// The Meet URL this app has joined (or is joining), and the last Meet URL the
+// browser-tab poll notified about. ONE variable each, at module scope, shared by
+// every join path (panel, detected-tab, --meet-url, MCP /join-call, calendar),
+// the leave teardown, the browser-tab poll and the #347 guest fallback.
+//
+// These used to be declared with `let` INSIDE app.whenReady(), while the
+// module-level join/teardown/guest-fallback code assigned and read them with no
+// declaration in scope. main.js is sloppy-mode, so those writes silently made a
+// SECOND, implicit global: teardown reset the global and never the poll's copy,
+// and a --meet-url launch set only the inner copy, so the guest fallback's read
+// of the never-created global threw "ReferenceError: currentMeetUrl is not
+// defined" (seen live 2026-10-15) and the guest join never happened.
+let currentMeetUrl = null;
+let detectedMeetUrl = null;
+
 // The actual teardown. It lives here, callable from main, rather than only at
 // the end of a main → renderer → main round trip.
 //
@@ -3473,12 +3488,15 @@ const localServer = new globalThis.LocalServer({
       tts.updateConfig?.({ [key]: value });
     } else if (key === 'botName') {
       applyAllWindowTitles(); // every window is named after the bot, not just the main one
+      pushAvatarPosture();    // the name is part of the posture seed
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
       // (The panel re-renders its own avatar — and its switcher thumbnail — off
       // these prefs directly, so nothing to invalidate here.)
     } else if (key === 'emojiSet') {
       pushEmojiSet(value);
+    } else if (key === 'avatarPostureShifts') {
+      pushAvatarPosture();
     } else if (key === 'meetViewSize') {
       applyMeetViewSize();
     } else if (key === 'captionLanguage') {
@@ -3762,6 +3780,21 @@ function warnIfEmptyEmojiDir(value) {
   }
 }
 
+// Per-bot resting posture + occasional posture shifts for the avatar face
+// (avatar-posture.js, drawn in page-inject). The seed is host + profile + bot
+// name, so it is stable for this bot across calls and Meet reloads, and two bots
+// in the same Meet (different machines, profiles or names) sit differently.
+function pushAvatarPosture() {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+  const def = require('./preferences-schema').PREFERENCES.avatarPostureShifts?.default;
+  const enabled = (store?.get('avatarPostureShifts') ?? def) !== false;
+  const seed = [require('os').hostname(), appProfile, store?.get('botName') || ''].join('|');
+  meetView.webContents.send('extension-message', {
+    action: 'set-avatar-posture',
+    payload: { enabled, seed },
+  });
+}
+
 function pushEmojiSet(value) {
   warnIfEmptyEmojiDir(value);
   if (!meetView || meetView.webContents.isDestroyed()) return;
@@ -3840,20 +3873,37 @@ async function buildBackgroundSvgFromImage(filePath) {
     '</svg>';
 }
 
+// The Meet view's webContents if it is still alive, else null. Re-read it after
+// every await: the guest-join fallback (#347 guest join, #795 anonymous guest)
+// tears meetView down and builds a new one while an async caller is suspended,
+// so a check made BEFORE the await says nothing about the view AFTER it.
+function liveMeetWc() {
+  return meetView && !meetView.webContents.isDestroyed() ? meetView.webContents : null;
+}
+
 async function pushAvatarBackground(svgSource) {
-  if (!meetView || meetView.webContents.isDestroyed()) return;
+  if (!liveMeetWc()) return;
   try {
     const resolved = (typeof svgSource === 'string' && svgSource.trim())
       ? await resolveSvg(svgSource)
       : '';
-    meetView.webContents.send('extension-message', {
+    // resolveSvg reads file:// images; the guest fallback can replace meetView
+    // during that read. The old pre-await guard let this hit a null view, and the
+    // catch below then hit it again, escaping as an unhandledRejection whose
+    // panel error buried the "sign the bot in" warning (2026-10-15).
+    const wc = liveMeetWc();
+    if (!wc) return;
+    wc.send('extension-message', {
       action: 'set-avatar-background',
       payload: { svg: resolved },
     });
   } catch (err) {
     console.warn('[electron] Failed to resolve avatar background SVG:', err.message);
-    // Fall back to clearing — renderer goes back to default gradient.
-    meetView.webContents.send('extension-message', {
+    // Fall back to clearing — renderer goes back to default gradient. Same
+    // re-check: the view may be gone by now, and a throw here is unhandled.
+    const wc = liveMeetWc();
+    if (!wc) return;
+    wc.send('extension-message', {
       action: 'set-avatar-background',
       payload: { svg: '' },
     });
@@ -4661,7 +4711,15 @@ async function setRunwayFace(seat, on) {
         try { await mod.endAvatarSession({ sessionId: s.sessionId, roomName: s.roomName }); } catch (e) {}
         return;
       }
-      meetView.webContents.send('runway-avatar', { type: 'connect', url: s.livekitUrl, token: s.botToken });
+      // Re-check after the awaits: the guest fallback can replace meetView while
+      // the session is being minted. End what we created rather than leak it, and
+      // throw so the catch's 30s retry runs against the new view.
+      const wc = liveMeetWc();
+      if (!wc) {
+        try { await mod.endAvatarSession({ sessionId: s.sessionId, roomName: s.roomName }); } catch (e) {}
+        throw new Error('Meet view went away while minting the avatar session');
+      }
+      wc.send('runway-avatar', { type: 'connect', url: s.livekitUrl, token: s.botToken });
       // Log session + avatar ids — the 06-29 post-mortem stalled because neither was on the record.
       console.log('[runway] face', prevSession ? 'RENEWED' : 'ON', 'for', seat, '→ room', s.roomName, 'gen', gen, 'session', s.sessionId, 'avatar', (mod.AVATARS || {})[seat]);
       st.sessionId = s.sessionId; st.roomName = s.roomName; st.mod = mod;
@@ -9256,7 +9314,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '68';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '69';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -9634,29 +9692,56 @@ app.whenReady().then(async () => {
       profileStore.set('onboardingCallComplete', false);
     }
 
-    // A brand-new bot otherwise ships with the plain animated gradient — the
-    // SAME one every other unconfigured bot has, which makes the switcher
-    // useless for telling several fresh bots apart at a glance. Seed one of
-    // the bundled presets at random instead, right here at the one moment a
-    // profile is genuinely new — covers every path that creates a bot ("New
-    // bot…", /call-new-bot, and the very first default-profile launch), since
-    // they all funnel through this same per-process startup.
-    if (isBrandNewProfile && !profileStore.get('avatarBackgroundSvg')) {
+    // A brand-new DEFAULT-profile bot with no --bot-name would otherwise join
+    // its first call as "Unnamed bot" (a named --profile humanizes its dir name
+    // instead; "New bot…" and the first-run wizard seed a name already). The
+    // guided setup no longer asks for a name: it shows the one the bot already
+    // has, and Meet takes the display name at JOIN, so a name picked in-call
+    // would leave the tile wrong until a leave+rejoin. Seed it here, before any
+    // join, so the tile is right from the first frame. Only a brand-new
+    // profile: a stray instance of an existing one must still read "Unnamed
+    // bot" (bot-name-default.test.mjs).
+    if (isBrandNewProfile && isDefaultInstance && !cliArgs['bot-name'] && !profileStore.get('botName')) {
       try {
-        const bgDir = __dirname.includes('.asar')
-          ? path.join(process.resourcesPath, 'backgrounds', 'presets')
-          : path.join(__dirname, 'backgrounds', 'presets');
-        const BG_EXTS = /\.(svg|png|jpe?g|webp|gif)$/i;
-        const files = fs.readdirSync(bgDir).filter((f) => BG_EXTS.test(f));
-        if (files.length) {
-          const chosen = files[Math.floor(Math.random() * files.length)];
-          const svg = await buildBackgroundSvgFromImage(path.join(bgDir, chosen));
-          profileStore.set('avatarBackgroundSvg', svg);
-          profileStore.set('avatarBackgroundCaption', chosen.replace(BG_EXTS, ''));
-        }
+        const { randomBotName } = require('./bot-names.js');
+        profileStore.set('botName', randomBotName({ taken: takenBotNames() }));
       } catch (err) {
-        console.warn('[config] could not seed a random background for new bot:', err.message);
+        console.warn('[config] could not seed a random name for new bot:', err.message);
       }
+    }
+
+    // A new bot gets one of the bundled background presets at random instead
+    // of the plain gradient every unconfigured bot shares. "New" means EITHER
+    // no config.json existed at all (bare --profile launch, first default
+    // profile) OR seedNewBotName left its one-shot marker: "New bot…" and
+    // /call-new-bot pre-seed config.json before this instance starts, so
+    // isBrandNewProfile is already false for them. See new-bot-background.js
+    // for why a marker rather than inferring it from an empty background.
+    {
+      const nbb = require('./new-bot-background.js');
+      const marker = profileStore.get(nbb.SEED_BACKGROUND_MARKER);
+      if (nbb.shouldSeedRandomBackground({
+        isBrandNewProfile,
+        marker,
+        currentSvg: profileStore.get('avatarBackgroundSvg'),
+      })) {
+        try {
+          const bgDir = __dirname.includes('.asar')
+            ? path.join(process.resourcesPath, 'backgrounds', 'presets')
+            : path.join(__dirname, 'backgrounds', 'presets');
+          const chosen = nbb.pickBackgroundPreset(fs.readdirSync(bgDir));
+          if (chosen) {
+            const svg = await buildBackgroundSvgFromImage(path.join(bgDir, chosen));
+            profileStore.set('avatarBackgroundSvg', svg);
+            profileStore.set('avatarBackgroundCaption', nbb.presetCaption(chosen));
+          }
+        } catch (err) {
+          console.warn('[config] could not seed a random background for new bot:', err.message);
+        }
+      }
+      // One shot, success or not: once consumed, an empty background is the
+      // user's choice (or a failed seed) and must never be re-rolled.
+      if (marker !== undefined) profileStore.delete(nbb.SEED_BACKGROUND_MARKER);
     }
   }
 
@@ -9987,10 +10072,10 @@ app.whenReady().then(async () => {
 
   // --- Meet/Slack detection: poll Chrome/Safari/Brave tabs for active Meet
   // calls and Slack huddles ---
-  let detectedMeetUrl = null;
+  // currentMeetUrl and detectedMeetUrl are module-level (see their declaration):
+  // the leave teardown resets them, and every join path sets currentMeetUrl.
   let detectedSlackHuddle = null;
   let meetDetectionInterval = null;
-  let currentMeetUrl = null; // Track what we've joined
   let automationPromptShown = false; // only nag about Automation permission once
   // Last Meet-poll failure message, so an identical one isn't logged every tick.
   // null = nothing failing right now; a success clears it, so a recurrence is
@@ -10042,8 +10127,8 @@ app.whenReady().then(async () => {
 
     function pollForMeet() {
       if (currentMeetUrl || pollInFlight) return;
-      // Already in a call (joined via the panel OR /join-call MCP, where
-      // currentMeetUrl isn't set)? Don't scan the browser for other Meets —
+      // Already in a call by some path that didn't set currentMeetUrl (Slack,
+      // Zoom, Teams)? Don't scan the browser for other Meets —
       // it's pointless mid-call and was spamming "Google Meet Detected" push
       // notifications (and burning AppleScript timeouts) during live calls.
       if (localServer.callStatus === 'in-call') return;
@@ -12829,6 +12914,8 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
         });
         updateDebugOverlayPushInterval(true);
       }
+      // Avatar posture seed + on/off, across Meet reloads.
+      pushAvatarPosture();
     }
   });
 }
@@ -13030,6 +13117,7 @@ function setupIPC() {
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
+    if (key === 'avatarPostureShifts' || key === 'botName') pushAvatarPosture();
     if (key === 'meetViewSize') applyMeetViewSize();
     if (key === 'botName') applyAllWindowTitles();
     if (key === 'watchSharedScreen') reconcileScreenSettleWatcher();
@@ -13743,6 +13831,11 @@ function setupIPC() {
       // needed — which means a genuinely NEW bot has to say otherwise
       // explicitly, right here, at the one moment it's actually created.
       const seeded = { ...existing, botName, onboardingCallComplete: false };
+      // The new instance's startup sees this config.json and so does NOT treat
+      // the profile as brand new; this marker is what tells it to seed a random
+      // background preset (consumed on that first launch, see
+      // new-bot-background.js).
+      seeded[require('./new-bot-background.js').SEED_BACKGROUND_MARKER] = true;
       if (adopt && adopt.workdir) seeded.claudeWorkDir = adopt.workdir;
       if (adopt && adopt.session) seeded.agentSession = adopt.session;
       fs.writeFileSync(file, JSON.stringify(seeded, null, 2));
@@ -14795,6 +14888,11 @@ function setupIPC() {
         }
         localServer.waiters = [];
         localServer.clearRoom();
+        // We never made it into this Meet, so we haven't "joined" it. Now that
+        // currentMeetUrl is one shared variable, leaving it set here would keep
+        // the browser-tab poll paused (it early-returns while it is set) until
+        // some later teardown, which a failed join never reaches.
+        currentMeetUrl = null;
         // Reset the panel UI — without this it keeps showing "leave call"
         // even though we never made it into the meeting.
         // errorAction rides along: the panel re-shows `message` on top of the

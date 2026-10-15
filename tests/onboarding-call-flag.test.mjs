@@ -79,31 +79,31 @@ test('the redirect only fires on `false` — a re-onboarded bot proceeds normall
   }
 });
 
-test('the onboarding-call skill sets the flag once the walkthrough is actually done, not earlier', () => {
-  const step5 = onboardingSkill.slice(onboardingSkill.indexOf('## Step 5:'), onboardingSkill.indexOf('## Step 6:'));
-  assert.match(step5, /set_preference\("onboardingCallComplete", true\)/);
-  // It must sit in Step 5 (wrap-up, after every 4a-4h step was asked or
-  // skipped) — not in Step 1-4, where the walkthrough could still be
-  // abandoned partway and shouldn't count as complete.
-  const setIdx = step5.indexOf('set_preference("onboardingCallComplete"');
-  // Matched by title, not by letter: the sub-step letters shift whenever one is
-  // inserted (this was 4h until "Personality / role" and "What you can do"
-  // arrived and pushed it to 4i).
-  const lastSubstepIdx = onboardingSkill.search(/^### 4[a-z]\. After-call routine\b/m);
-  assert.ok(setIdx > 0 && lastSubstepIdx > 0);
-  // Step 5 starts after 4h in the file, so finding it inside the Step 5 slice
-  // at all is sufficient proof of ordering; also check it isn't in 4a-4h.
-  const walkthrough = onboardingSkill.slice(onboardingSkill.indexOf('## Step 4:'), onboardingSkill.indexOf('## Step 5:'));
-  assert.doesNotMatch(walkthrough, /set_preference\("onboardingCallComplete"/,
-    'must not be set mid-walkthrough, where a skip/abandon would leave it wrongly true');
+test('the onboarding-call skill sets the flag once the card is up and the sentence said', () => {
+  // The one-screen setup (2026-10-15) has nothing to "finish": every setting has
+  // a value the moment the card is drawn. So the flag is set right after the
+  // one spoken sentence — the fast path (get right to work) must not need a
+  // closing step to count as onboarded, and someone who leaves now is done.
+  const step4 = onboardingSkill.slice(onboardingSkill.indexOf('## Step 4:'), onboardingSkill.indexOf('## Step 5:'));
+  assert.match(step4, /set_preference\("onboardingCallComplete", true\)/);
+  const setIdx = step4.indexOf('set_preference("onboardingCallComplete"');
+  const sayIdx = step4.indexOf("I've put all my settings on the whiteboard");
+  assert.ok(sayIdx > 0 && sayIdx < setIdx, 'after the sentence, not before');
+  // Not before the card exists: a bot that never showed its settings has not
+  // been onboarded.
+  const beforeCard = onboardingSkill.slice(0, onboardingSkill.indexOf('## Step 4:'));
+  assert.doesNotMatch(beforeCard, /set_preference\("onboardingCallComplete"/,
+    'must not be set before the card is on screen');
+  // Exactly once: the change/demo paths must not need to set it again.
+  assert.equal((onboardingSkill.match(/set_preference\("onboardingCallComplete"/g) || []).length, 1);
 });
 
 test('re-running onboarding when already complete offers a menu, not the whole walkthrough', () => {
   // This was once a placeholder asserting the skill said "future work" — the
   // behavior was deliberately left undesigned. It has since been designed: a
-  // re-run is someone changing ONE thing, and marching them through all of
-  // 4a-4i to get a new voice is the chore the menu exists to avoid. Assert the
-  // real behavior now, so the branch can't quietly rot back to a fresh start.
+  // re-run is someone changing ONE thing, and the one-screen card (showing the
+  // CURRENT values) is the menu. Assert the real behavior, so the branch can't
+  // quietly rot back to a fresh start.
   assert.match(onboardingSkill, /onboardingCallComplete/);
   const reRun = onboardingSkill.slice(
     onboardingSkill.indexOf('If it\'s already `true`'),
@@ -114,8 +114,9 @@ test('re-running onboarding when already complete offers a menu, not the whole w
   // have a newline anywhere inside it — match on whitespace, not on spaces.
   assert.match(reRun, /menu\s+of\s+what\s+can\s+be\s+reconfigured/,
     'a re-run opens with a menu, so they can name one item');
-  assert.match(reRun, /SAME\s+items\s+Step\s+4's\s+sub-steps\s+cover/,
-    'the menu must track Step 4, not drift into a second hand-maintained list');
+  assert.match(reRun, /SAME\s+items\s+the\s+"Changing\s+one\s+setting"\s+reference/,
+    'the menu must track the reference sections, not drift into a second hand-maintained list');
+  assert.match(reRun, /never\s+overwrite\s+a\s+choice/, 'a re-run shows current values, not fresh defaults');
 });
 
 test('a bot created via the "New bot" button is explicitly stamped false at creation', () => {

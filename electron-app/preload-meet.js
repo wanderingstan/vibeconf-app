@@ -54,6 +54,15 @@ try { window.vibeconfOpenExternal = (url) => ipcRenderer.send('open-external-url
 // so no URL check is needed. Injecting at DOMContentLoaded was too late — Meet's
 // scripts could call getUserMedia before that, getting a real mic stream instead
 // of our VirtualMic, causing TTS audio to silently fail.
+// Avatar posture math (resting offset/scale + occasional shifts) for the
+// virtual camera. Exposed BEFORE page-inject is eval'd, since page-inject has no
+// require. If it fails to load, the face simply stays centred.
+try {
+  globalThis.__vibeAvatarPosture = require('./avatar-posture.js');
+} catch (err) {
+  console.error('[electron-meet] avatar-posture.js failed to load (face stays centred):', err.message);
+}
+
 try {
   const pageInjectPath = path.join(__dirname, 'page-inject.js');
   const pageInjectCode = fs.readFileSync(pageInjectPath, 'utf-8');

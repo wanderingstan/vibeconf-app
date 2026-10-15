@@ -128,7 +128,7 @@ test('the onboarding call shares the whiteboard before writing to it', () => {
   // numbered step rather than a line in a list: every tool call succeeds.
   const skill = readFileSync(join(root, 'mcp-server/onboarding-call-skill.md'), 'utf8');
   const share = skill.indexOf('share_whiteboard`');
-  const update = skill.indexOf('`update_whiteboard` with that step');
+  const update = skill.indexOf('`update_whiteboard` with the card');
   assert.ok(share > -1 && share < update, 'the share must come BEFORE the first update');
   assert.match(skill, /^## Step 3: Put the whiteboard on screen/m, 'its own step, not a footnote');
   assert.match(skill, /Once per call, not once per step/, 're-sharing interrupts the presentation');

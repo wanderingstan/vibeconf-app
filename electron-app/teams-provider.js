@@ -171,7 +171,8 @@ class TeamsProvider extends CallProvider {
   // --- Chat ----------------------------------------------------------------
   async _ensureChatOpen() {
     if ($(TEAMS.chat.editor)) return true;
-    const t = $(TEAMS.toolbar.chat);
+    // The toolbar can still be rendering right after admission.
+    const t = await waitFor(() => $(TEAMS.toolbar.chat), 5000);
     if (!t) { console.warn('[teams] chat button not found'); return false; }
     t.click();
     return !!(await waitFor(() => $(TEAMS.chat.editor), 4000));
@@ -198,22 +199,55 @@ class TeamsProvider extends CallProvider {
     return this.scrapeChatMessages();
   }
 
-  // CKEditor 5: insertText via execCommand reaches its model; then Send.
+  // Put `text` into Teams' CKEditor 5 composer. CKEditor keeps its own model;
+  // DOM-level writes it doesn't see leave Send disabled (live, 2026-10-15:
+  // the first attempt sent nothing). Try, in order: the editor instance CKEditor
+  // hangs on its element, a native beforeinput (what CKEditor 5 listens to),
+  // then execCommand. Returns which one took, or null.
+  _insertIntoEditor(editor, text) {
+    const took = () => norm(editor.textContent).includes(norm(text).slice(0, 20));
+    editor.focus();
+    const inst = editor.ckeditorInstance;
+    if (inst && inst.model) {
+      try {
+        inst.model.change((writer) => writer.insertText(text, inst.model.document.selection.getFirstPosition()));
+        if (took()) return 'ckeditorInstance';
+      } catch (e) { console.warn('[teams] chat: ckeditorInstance insert failed:', e.message); }
+    }
+    try {
+      editor.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: text, bubbles: true, cancelable: true }));
+      if (took()) return 'beforeinput';
+    } catch { /* fall through */ }
+    try { document.execCommand('insertText', false, text); } catch { /* fall through */ }
+    return took() ? 'execCommand' : null;
+  }
+
   async sendChat(text) {
     if (!(await this._ensureChatOpen())) return false;
     const editor = $(TEAMS.chat.editor);
-    editor.focus();
-    const ok = document.execCommand('insertText', false, text);
-    if (!ok) editor.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertText', data: text, bubbles: true, cancelable: true }));
+    const before = this.scrapeChatMessages().length;
+    const how = this._insertIntoEditor(editor, text);
+    if (!how) { console.warn('[teams] chat: could not get text into the composer'); return false; }
     const send = await waitFor(() => { const b = $(TEAMS.chat.sendButton); return b && !b.disabled ? b : null; }, 2000);
     if (send) send.click();
     else editor.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true }));
-    await delay(300);
-    return !norm(editor.textContent);
+    // Sent = it shows up in the list, not "the composer is empty" (which is also
+    // what a failed insert looks like).
+    const shown = await waitFor(() => this.scrapeChatMessages().length > before, 4000);
+    console.log('[teams] chat send via', how, send ? '(Send button)' : '(Enter)', shown ? '→ in the list' : '→ NOT seen in the list');
+    return !!shown;
   }
 
-  // --- Screen share (unverified; Share opens Teams' own picker) -----------
+  // --- Screen share --------------------------------------------------------
+  // One toolbar button, whose aria-label flips "Share" ↔ "Stop sharing"
+  // (verified 2026-10-15). Clicking Share calls getDisplayMedia directly (no
+  // picker menu), so a repeat click while sharing STOPS the share: the app's
+  // Present-now retries toggled it off and on before this read the state.
+  isSharing() {
+    return lower($(TEAMS.toolbar.share) && $(TEAMS.toolbar.share).getAttribute('aria-label')) === TEAMS.shareLabelStop;
+  }
   async startShare(/* shareType */) {
+    if (this.isSharing()) { console.log('[teams] already sharing'); return true; }
     const b = $(TEAMS.toolbar.share);
     if (!b) { console.warn('[teams] share button not found'); return false; }
     b.click();
@@ -221,10 +255,23 @@ class TeamsProvider extends CallProvider {
     return true;
   }
   async stopShare() {
-    console.warn('[teams] stopShare: not mapped yet');
-    return false;
+    if (!this.isSharing()) { console.log('[teams] stopShare: not sharing'); return true; }
+    $(TEAMS.toolbar.share).click();
+    console.log('[teams] clicked Stop sharing');
+    return true;
   }
-  isSharing() { return false; }
+
+  // Every screen share on the stage: [{ name, id }], the presenter named by the
+  // share stream's own data-tid. Includes the bot's own share if Teams renders
+  // one for it; callers split self from others by name.
+  screenShares() {
+    const out = [];
+    for (const el of document.querySelectorAll(TEAMS.stage.screenShare)) {
+      const name = norm(el.getAttribute('data-tid'));
+      if (name && !out.some((s) => s.name === name)) out.push({ name, id: name });
+    }
+    return out;
+  }
 
   // --- Roster (from stage tiles; the People pane is TBD) -------------------
   getParticipants() {

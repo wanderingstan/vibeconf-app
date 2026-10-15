@@ -82,6 +82,10 @@ const TEAMS = {
   // bot, 2026-10-15): "Mute mic" while live, so "Unmute mic" while muted.
   micLabelMute: 'mute mic',
   micLabelUnmute: 'unmute mic',
+  // #screenshare-button's aria-label is "Share", then "Stop sharing" while
+  // the bot shares (verified 2026-10-15). Teams did NOT mute the mic for the
+  // share's audio, unlike Zoom.
+  shareLabelStop: 'stop sharing',
   // Presence of the toolbar's hang-up button = in the meeting.
   inMeetingMarker: '#hangup-button',
 
@@ -128,6 +132,10 @@ const TEAMS = {
     // On EVERY tile all the time (live, 2026-10-15) — its presence is not a
     // speaking signal. What changes on it while someone talks is TBD.
     speakingOutline: '[data-tid="voice-level-stream-outline"]',
+    // Someone sharing (verified 2026-10-15, Stan sharing a terminal): a stream
+    // element whose data-tid IS the presenter's display name, inside their
+    // video-item-container. aria-label "Shared content view".
+    screenShare: '[data-stream-type="ScreenSharing"]',
   },
 
   // Teams records its client classification in these cookies (seen:
@@ -162,6 +170,33 @@ TEAMS.meetingKeyFromUrl = (url) => {
   if (m) return m[1];
   const t = s.match(TEAMS.url.meetupJoinRe);
   return t ? t[1] : null;
+};
+
+// The LIGHT guest client URL for a /meet/<code>?p=<passcode> invite — the bot
+// loads this directly instead of the invite. The launcher's "Continue on this
+// browser" sometimes routes to the full v2 app, which detects Electron and
+// redirects to /error/eoa ("Classic Teams is no longer available"); the light
+// client never did (live, 2026-10-15). Format copied from the URL a real
+// browser lands on: coords = base64 JSON { meetingUrl, meetingCode, passcode }.
+// Null for links without a /meet/ code (classic meetup-join), which still go
+// through the launcher.
+TEAMS.lightMeetingUrl = (url) => {
+  let u;
+  try { u = new URL(url); } catch { return null; }
+  if (!hostOk(u)) return null;
+  const m = u.pathname.match(TEAMS.url.meetCodeRe);
+  if (!m) return null;
+  const code = m[1];
+  const passcode = u.searchParams.get('p') || '';
+  const meetingUrl = `https://${u.hostname}/meet/${code}` + (passcode ? `?p=${passcode}&anon=true` : '?anon=true');
+  const json = JSON.stringify({ meetingUrl, meetingCode: code, passcode });
+  const coords = typeof Buffer !== 'undefined' ? Buffer.from(json, 'utf8').toString('base64') : btoa(json);
+  const q = new URLSearchParams();
+  if (passcode) q.set('p', passcode);
+  q.set('anon', 'true');
+  q.set('agent', 'web');
+  q.set('coords', coords);
+  return `https://${u.hostname}/light-meetings/launch?${q.toString()}`;
 };
 
 // Room code for the local server and vibeconferencing.com: teams-<key>, as a

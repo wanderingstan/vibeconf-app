@@ -11554,7 +11554,7 @@ function activateTeamsProvider(teamsUrl) {
       origin: 'https://' + h,
       storages: ['serviceworkers', 'cachestorage', 'localstorage', 'indexdb', 'cookies'],
     }).catch(() => {})))
-      .then(() => { if (!view.webContents.isDestroyed()) view.webContents.loadURL(teamsUrl); });
+      .then(() => { if (!view.webContents.isDestroyed()) view.webContents.loadURL(TEAMS.lightMeetingUrl(teamsUrl) || teamsUrl); });
   });
   attachMeetViewForState();
   layoutViews();
@@ -11563,8 +11563,13 @@ function activateTeamsProvider(teamsUrl) {
   // launcher redirects on it with no page script involved. One bad visit (e.g.
   // before preload-teams hid window.process) left platformId=1415 and every
   // later join went to /error/eoa. Clear it so each join is classified afresh.
+  // Prefer the light guest client: the launcher sometimes routes to the full v2
+  // app, which detects Electron and bounces to /error/eoa; the light client
+  // never did. Links without a /meet/ code still go through the launcher.
+  const startUrl = TEAMS.lightMeetingUrl(teamsUrl) || teamsUrl;
+  console.log('[electron] Teams: loading', startUrl === teamsUrl ? 'the invite (launcher)' : 'the light guest client directly');
   clearTeamsPlatformCookies(session.fromPartition(SESSION_PARTITION))
-    .finally(() => { if (meetView && !meetView.webContents.isDestroyed()) meetView.webContents.loadURL(teamsUrl); });
+    .finally(() => { if (meetView && !meetView.webContents.isDestroyed()) meetView.webContents.loadURL(startUrl); });
   return room;
 }
 

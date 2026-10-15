@@ -148,6 +148,9 @@ window.addEventListener('message', (event) => {
 let botName = '';
 ipcRenderer.invoke('get-meet-bot-name').then((n) => { botName = n || ''; provider.selfName = botName; }).catch(() => {});
 
+let lastSharing = false;
+let lastPresenter = null;
+let lastSharesKey = '[]';
 let launcherClicked = false;
 let prejoinDone = false;
 let lobbyLogged = false;
@@ -186,6 +189,33 @@ function tick() {
           lastReadChatId = newestOtherChatId(provider.scrapeChatMessages(), botName);
         } catch (e) { console.warn('[teams] open chat error:', e.message); }
       }, 2000);
+    }
+
+    // Our own share: report edges, so the app stops retrying Share (which, on
+    // Teams, toggles the share off) once it has started.
+    const sharing = provider.isSharing();
+    if (sharing !== lastSharing) {
+      lastSharing = sharing;
+      emit(CALL_EVENTS.selfPresenting, { presenting: sharing });
+      console.log('[teams] self-presenting:', sharing);
+    }
+
+    // Someone else's share → someone-presenting (screen reading, #673 wake);
+    // every share → screen-shares-updated, ours included, as on Meet and Zoom.
+    const stageShares = provider.screenShares();
+    const others = stageShares.filter((s) => s.name !== botName);
+    const presenter = others.length ? others[others.length - 1].name : null;
+    if (presenter !== lastPresenter) {
+      lastPresenter = presenter;
+      emit(CALL_EVENTS.someonePresenting, { presenting: !!presenter, presenterName: presenter });
+      console.log('[teams] someone presenting:', presenter);
+    }
+    const shares = sharing && !stageShares.some((s) => s.name === botName)
+      ? [...stageShares, { name: botName || 'self', id: 'self' }] : stageShares;
+    const sharesKey = JSON.stringify(shares);
+    if (sharesKey !== lastSharesKey) {
+      lastSharesKey = sharesKey;
+      emit(CALL_EVENTS.screenSharesUpdated, shares);
     }
 
     const parts = provider.getParticipants();

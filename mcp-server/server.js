@@ -3325,9 +3325,9 @@ server.tool(
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a call — a Google Meet, a Slack huddle, or (experimental) a Zoom meeting. Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle. For Zoom, pass the meeting link (zoom.us/j/<number>, passcode included); the bot joins through the Zoom web client.",
+  "Tell the Vibeconferencing app to join a call — a Google Meet, a Slack huddle, or (experimental) a Zoom or Microsoft Teams meeting. Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle. For Zoom, pass the meeting link (zoom.us/j/<number>, passcode included); the bot joins through the Zoom web client. For Microsoft Teams, pass the meeting link (teams.live.com/meet/... or teams.microsoft.com/...); the bot joins as a guest and an organizer must admit it from the lobby.",
   {
-    room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), a Slack huddle URL (https://app.slack.com/client/<team>/<channel>), OR a Zoom meeting link (https://zoom.us/j/<number>?pwd=...)."),
+    room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), a Slack huddle URL (https://app.slack.com/client/<team>/<channel>), a Zoom meeting link (https://zoom.us/j/<number>?pwd=...), OR a Microsoft Teams meeting link (https://teams.live.com/meet/<code>?p=...)."),
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running (see list_call_instances) — the profile keeps its own display name, so `/join-call <code> alice2` joins as whatever alice2 is named. If the name matches no profile and only one instance is running, it is used as a one-off Meet display name instead. Omit to use the sole running instance, or the one this session is pinned to, under its configured name — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
     force: z.boolean().optional().describe("Rebuild the session even if the bot is already in this call. Default false, which makes a repeat join a harmless no-op. Only pass true when the live session is genuinely wedged and you mean to drop and rejoin — it tears down the working call. It also skips the same-name collision check."),
   },
@@ -3362,6 +3362,44 @@ server.tool(
             text: `Bot identity is locked to "${BOT_NAME}" while the current call is active. Leave the call first (the lock clears automatically once the call ends) or restart the agent.`,
           }],
         };
+      }
+
+      // Microsoft Teams meeting? A /meet/<code> link (teams.live.com or
+      // teams.microsoft.com) or a classic /l/meetup-join/ link. Parsed inline,
+      // not via electron-app/teams-selectors.js (#708); keep the two in step.
+      const teamsKey = /^https?:\/\/([a-z0-9-]+\.)*teams\.(live|microsoft)\.com\//i.test(String(room_id))
+        && (String(room_id).match(/\/meet\/(\d{6,20})/)
+          || String(room_id).match(/\/l\/meetup-join\/19(?:%3a|:)meeting_([^%@/]+)(?:%40|@)thread\.v2/i));
+      if (teamsKey) {
+        const teamsRoomId = 'teams-' + teamsKey[1].toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 40);
+        const tresp = await vfetch(`${BASE_URL}/api/sync/${teamsRoomId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(botSyncPayload(joinedBotName, { meta: { action: "join-teams", url: room_id } })),
+        });
+        const tdata = await tresp.json();
+        if (tdata.results?.join?.ok) {
+          ROOM_ID = teamsRoomId;
+          BOT_NAME = joinedBotName;
+          botNameLocked = true;
+          lastPollTime = null;
+          return {
+            content: [{
+              type: "text",
+              text: [
+                `Joining the Microsoft Teams meeting as "${joinedBotName}"${routedNote}, as a guest through the Teams web client. Use \`${teamsRoomId}\` as room_id for all tool calls.`,
+                ``,
+                `**Teams support is experimental.** You hear the room through Teams' live captions, attributed to speakers by name.`,
+                `Guests wait in the lobby until an organizer admits them, so nothing will happen until someone does. If it takes a while, that's why.`,
+                ``,
+                `1. Once in the meeting, \`speak\` a brief one-sentence greeting so participants hear you're on the line.`,
+                `2. Then loop: \`wait_for_speech\` → optionally \`speak\` / \`send_chat\` / \`read_chat\` → \`wait_for_speech\`, and repeat until asked to leave or the call ends.`,
+                `**Do not send a final response to the user while the call is active.** When the call ends or you're asked to leave, call \`leave_call\`.`,
+              ].join('\n'),
+            }],
+          };
+        }
+        return { content: [{ type: "text", text: `Couldn't join the Teams meeting: ${tdata.results?.join?.error || tdata.error || 'unknown error'}.` }] };
       }
 
       // Zoom meeting? (#318) Any zoom.us link carrying a meeting number: an

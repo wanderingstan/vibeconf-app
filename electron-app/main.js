@@ -151,6 +151,8 @@ let slackSurface = null;
 // the Zoom web-client view and preload-zoom.js handles every command. The flag
 // only tells provider switches and the join path which view is live.
 let zoomProviderMode = false;
+// Microsoft Teams: single surface like Zoom (preload-teams.js on meetView).
+let teamsProviderMode = false;
 // In Slack mode, ONLY these commands target the huddle POPUP (huddle-UI / DOM
 // ops handled by SlackProvider). Everything else — TTS/play-* (VirtualMic),
 // avatar/engagement (VirtualCamera), etc. — is a page-inject op on the MAIN
@@ -2028,6 +2030,9 @@ const localServer = new globalThis.LocalServer({
     // "confirm in-call + start the loop". For Meet, navigate as before.
     if (slackProviderMode || /^slack-/.test(meetCode || '')) {
       console.log('[local-server] Slack join — bot already in huddle, skipping Meet navigation');
+    } else if (/^teams-/.test(meetCode || '')) {
+      // Teams: activateTeamsProvider (via onJoinTeams) already loaded the meeting.
+      console.log('[local-server] Teams join — meeting view already loading, skipping Meet navigation');
     } else if (zoomProviderMode || /^zoom-/.test(meetCode || '')) {
       // Zoom: activateZoomProvider (via onJoinZoom) already loaded the meeting.
       console.log('[local-server] Zoom join — meeting view already loading, skipping Meet navigation');
@@ -2083,6 +2088,10 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] Join Slack huddle requested by agent:', url);
     activateSlackProvider(url, { autojoin: true });
     return localServer.roomId || null;
+  },
+  onJoinTeams: (url) => {
+    console.log('[local-server] Join Teams meeting requested by agent:', url);
+    return activateTeamsProvider(url);
   },
   onJoinZoom: (url) => {
     // Programmatic Zoom join (#318), the Zoom analog of onJoinSlack.
@@ -2969,7 +2978,7 @@ const localServer = new globalThis.LocalServer({
     // "URL navigated" and "actually admitted" is misleading — especially when
     // entry is denied, since that 15s grace window leaves the button visible
     // while we wait for the denial page to be detected.
-    broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : 'meet' });
+    broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : teamsProviderMode ? 'teams' : 'meet' });
     // Rebuild the menu bar for the same reason: Call Now and Hang Up are a
     // pair, and exactly one of them should be available. A handful of rebuilds
     // per call (idle → joining → in-call → idle), not a poll.
@@ -11447,12 +11456,13 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
 // Ensure the embedded view is a Google Meet view (switching back from Slack if
 // needed) before loading a Meet URL.
 function activateMeetProvider() {
-  if (!slackProviderMode && !zoomProviderMode && meetView && !meetView.webContents.isDestroyed()) return;
+  if (!slackProviderMode && !zoomProviderMode && !teamsProviderMode && meetView && !meetView.webContents.isDestroyed()) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ', zoom=' + zoomProviderMode + ')');
+  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ', zoom=' + zoomProviderMode + ', teams=' + teamsProviderMode + ')');
   destroyProviderView();
   slackProviderMode = false;
   zoomProviderMode = false;
+  teamsProviderMode = false;
   slackSurface = null;
   // #347: follows the active partition, so a provider switch mid-fallback
   // doesn't silently drop the bot back onto the blocked account.
@@ -11466,19 +11476,95 @@ function activateMeetProvider() {
 // analog of setupSlackRoom.
 function setupZoomRoom(zoomUrl) {
   const { ZOOM } = require('./zoom-selectors');
-  const room = ZOOM.roomCodeFromUrl(zoomUrl);
+  return registerProviderRoom('Zoom', ZOOM.roomCodeFromUrl(zoomUrl), zoomUrl);
+}
+
+// Room code → local server + vibeconferencing.com sync + ensureRoom, for the
+// single-surface providers (Zoom, Teams). `label` is only for the log.
+function registerProviderRoom(label, room, url) {
   if (!room) {
-    console.warn('[electron] Zoom: no meeting number in URL; room code not set —', zoomUrl);
+    console.warn('[electron] ' + label + ': no meeting id in URL; room code not set —', url);
     return null;
   }
   localServer.setRoom(room);
   sync.updateConfig({ roomId: room, baseUrl: getWebsiteUrl() });
-  console.log('[electron] Zoom room code:', room);
+  console.log('[electron] ' + label + ' room code:', room);
   sync.ensureRoom().then((ok) => {
     sync.startPolling();
-    console.log('[electron] Zoom room ensured:', room,
+    console.log('[electron] ' + label + ' room ensured:', room,
       ok ? 'OK' : '(NOT created — log into ' + getWebsiteUrl() + ' so the bot can create rooms)');
-  }).catch((e) => console.warn('[electron] Zoom ensureRoom error:', e && e.message));
+  }).catch((e) => console.warn('[electron] ' + label + ' ensureRoom error:', e && e.message));
+  return room;
+}
+
+async function clearTeamsPlatformCookies(sess) {
+  const { TEAMS } = require('./teams-selectors');
+  let removed = 0;
+  try {
+    for (const c of await sess.cookies.get({})) {
+      const d = (c.domain || '').replace(/^\./, '');
+      if (!TEAMS.platformCookies.includes(c.name)) continue;
+      if (!TEAMS.url.hosts.some((h) => d === h || d.endsWith('.' + h))) continue;
+      try { await sess.cookies.remove(`https://${d}${c.path || '/'}`, c.name); removed++; } catch { /* best effort */ }
+    }
+  } catch (err) {
+    console.warn('[electron] Teams: clearing platform cookies failed:', err.message);
+  }
+  if (removed) console.log('[electron] Teams: cleared', removed, 'platform cookie(s) so the client is re-detected');
+}
+
+// Switch the embedded view to the Microsoft Teams web client and join. The
+// invite link itself is loaded: it lands on Teams' launcher, and preload-teams
+// takes "Continue on this browser", the guest pre-join and the lobby from there.
+function activateTeamsProvider(teamsUrl) {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const { TEAMS } = require('./teams-selectors');
+  if (!TEAMS.isTeamsUrl(teamsUrl)) { console.warn('[electron] Teams: not a meeting link —', teamsUrl); return null; }
+  console.log('[electron] Activating Teams provider:', teamsUrl);
+  destroyProviderView();
+  slackProviderMode = false;
+  slackSurface = null;
+  zoomProviderMode = false;
+  teamsProviderMode = true;
+  ensureMeetSessionConfigured(SESSION_PARTITION);
+  meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-teams.js' });
+  // Present as current Chrome in the string AND the Sec-CH-UA* headers: Teams'
+  // server redirects what it takes for the Classic Teams Electron client to
+  // /error/eoa on the FIRST request, before any page script runs (live,
+  // 2026-10-15). Same spoof as the Slack surface (slack-ua.js).
+  const browserId = require('./slack-ua');
+  meetView.webContents.setUserAgent(browserId.UA);
+  try { browserId.installHeaderSpoof(session.fromPartition(SESSION_PARTITION)); } catch { /* best effort */ }
+  meetView.webContents.on('console-message', (_e, _level, message) => {
+    if (typeof message === 'string' && (message.includes('[teams]') || message.includes('[bots-in-calls]'))) console.log(message);
+  });
+  // Self-heal "Classic Teams is no longer available" (/error/eoa). Teams
+  // remembers a bad client classification in origin storage, not just cookies
+  // (a service worker, by the look of it: the launcher itself answered with the
+  // redirect even after the platform cookies were cleared). On landing there,
+  // wipe the Teams origins' storage once and retry the invite.
+  let eoaRetried = false;
+  const view = meetView;
+  view.webContents.on('did-navigate', (_e, url) => {
+    if (eoaRetried || !/\/error\/eoa\b/.test(url)) return;
+    eoaRetried = true;
+    console.warn('[electron] Teams sent the bot to /error/eoa (Classic Teams) — clearing Teams storage and retrying once');
+    const sess = session.fromPartition(SESSION_PARTITION);
+    Promise.all(TEAMS.url.hosts.map((h) => sess.clearStorageData({
+      origin: 'https://' + h,
+      storages: ['serviceworkers', 'cachestorage', 'localstorage', 'indexdb', 'cookies'],
+    }).catch(() => {})))
+      .then(() => { if (!view.webContents.isDestroyed()) view.webContents.loadURL(teamsUrl); });
+  });
+  attachMeetViewForState();
+  layoutViews();
+  const room = registerProviderRoom('Teams', TEAMS.roomCodeFromUrl(teamsUrl), teamsUrl);
+  // Teams pins its client classification in a platformId cookie, and the
+  // launcher redirects on it with no page script involved. One bad visit (e.g.
+  // before preload-teams hid window.process) left platformId=1415 and every
+  // later join went to /error/eoa. Clear it so each join is classified afresh.
+  clearTeamsPlatformCookies(session.fromPartition(SESSION_PARTITION))
+    .finally(() => { if (meetView && !meetView.webContents.isDestroyed()) meetView.webContents.loadURL(teamsUrl); });
   return room;
 }
 
@@ -11504,6 +11590,7 @@ function activateZoomProvider(zoomUrl) {
   destroyProviderView();
   slackProviderMode = false;
   slackSurface = null;
+  teamsProviderMode = false;
   zoomProviderMode = true;
   ensureMeetSessionConfigured(SESSION_PARTITION);
   meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-zoom.js' });
@@ -12128,6 +12215,11 @@ function createMainWindow() {
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   // Zoom (#318): --provider=zoom --zoom-url=<any zoom.us meeting link> joins at
   // launch. Swaps the Meet view just built for a Zoom one.
+  // Teams: --provider=teams --teams-url=<invite link> joins at launch.
+  if (cliArgs['provider'] === 'teams') {
+    if (cliArgs['teams-url']) activateTeamsProvider(cliArgs['teams-url']);
+    else console.warn('[electron] --provider=teams needs --teams-url=<meeting link>');
+  }
   if (cliArgs['provider'] === 'zoom') {
     if (cliArgs['zoom-url']) activateZoomProvider(cliArgs['zoom-url']);
     else console.warn('[electron] --provider=zoom needs --zoom-url=<meeting link>');
@@ -12371,7 +12463,7 @@ function createMainWindow() {
   // Load idle placeholder in the Meet view. In Slack mode the surface already
   // loaded app.slack.com (or the channel deep-link) in createSlackSurface; in
   // Zoom mode activateZoomProvider already loaded the meeting.
-  if (!slackMode && !zoomProviderMode) loadIdlePage('main-window created');
+  if (!slackMode && !zoomProviderMode && !teamsProviderMode) loadIdlePage('main-window created');
 
   // 'close' (cancellable) before 'closed' (already gone).
   mainWindow.on('close', confirmQuitBeforeClose);
@@ -12554,6 +12646,7 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
 
   meetView = createMeetView(activeMeetPartition);
   zoomProviderMode = false; // a Meet view replaces any Zoom one (#318)
+  teamsProviderMode = false; // ... or Teams one
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 

@@ -128,7 +128,7 @@ function namesDiffer(a, b) {
 const { formatFitReport, formatBudget } = require('./board-fit.js');
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onJoinZoom, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onBoardFitVersion, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onJoinZoom, onJoinTeams, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onBoardFitVersion, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -174,6 +174,7 @@ class LocalServer {
     this.onListFonts = onListFonts || (async () => []);
     this.onJoinSlack = onJoinSlack || (() => {});
     this.onJoinZoom = onJoinZoom || (() => null);
+    this.onJoinTeams = onJoinTeams || (() => null);
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareSize = onSetShareSize || (async () => ({ ok: false, error: 'not implemented' }));
@@ -6497,6 +6498,19 @@ class LocalServer {
         if (data.sender) this.currentCallBotName = data.sender;
         this.onJoinSlack(url);
         results.join = { ok: true };
+      }
+    }
+
+    // Handle join-teams: programmatic Microsoft Teams join. roomId becomes
+    // teams-<meeting id>.
+    if (data.meta?.action === 'join-teams') {
+      const url = data.meta.url;
+      if (!url) {
+        results.join = { ok: false, error: 'join-teams requires a Teams meeting link' };
+      } else {
+        if (data.sender) this.currentCallBotName = data.sender;
+        const room = this.onJoinTeams(url);
+        results.join = room ? { ok: true, roomId: room } : { ok: false, error: 'Not a Teams meeting link: ' + url };
       }
     }
 

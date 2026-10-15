@@ -947,14 +947,18 @@ const PREFERENCES = {
       'Higher = 🧑‍💻 only for genuinely heads-down work; 0 = show it on the first tool. ' +
       'Read live.',
   },
-  workingStateQuietMs: {
+  workingStateStaleMs: {
     type: 'number',
-    default: 8000,
-    min: 1000,
-    max: 60_000,
+    default: 15 * 60_000,
+    min: 60_000,
+    max: 2 * 60 * 60_000,
     description:
-      'How long after the last agent activity before the 🧑‍💻/🤔 face eases back to ' +
-      'listening/idle (#339). Held through a pending turn regardless. Read live.',
+      'Safety net for the 🧑‍💻/🤔 busy face (#824). The face normally ends when the ' +
+      'agent returns to wait_for_speech, speaks, or the call ends; this only drops it ' +
+      'if the agent has produced no activity for this long and never came back to ' +
+      'listen (e.g. its terminal was killed mid-tool). Deliberately minutes, not ' +
+      'seconds: a single long build is one activity line and then silence, and the ' +
+      'old 8s quiet timer (workingStateQuietMs) dropped the face mid-work. Read live.',
   },
   bargeInAckExempt: {
     type: 'boolean',

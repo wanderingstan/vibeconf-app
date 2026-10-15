@@ -66,6 +66,7 @@ test('the working state still depends on this feed', () => {
   // Documents WHY the hook matters, so a future reader connects a silent hook to
   // a missing avatar state rather than treating them as unrelated.
   assert.match(server, /_onAgentActivity\(last\)/);
-  assert.match(server, /\/🔧\/\.test\(line\)/, 'tool lines are what escalate to working');
+  // Feed lines are what escalate to working (any non-conversation line since #824).
+  assert.match(server, /_armWorkingEscalationTimer\(remaining\)/, 'feed activity arms the escalation');
   assert.match(server, /_setBotState\('working'\)/);
 });

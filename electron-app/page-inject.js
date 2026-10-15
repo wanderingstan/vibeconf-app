@@ -390,8 +390,13 @@
       const stillInGrace = !this.anyoneSpeaking
         && this.lastAnyoneSpeakingFalseAt > 0
         && (Date.now() - this.lastAnyoneSpeakingFalseAt) < HEARING_GRACE_MS;
+      // #824: never while the bot is busy. 😐/🫤 tell the room "I'm listening";
+      // a bot heads-down in tools can't respond, so saying that is a lie. The
+      // activity face already outranks `hearing` in the chain below — this guard
+      // makes the rule explicit rather than an accident of ordering.
       const attentive = (this.anyoneSpeaking || stillInGrace) && this.mode !== 'silent'
-        && !this.speaking && this.state !== 'thinking' && this.state !== 'speaking' && this.state !== 'yielding';
+        && !this.speaking && this.state !== 'thinking' && this.state !== 'working'
+        && this.state !== 'speaking' && this.state !== 'yielding';
       // Two faces for one window, split on whether they are STILL talking. The
       // grace half was previously indistinguishable from active listening.
       const hearing = attentive
@@ -434,7 +439,14 @@
       // Electron stdout that we tail with `cmux read-screen`.
       if (emoji !== this._lastLoggedEmoji) {
         this._lastLoggedEmoji = emoji;
+        // #824: the reason follows the SAME chain as the emoji. It used to skip
+        // agentAbsent/deaf/impaired, so a 🫥 shown for a quiet agent was logged as
+        // "hearing (anyoneSpeaking=true)" — a lie that sent the issue looking in
+        // the wrong place.
         const reason = notOnLine ? `callStatus=${this.callStatus} hasEngaged=${this.hasEngaged}` :
+          agentAbsentEmoji ? `agent absent (${this.agentAbsentReason || 'quiet'})` :
+          deafEmoji ? 'deaf' :
+          impairedEmoji ? 'impaired' :
           audioPlaying ? `audio playing (state=${this.state}${this.speakingEmojiOverride ? ' override' : ''})` :
           activityEmoji ? `state=${this.state}${this.state === 'yielding' && this.yieldingEmojiOverride ? ' (yielding override)' : ''}` :
           hearing ? (this.anyoneSpeaking ? `hearing (anyoneSpeaking=true)` : `settling (speech stopped, awaiting turn)`) :

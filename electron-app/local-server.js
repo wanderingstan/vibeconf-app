@@ -21,6 +21,13 @@ const { URL } = require('url');
 // site, which is how the two drifted apart.
 const RESTING_STATES = ['idle', 'listening', 'ticking', 'thinking', 'working'];
 
+// #824: activity-feed lines that are the bot TALKING or LISTENING, not working.
+// The agent's own wait_for_speech call lands in the feed as a 🔧 line just as
+// it goes back to listening, and `speak` is the reply itself; counting either
+// as heads-down work flashed 🧑‍💻 at the very moment the bot was re-engaging
+// with the room. They neither open an engagement nor escalate one.
+const CONVERSATION_TOOL_LINE = /^🔧 (wait_for_speech|speak|hold_voice)\b/;
+
 // #356: per-process control-token support. The control API binds 127.0.0.1, but
 // that is NOT a security boundary against the user's own browser: any webpage can
 // fetch() 127.0.0.1:<port> and, under the old wildcard CORS, READ the response
@@ -33,7 +40,7 @@ const RESTING_STATES = ['idle', 'listening', 'ticking', 'thinking', 'working'];
 const AUTH_TOKEN_DIR = path.join(os.homedir(), '.vibeconferencing', 'local-tokens');
 function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`); }
 const prefsSchema = require('./preferences-schema.js');
-const { classifyAgent, agentIsAbsent } = require('./agent-liveness.js');
+const { classifyAgent, agentIsAbsent, AGENT_AWAY_MS } = require('./agent-liveness.js');
 const { isFinished } = require('./call-phase.js');
 const { getRecentSessionLog, getSessionLogPath, sliceCallLines } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
@@ -321,8 +328,9 @@ class LocalServer {
     // #339: the same feed also drives the avatar's "working" state — new agent
     // activity while we're between speaks means the bot is heads-down doing tool
     // work (🧑‍💻), not just listening (🙂). Detect NEW lines and surface them.
-    this._workingQuietTimer = null;
+    this._workingStaleTimer = null; // #824: safety net only — see _armWorkingStaleTimer
     this._workingEscalationTimer = null; // fires the 🤔→🧑‍💻 dwell for a SINGLE long tool call
+    this._lastAgentLineAt = 0; // #824: last activity-feed line, a proof of life the HTTP clock can't see
     this._workingSince = 0; // #339: dwell-clock start for the 🤔→🧑‍💻 escalation
     // #242: the SOURCE is swappable. Today this is the transcript tail; an
     // app-launched agent will hand us its own event stream instead. Everything
@@ -990,6 +998,11 @@ class LocalServer {
     if (this.callStatus === status) return;
     this.callStatus = status;
     console.log('[local-server] Call status:', status);
+    // #824: the call ending ends any engagement — no 🧑‍💻 left on a call that is over.
+    if (status !== 'in-call') {
+      this._endWorkingEngagement();
+      if (this.botState === 'working') this._setBotState('idle', undefined, { force: true });
+    }
     this.onCallStatusChange(status);
 
     // Mint a first-class call ID when a call begins — the first transition into
@@ -2434,10 +2447,20 @@ class LocalServer {
     // A dropped socket is proof, not inference, so it short-circuits the
     // elapsed-time thresholds entirely.
     if (this.agentSocketLost && this.waiters.length === 0) return 'away';
-    return classifyAgent({
+    const state = classifyAgent({
       activeWaiters: this.waiters.length,
       lastAgentActivityAt: this.lastAgentActivityAt,
     });
+    // #824: 'away' is an inference from HTTP silence, and an agent deep in Bash
+    // makes no HTTP calls. On 2026-10-15 a four-minute merge run tripped it and
+    // the face went 🫥 mid-work. A bot we are showing as 🧑‍💻 (bounded by the
+    // workingStateStaleMs safety net), or whose activity feed moved recently,
+    // is demonstrably busy, not gone.
+    if (state === 'away') {
+      const feedRecent = this._lastAgentLineAt && (Date.now() - this._lastAgentLineAt) < AGENT_AWAY_MS;
+      if (this.botState === 'working' || feedRecent) return 'busy';
+    }
+    return state;
   }
 
   // The face-worthy half of it: away or never-attached, and only while we are
@@ -3802,6 +3825,8 @@ class LocalServer {
     }
     const prev = this.botState;
     this.botState = state;
+    // #824: leaving thinking/working by any route ends the engagement.
+    if (state !== 'thinking' && state !== 'working') this._endWorkingEngagement();
     if (this._thinkingHoldTimer) {
       clearTimeout(this._thinkingHoldTimer);
       this._thinkingHoldTimer = null;
@@ -3839,31 +3864,52 @@ class LocalServer {
   }
 
   // #339: new agent activity → reflect a "working" avatar state so the room can
-  // tell "heads-down doing tool work" from "listening". A tool line (🔧) means
-  // the bot is running tools → 🧑‍💻 working; other activity (reasoning/text) →
-  // 🤔 thinking. Only escalates from resting states — never overrides speaking
-  // or yielding. A quiet timer eases back to listening/idle once activity stops.
+  // tell "heads-down doing tool work" from "listening". The first line of an
+  // engagement shows 🤔 thinking; once the engagement has lasted
+  // workingStateMinMs it escalates to 🧑‍💻 working. Only escalates from resting
+  // states — never overrides speaking or yielding.
+  //
+  // #824: the engagement ends when the agent STOPS working — it opens a
+  // wait_for_speech (the long-poll handler forces listening), it speaks, or the
+  // call ends — and NOT when the feed goes quiet. The old 8s quiet timer read
+  // the gap between two tool calls (`gh pr merge` + `sleep`) as "done", dropped
+  // the face to 😔 idle, and the next line restarted the dwell from zero. On
+  // 2026-10-15 that cycled 🤔 → 😔 → 🤔 for four minutes while the bot merged
+  // seven PRs, and 🧑‍💻 never stuck. Stan's rule: stay on 🧑‍💻 for as long as
+  // the bot is not listening.
   _onAgentActivity(line) {
     // Any new activity line is proof the session is past whatever it was
     // reporting — a granted/denied prompt, a dismissed idle nudge, or a
     // notification that just wasn't actually blocking anything.
     if (this.agentNotification) this.agentNotification = null;
+    this._lastAgentLineAt = Date.now();
     if (this.callStatus !== 'in-call') return;
+    // A wait_for_speech is parked: the agent IS listening. Whatever this line
+    // is (typically the wait_for_speech call itself, written to the transcript
+    // a beat after the request reached us), it is not work.
+    if (this.waiters.length > 0) return;
+    if (CONVERSATION_TOOL_LINE.test(String(line || ''))) return;
     if (!RESTING_STATES.includes(this.botState)) return;
     if (this.botState === 'idle' || this.botState === 'listening' || this.botState === 'ticking') {
       // Start of an engagement — show 🤔 thinking and start the dwell clock.
       this._workingSince = Date.now();
       this._setBotState('thinking');
-    } else if (/🔧/.test(line)) {
-      // Already engaged. Escalate 🤔 → 🧑‍💻 only once work has been sustained for
-      // workingStateMinMs, so a quick single-tool turn (the speak call is itself a
-      // tool!) doesn't flash 🧑‍💻. Once working, stay working.
+    }
+    if (this.botState === 'thinking') {
+      // Escalate 🤔 → 🧑‍💻 once the engagement has lasted workingStateMinMs, so a
+      // quick turn doesn't flash 🧑‍💻. ANY non-conversation line counts (#824):
+      // the dwell is about how long the bot has been away from the room, not
+      // about which glyph the transcript happened to prefix the line with.
       const minMs = Number(this._pref('workingStateMinMs')) || 0;
       if (!this._workingSince) this._workingSince = Date.now();
-      if (Date.now() - this._workingSince >= minMs) this._setBotState('working');
-      else this._armWorkingEscalationTimer(minMs - (Date.now() - this._workingSince));
+      const remaining = minMs - (Date.now() - this._workingSince);
+      if (remaining <= 0) this._setBotState('working');
+      // Armed on the FIRST line too. Before #824 only a second 🔧 line inside
+      // the window armed it, so an engagement made of one long tool call per
+      // quiet-timer window never escalated at all.
+      else if (!this._workingEscalationTimer) this._armWorkingEscalationTimer(remaining);
     }
-    this._armWorkingQuietTimer();
+    this._armWorkingStaleTimer();
   }
 
   // The dwell has to expire on a TIMER, not only when the next tool line lands.
@@ -3884,10 +3930,9 @@ class LocalServer {
       // yielding, or the call may be over. Only a still-thinking bot escalates.
       if (this.callStatus !== 'in-call') return;
       if (this.botState !== 'thinking') return;
+      // The agent went back to listening while we waited: not work.
+      if (this.waiters.length > 0) return;
       this._setBotState('working');
-      // Keep the quiet timer honest — without this a long silent tool call could
-      // reach 🧑‍💻 and then be dropped by a quiet timer armed before it.
-      this._armWorkingQuietTimer();
     }, Math.max(0, afterMs));
   }
 
@@ -3904,22 +3949,34 @@ class LocalServer {
     }, TICK_FACE_MS);
   }
 
-  _armWorkingQuietTimer() {
-    const QUIET_MS = Number(this._pref('workingStateQuietMs')) || 8000; // activity gone this long → drop the face
-    if (this._workingQuietTimer) clearTimeout(this._workingQuietTimer);
-    this._workingQuietTimer = setTimeout(() => {
-      this._workingQuietTimer = null;
-      // The engagement is over: a pending escalation would otherwise fire 🧑‍💻
-      // onto a bot that has already gone quiet.
+  // #824: a SAFETY NET, not the end-of-work signal. The engagement normally ends
+  // when the agent returns to wait_for_speech, speaks, or the call ends. This
+  // only covers an agent that died mid-task with no poll open to drop (a killed
+  // terminal during a Bash call), which would otherwise leave 🧑‍💻 up forever.
+  // So it is measured in MINUTES: a single long build produces one feed line and
+  // then nothing, and dropping the face partway through that is the bug.
+  _armWorkingStaleTimer() {
+    const STALE_MS = Number(this._pref('workingStateStaleMs')) || 15 * 60_000;
+    clearTimeout(this._workingStaleTimer);
+    this._workingStaleTimer = setTimeout(() => {
+      this._workingStaleTimer = null;
       clearTimeout(this._workingEscalationTimer);
       this._workingEscalationTimer = null;
       if (this.botState !== 'working' && this.botState !== 'thinking') return;
-      // Still mid-turn (resolved, not yet spoken)? Hold the face and re-check —
-      // a single long tool call can be quiet a while. Once the turn ends (speak
-      // clears _pendingTurnSince) or the agent re-arms listening, we fall through.
-      if (this._pendingTurnSince != null) { this._armWorkingQuietTimer(); return; }
+      console.log(ts(), '🧑‍💻 [working] no agent activity for ' + Math.round(STALE_MS / 1000)
+        + 's and no wait_for_speech — dropping the busy face (safety net)');
       this._setBotState(this.waiters.length > 0 ? 'listening' : 'idle', undefined, { force: true });
-    }, QUIET_MS);
+    }, STALE_MS);
+    if (this._workingStaleTimer.unref) this._workingStaleTimer.unref();
+  }
+
+  // The engagement is over (listening, speaking, yielding, call ended): cancel
+  // anything that would otherwise land 🧑‍💻 on a bot that has moved on.
+  _endWorkingEngagement() {
+    clearTimeout(this._workingEscalationTimer);
+    this._workingEscalationTimer = null;
+    clearTimeout(this._workingStaleTimer);
+    this._workingStaleTimer = null;
   }
 
   // Barge-in / back-off helpers (#154) -----------------------------------------
@@ -6104,7 +6161,10 @@ class LocalServer {
     // the floor back. User-speech-driven thinking already transitioned
     // through speaking by the time wait_for_speech is called, so it isn't
     // affected.
-    if (this.botState === 'thinking' || this.botState === 'ticking') {
+    // #824: 'working' too. This request is THE signal that the bot is back
+    // listening; before, a 🧑‍💻 bot that re-armed stayed 🧑‍💻 until a quiet timer
+    // noticed, which was the only reason that timer had to be short.
+    if (this.botState === 'thinking' || this.botState === 'ticking' || this.botState === 'working') {
       this._setBotState('listening', undefined, { force: true });
     }
 
@@ -6317,6 +6377,7 @@ class LocalServer {
     if (data.role === 'bot' && this.callStatus === 'in-call' && this.botState === 'listening') {
       console.log(ts(), '🛠️  [working] bot action while listening — entering thinking');
       this._setBotState('thinking');
+      this._armWorkingStaleTimer(); // #824: bounded even if the agent dies right here
     }
 
     const results = {};

@@ -3840,20 +3840,37 @@ async function buildBackgroundSvgFromImage(filePath) {
     '</svg>';
 }
 
+// The Meet view's webContents if it is still alive, else null. Re-read it after
+// every await: the guest-join fallback (#347 guest join, #795 anonymous guest)
+// tears meetView down and builds a new one while an async caller is suspended,
+// so a check made BEFORE the await says nothing about the view AFTER it.
+function liveMeetWc() {
+  return meetView && !meetView.webContents.isDestroyed() ? meetView.webContents : null;
+}
+
 async function pushAvatarBackground(svgSource) {
-  if (!meetView || meetView.webContents.isDestroyed()) return;
+  if (!liveMeetWc()) return;
   try {
     const resolved = (typeof svgSource === 'string' && svgSource.trim())
       ? await resolveSvg(svgSource)
       : '';
-    meetView.webContents.send('extension-message', {
+    // resolveSvg reads file:// images; the guest fallback can replace meetView
+    // during that read. The old pre-await guard let this hit a null view, and the
+    // catch below then hit it again, escaping as an unhandledRejection whose
+    // panel error buried the "sign the bot in" warning (2026-10-15).
+    const wc = liveMeetWc();
+    if (!wc) return;
+    wc.send('extension-message', {
       action: 'set-avatar-background',
       payload: { svg: resolved },
     });
   } catch (err) {
     console.warn('[electron] Failed to resolve avatar background SVG:', err.message);
-    // Fall back to clearing — renderer goes back to default gradient.
-    meetView.webContents.send('extension-message', {
+    // Fall back to clearing — renderer goes back to default gradient. Same
+    // re-check: the view may be gone by now, and a throw here is unhandled.
+    const wc = liveMeetWc();
+    if (!wc) return;
+    wc.send('extension-message', {
       action: 'set-avatar-background',
       payload: { svg: '' },
     });
@@ -4661,7 +4678,15 @@ async function setRunwayFace(seat, on) {
         try { await mod.endAvatarSession({ sessionId: s.sessionId, roomName: s.roomName }); } catch (e) {}
         return;
       }
-      meetView.webContents.send('runway-avatar', { type: 'connect', url: s.livekitUrl, token: s.botToken });
+      // Re-check after the awaits: the guest fallback can replace meetView while
+      // the session is being minted. End what we created rather than leak it, and
+      // throw so the catch's 30s retry runs against the new view.
+      const wc = liveMeetWc();
+      if (!wc) {
+        try { await mod.endAvatarSession({ sessionId: s.sessionId, roomName: s.roomName }); } catch (e) {}
+        throw new Error('Meet view went away while minting the avatar session');
+      }
+      wc.send('runway-avatar', { type: 'connect', url: s.livekitUrl, token: s.botToken });
       // Log session + avatar ids — the 06-29 post-mortem stalled because neither was on the record.
       console.log('[runway] face', prevSession ? 'RENEWED' : 'ON', 'for', seat, '→ room', s.roomName, 'gen', gen, 'session', s.sessionId, 'avatar', (mod.AVATARS || {})[seat]);
       st.sessionId = s.sessionId; st.roomName = s.roomName; st.mod = mod;
@@ -9551,29 +9576,38 @@ app.whenReady().then(async () => {
       }
     }
 
-    // A brand-new bot otherwise ships with the plain animated gradient — the
-    // SAME one every other unconfigured bot has, which makes the switcher
-    // useless for telling several fresh bots apart at a glance. Seed one of
-    // the bundled presets at random instead, right here at the one moment a
-    // profile is genuinely new — covers every path that creates a bot ("New
-    // bot…", /call-new-bot, and the very first default-profile launch), since
-    // they all funnel through this same per-process startup.
-    if (isBrandNewProfile && !profileStore.get('avatarBackgroundSvg')) {
-      try {
-        const bgDir = __dirname.includes('.asar')
-          ? path.join(process.resourcesPath, 'backgrounds', 'presets')
-          : path.join(__dirname, 'backgrounds', 'presets');
-        const BG_EXTS = /\.(svg|png|jpe?g|webp|gif)$/i;
-        const files = fs.readdirSync(bgDir).filter((f) => BG_EXTS.test(f));
-        if (files.length) {
-          const chosen = files[Math.floor(Math.random() * files.length)];
-          const svg = await buildBackgroundSvgFromImage(path.join(bgDir, chosen));
-          profileStore.set('avatarBackgroundSvg', svg);
-          profileStore.set('avatarBackgroundCaption', chosen.replace(BG_EXTS, ''));
+    // A new bot gets one of the bundled background presets at random instead
+    // of the plain gradient every unconfigured bot shares. "New" means EITHER
+    // no config.json existed at all (bare --profile launch, first default
+    // profile) OR seedNewBotName left its one-shot marker: "New bot…" and
+    // /call-new-bot pre-seed config.json before this instance starts, so
+    // isBrandNewProfile is already false for them. See new-bot-background.js
+    // for why a marker rather than inferring it from an empty background.
+    {
+      const nbb = require('./new-bot-background.js');
+      const marker = profileStore.get(nbb.SEED_BACKGROUND_MARKER);
+      if (nbb.shouldSeedRandomBackground({
+        isBrandNewProfile,
+        marker,
+        currentSvg: profileStore.get('avatarBackgroundSvg'),
+      })) {
+        try {
+          const bgDir = __dirname.includes('.asar')
+            ? path.join(process.resourcesPath, 'backgrounds', 'presets')
+            : path.join(__dirname, 'backgrounds', 'presets');
+          const chosen = nbb.pickBackgroundPreset(fs.readdirSync(bgDir));
+          if (chosen) {
+            const svg = await buildBackgroundSvgFromImage(path.join(bgDir, chosen));
+            profileStore.set('avatarBackgroundSvg', svg);
+            profileStore.set('avatarBackgroundCaption', nbb.presetCaption(chosen));
+          }
+        } catch (err) {
+          console.warn('[config] could not seed a random background for new bot:', err.message);
         }
-      } catch (err) {
-        console.warn('[config] could not seed a random background for new bot:', err.message);
       }
+      // One shot, success or not: once consumed, an empty background is the
+      // user's choice (or a failed seed) and must never be re-rolled.
+      if (marker !== undefined) profileStore.delete(nbb.SEED_BACKGROUND_MARKER);
     }
   }
 
@@ -13670,6 +13704,11 @@ function setupIPC() {
       // needed — which means a genuinely NEW bot has to say otherwise
       // explicitly, right here, at the one moment it's actually created.
       const seeded = { ...existing, botName, onboardingCallComplete: false };
+      // The new instance's startup sees this config.json and so does NOT treat
+      // the profile as brand new; this marker is what tells it to seed a random
+      // background preset (consumed on that first launch, see
+      // new-bot-background.js).
+      seeded[require('./new-bot-background.js').SEED_BACKGROUND_MARKER] = true;
       if (adopt && adopt.workdir) seeded.claudeWorkDir = adopt.workdir;
       if (adopt && adopt.session) seeded.agentSession = adopt.session;
       fs.writeFileSync(file, JSON.stringify(seeded, null, 2));

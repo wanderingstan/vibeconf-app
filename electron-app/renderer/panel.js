@@ -2479,25 +2479,50 @@ const ERROR_ACTIONS = {
   'open-bot-sign-in': () => api.invoke('open-bot-sign-in'),
 };
 
-const errorActionBtn = document.getElementById('errorAction');
+// How many errors the bar shows at once. It used to show only the newest, so a
+// generic late error (an unhandled rejection, a clipboard confirmation) hid an
+// older actionable one AND its button: the "sign the bot in" warning vanished
+// under "Unhandled promise rejection" on 2026-10-15. Three, newest first, and a
+// count for the rest, so nothing is hidden without saying so.
+const ERROR_BAR_MAX_ROWS = 3;
+
 function _renderErrorBar() {
-  const top = _errorStack[_errorStack.length - 1];
-  if (!top) { errorBar.style.display = 'none'; return; }
-  document.getElementById('errorText').textContent = top.message;
-  if (errorActionBtn) {
-    const act = top.action && ERROR_ACTIONS[top.action.id] ? top.action : null;
-    errorActionBtn.textContent = act ? act.label : '';
-    errorActionBtn.style.display = act ? '' : 'none';
+  const rows = document.getElementById('errorRows');
+  if (!_errorStack.length) { rows.replaceChildren(); errorBar.style.display = 'none'; return; }
+  const shown = _errorStack.slice(-ERROR_BAR_MAX_ROWS).reverse();   // newest first
+  const children = shown.map((entry) => {
+    const row = document.createElement('div');
+    row.className = 'error-row';
+    const text = document.createElement('span');
+    text.className = 'error-text';
+    text.textContent = entry.message;
+    row.appendChild(text);
+    // The payload crosses IPC: an unknown id paints nothing rather than a
+    // button that does nothing.
+    const run = entry.action && ERROR_ACTIONS[entry.action.id];
+    if (run) {
+      const btn = document.createElement('button');
+      btn.className = 'notice-action';
+      btn.textContent = entry.action.label;
+      // Bound to THIS entry, not to "whatever is on top": each row offers its
+      // own error's fix.
+      btn.addEventListener('click', async () => {
+        try { await run(); } catch (err) { console.warn('[panel] error action failed', err); }
+      });
+      row.appendChild(btn);
+    }
+    return row;
+  });
+  const hidden = _errorStack.length - shown.length;
+  if (hidden > 0) {
+    const more = document.createElement('div');
+    more.className = 'error-more';
+    more.textContent = `+${hidden} more`;
+    children.push(more);
   }
+  rows.replaceChildren(...children);
   errorBar.style.display = 'flex';
 }
-
-errorActionBtn?.addEventListener('click', async () => {
-  const top = _errorStack[_errorStack.length - 1];
-  const run = top?.action && ERROR_ACTIONS[top.action.id];
-  if (!run) return;
-  try { await run(); } catch (err) { console.warn('[panel] error action failed', err); }
-});
 
 function showError(message, key, action) {
   // Re-raising the same condition replaces it in place rather than stacking a

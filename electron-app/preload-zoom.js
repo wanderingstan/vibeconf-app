@@ -65,6 +65,10 @@ window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');
 };
 
+// Call recording: start/stop the page recorder and carry its tracks to main
+// (#814). Without this a Zoom recording was silent video.
+require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[zoom]' });
+
 const provider = new ZoomProvider();
 try { window.zoomProvider = provider; window.ZOOM = ZOOM; } catch { /* window not ready */ }
 

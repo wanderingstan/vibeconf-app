@@ -3818,6 +3818,10 @@
     }
 
     let lastShareId = null, shareCount = 0;
+    // Media-element tracks (#814): track id -> stable name, so a re-poll finds
+    // the same recorder and a NEW track (a slot re-created) gets a new file.
+    const mediaTrackNames = new Map();
+    let mediaTrackCount = 0;
     function attachAll() {
       if (!recording) return;
       try {
@@ -3829,6 +3833,27 @@
           if (pa && pa.track) recordTrack(`remote-${id}`, pa.track, id);
         }
       } catch { /* manager is a stub (Slack) — nothing to attach */ }
+      // Providers without the RTCPeerConnection hook (Slack, Zoom, Teams: it's
+      // disabled there because it breaks their WebRTC) — record the remote
+      // audio the page itself is playing instead: every live audio track on an
+      // <audio>/<video> element's srcObject (#814). Measured live 2026-10-15:
+      // Zoom plays remote audio through 3 <audio> elements (speaker slots, like
+      // Meet's pool); Teams through 1 (a server-mixed "mainAudio" track). Only
+      // when the hook is off, so Meet never records the same audio twice.
+      if (window.__vibeconf_disableAudioCapture) {
+        try {
+          for (const el of document.querySelectorAll('audio, video')) {
+            const src = el.srcObject;
+            if (!src || typeof src.getAudioTracks !== 'function') continue;
+            for (const t of src.getAudioTracks()) {
+              if (t.readyState !== 'live') continue;
+              const key = mediaTrackNames.get(t.id) || `remote-media-${++mediaTrackCount}`;
+              mediaTrackNames.set(t.id, key);
+              recordTrack(key, t);
+            }
+          }
+        } catch { /* DOM not ready — poll retries */ }
+      }
       // The shared tab/screen's own audio, when a share is live. A fresh id means
       // a new share session (they come and go mid-call) → a new track name, so
       // separate shares land in separate files instead of concatenating into one.

@@ -481,6 +481,14 @@ function cropCallRecordingEnabled() {
   try { return !!prefValue('cropCallRecording'); } catch { return true; }
 }
 
+// The measured crop (record-region.js) only understands Meet's layout: it keys
+// on Meet's [data-participant-id] tiles, then falls back to the union of
+// <video> elements, which on Zoom/Teams can be a fraction of the picture
+// (#814). Everywhere else, record the whole view.
+function recordingCropApplies() {
+  return cropCallRecordingEnabled() && !slackProviderMode && !zoomProviderMode && !teamsProviderMode;
+}
+
 // force=true is the explicit request (start_recording MCP tool): record
 // even when the recordCallAudio pref is off. The auto path (bot-joined) leaves
 // force=false so it stays gated. Returns a small status for the MCP tool.
@@ -553,13 +561,18 @@ function startCallRecording(room, botName, { force = false } = {}) {
       // front (createCallRecordingWindow is synchronous; the first real
       // measurement lands over IPC within the renderer's short grace period).
       const crop = cropCallRecordingEnabled() ? recordRegion.fallbackRect() : null;
+      // Off Meet (#814) the window still gets the full-frame region, so the
+      // file comes out a standard 1920x1080 with the whole view scaled in
+      // (a null crop takes the raw-frame path: 1920x1294 on Zoom, measured) —
+      // it just never gets a MEASURED one, because the loop below is Meet-only.
+      const measured = recordingCropApplies();
       // The chrome sizes the output frame deterministically: see the renderer's
       // OUTPUT SHAPE note. Without it the canvas came from whatever crop had
       // been measured 1.5s in, which is usually still the LOBBY.
       activeRecordingWindow = createCallRecordingWindow(meetView, { crop, chrome: botViewLayout.MEET_CHROME_CSS });
       startRecordingStatsPush(); // #328 — feed the window its running size
-      if (crop) startRecordRegionLoop();
-      console.log(`[call-record] recording control window created — capturing video${crop ? ' (cropped to the measured Meet video region)' : ' (raw frame)'}`);
+      if (measured) startRecordRegionLoop();
+      console.log(`[call-record] recording control window created — capturing video${measured ? ' (cropped to the measured Meet video region)' : crop ? ' (whole view, not cropped: crop is Meet-only)' : ' (raw frame)'}`);
     } catch (err) {
       activeRecordingWindow = null;
       console.warn('[call-record] could not start video capture (falling back to audio-only):', err.message);

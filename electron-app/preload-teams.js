@@ -55,6 +55,10 @@ window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');
 };
 
+// Call recording: start/stop the page recorder and carry its tracks to main
+// (#814). Without this a Teams recording was silent video.
+require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[teams]' });
+
 const provider = new TeamsProvider();
 // NOT window.TEAMS: Teams' own app may read globals by that name, and a stray
 // one is exactly the kind of thing that flips its desktop-client detection.

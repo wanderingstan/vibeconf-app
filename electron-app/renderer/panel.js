@@ -1461,7 +1461,7 @@ function updateJoinBtnState() {
     manualUrlToggle.setAttribute('aria-expanded', String(addMode));
     manualUrlToggle.title = addMode
       ? 'Dismiss this call — go back to starting a new one'
-      : "Add the bot to a call that's already running — paste its Meet or Slack URL";
+      : "Add the bot to a call that's already running: paste its meeting link, or the whole invite";
   }
 
   if (optionHeld) {

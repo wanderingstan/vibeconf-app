@@ -11511,7 +11511,9 @@ function activateZoomProvider(zoomUrl) {
   // spoof the Slack surface uses; preload-zoom shims userAgentData to match).
   meetView.webContents.setUserAgent(require('./slack-ua').UA);
   meetView.webContents.on('console-message', (_e, _level, message) => {
-    if (typeof message === 'string' && message.includes('[zoom]')) console.log(message);
+    // [zoom] = preload-zoom/provider; [bots-in-calls] = page-inject (screen
+    // capture, virtual mic), the only record of what a share actually sent.
+    if (typeof message === 'string' && (message.includes('[zoom]') || message.includes('[bots-in-calls]'))) console.log(message);
   });
   attachMeetViewForState();
   layoutViews();

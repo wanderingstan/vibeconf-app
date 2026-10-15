@@ -83,6 +83,12 @@ ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
     case CALL_COMMANDS.ACTIONS.muteMic: provider.setMicMuted(true); break;
     case CALL_COMMANDS.ACTIONS.cameraOn: provider.setCameraOn(true); break;
     case CALL_COMMANDS.ACTIONS.cameraOff: provider.setCameraOn(false); break;
+    case CALL_COMMANDS.ACTIONS.setShareAudio:
+      // set_share_audio: the room hearing the shared surface costs the bot its
+      // mic on Zoom, so "audio on" is an explicit choice, off by default.
+      provider.setShareAudioPaused(!!(message.payload && message.payload.muted));
+      window.postMessage({ __botsInCalls: true, __fromExtension: true, ...message }, '*');
+      break;
     default:
       window.postMessage({ __botsInCalls: true, __fromExtension: true, ...message }, '*');
   }
@@ -154,6 +160,7 @@ window.addEventListener('message', (event) => {
 let botName = '';
 ipcRenderer.invoke('get-meet-bot-name').then((n) => { botName = n || ''; }).catch(() => {});
 
+let lastSharing = false;
 let prejoinTried = false;
 let captchaReported = false;
 let audioJoinTried = false;
@@ -213,6 +220,17 @@ function tick() {
         } catch (e) { console.warn('[zoom] open chat error:', e.message); }
         try { console.log('[zoom] enableCaptions →', await provider.enableCaptions()); } catch (e) { console.warn('[zoom] enableCaptions error:', e.message); }
       }, 2000);
+    }
+
+    // Our own share: report edges so the app's `sharing` follows Zoom (the app
+    // retries Share until it hears this). On start, pause the share's computer
+    // audio so Zoom gives the bot its mic back.
+    const sharing = provider.isSharing();
+    if (sharing !== lastSharing) {
+      lastSharing = sharing;
+      emit(CALL_EVENTS.selfPresenting, { presenting: sharing });
+      console.log('[zoom] self-presenting:', sharing);
+      if (sharing) setTimeout(() => provider.setShareAudioPaused(true), 500);
     }
 
     const parts = provider.getParticipants();

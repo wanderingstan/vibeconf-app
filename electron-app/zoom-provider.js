@@ -198,8 +198,10 @@ class ZoomProvider extends CallProvider {
 
   // --- Screen share --------------------------------------------------------
   // Clicking Share calls getDisplayMedia; page-inject's override + main's source
-  // picker answer it, as on Meet. Stop-share affordances are TBD (checklist 5).
+  // picker answer it, as on Meet. Idempotent: a second click while sharing is
+  // not a no-op in Zoom, so never click while already sharing.
   async startShare(/* shareType */) {
+    if (this.isSharing()) { console.log('[zoom] already sharing'); return true; }
     const b = this.doc().querySelector(ZOOM.share.button);
     if (!b) { console.warn('[zoom] share button not found'); return false; }
     b.click();
@@ -207,10 +209,26 @@ class ZoomProvider extends CallProvider {
     return true;
   }
   async stopShare() {
-    console.warn('[zoom] stopShare: stop-share selectors not harvested yet (zoom-selectors checklist 5)');
-    return false;
+    const b = this.doc().querySelector(ZOOM.share.stopButton);
+    if (!b || !isVisible(b)) { console.log('[zoom] stopShare: not sharing'); return true; }
+    b.click();
+    console.log('[zoom] clicked Stop Share');
+    return true;
   }
-  isSharing() { return false; } // TBD with stop-share recon
+  isSharing() { return isVisible(this.doc().querySelector(ZOOM.share.stopButton)); }
+
+  // Pause (true) / resume (false) the share's computer audio. While it's on,
+  // Zoom keeps the bot's mic muted, so the bot can't talk over its own share.
+  setShareAudioPaused(paused) {
+    const d = this.doc();
+    const b = d.querySelector(paused ? ZOOM.share.pauseAudioButton : ZOOM.share.resumeAudioButton);
+    if (!b || !isVisible(b)) return false;
+    b.click();
+    console.log('[zoom] share audio', paused ? 'paused (mic restored)' : 'resumed (mic muted by Zoom)');
+    const tip = d.querySelector(ZOOM.share.mutedWhileSharingGotIt);
+    if (tip && isVisible(tip)) tip.click();
+    return true;
+  }
 
   // --- Leave ---------------------------------------------------------------
   // The footer End/Leave button opens an option list; pick "Leave Meeting".

@@ -265,8 +265,17 @@ const ZOOM = {
   share: {
     button: 'button.sharing-entry-button-container', // aria-label "Share"
     label: 'Share',
-    // TBD: stop-share affordance + "You are sharing" banner classes (recon
-    // session didn't start a share; harvest during first share test).
+    // In-share control bar (verified 2026-10-15, bot sharing its whiteboard):
+    // "You're screen sharing" + Pause Audio Share + Pause share + Stop Share.
+    // The Pause buttons stay MOUNTED when nothing is shared (seen 2026-10-14),
+    // so "sharing" is the Stop button being VISIBLE, not merely present.
+    stopButton: 'button.sharer-button--stop', // text "Stop Share", no aria-label
+    // Sharing includes computer audio (page-inject asks for the window's sound),
+    // and Zoom MUTES THE MIC while it's on: "Your microphone is disabled when
+    // sharing computer audio". Pausing the share audio gives the mic back.
+    pauseAudioButton: 'button.sharer-button[aria-label="Pause Audio Share" i]',
+    resumeAudioButton: 'button.sharer-button[aria-label="Resume Audio Share" i]', // TBD verify
+    mutedWhileSharingGotIt: 'button.muted-while-sharing-tips2__got-it',
   },
 
   // -------------------------------------------------------------------------

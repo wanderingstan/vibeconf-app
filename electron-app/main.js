@@ -10554,6 +10554,23 @@ allURLs`;
     }
   });
 
+  // Join a pasted Zoom or Teams link from the panel. Same shape as the Slack
+  // handler: switch provider (which joins and sets the zoom-/teams- room id),
+  // then start the agent on that room; onJoinCall skips Meet navigation for
+  // those codes, so /join-call just starts the conversation loop.
+  for (const [channel, activate, label] of [
+    ['join-detected-zoom', (url) => activateZoomProvider(url), 'Zoom'],
+    ['join-detected-teams', (url) => activateTeamsProvider(url), 'Teams'],
+  ]) {
+    ipcMain.on(channel, (_event, { url } = {}) => {
+      if (!url) return;
+      console.log('[electron] Join pasted ' + label + ' link:', url);
+      const room = activate(url);
+      if (room) launchClaudeTerminal(room);
+      else console.warn('[electron] ' + channel + ': not a joinable ' + label + ' link; skipping');
+    });
+  }
+
   // Auto-join if launched with --meet-url
   if (cliArgs['meet-url']) {
     const meetUrl = cliArgs['meet-url'];

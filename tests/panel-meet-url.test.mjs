@@ -29,13 +29,14 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const panelSrc = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
 
-// panel.js is a renderer module bound to the DOM, so lift the one pure function
-// out by source rather than importing the whole thing — same approach as
-// chat-scrape-attribution and meter-level-speaking.
+// The panel's link box now goes through findCallLink (renderer/call-link.js),
+// which also handles whole pasted invites and other providers. These cases are
+// the Meet ones the old toMeetUrl covered; they must all still hold.
+import { createRequire } from 'node:module';
+const { findCallLink } = createRequire(import.meta.url)('../electron-app/renderer/call-link.js');
 function loadToMeetUrl() {
-  const m = panelSrc.match(/function toMeetUrl\(raw\) \{[\s\S]*?\n\}/);
-  assert.ok(m, 'toMeetUrl not found in panel.js — was it renamed?');
-  return new Function(`${m[0]}; return toMeetUrl;`)();
+  assert.ok(panelSrc.includes('findCallLink('), 'panel.js no longer routes the link box through findCallLink');
+  return (raw) => (findCallLink(raw) || {}).url;
 }
 
 test('a scheme-less "meet.google.com/xxx" paste does not double the host', () => {
@@ -60,13 +61,11 @@ test('every accepted paste shape resolves to one canonical URL', () => {
   }
 });
 
-test('an explicit scheme is left alone, including http and odd casing', () => {
+test('an explicit scheme, any casing, resolves to the one canonical URL', () => {
   const toMeetUrl = loadToMeetUrl();
-  // Not silently upgraded to https: whatever the user pasted is what they get.
-  assert.equal(toMeetUrl('http://meet.google.com/wcj-odpo-wrb'),
-    'http://meet.google.com/wcj-odpo-wrb');
-  assert.equal(toMeetUrl('HTTPS://meet.google.com/wcj-odpo-wrb'),
-    'HTTPS://meet.google.com/wcj-odpo-wrb');
+  // findCallLink canonicalizes Meet links (Meet itself redirects http → https).
+  assert.equal(toMeetUrl('http://meet.google.com/wcj-odpo-wrb'), 'https://meet.google.com/wcj-odpo-wrb');
+  assert.equal(toMeetUrl('HTTPS://meet.google.com/wcj-odpo-wrb'), 'https://meet.google.com/wcj-odpo-wrb');
 });
 
 test('no input produces a doubled host', () => {
@@ -78,20 +77,23 @@ test('no input produces a doubled host', () => {
     '', '   ', 'meet.google.com/',
   ];
   for (const input of inputs) {
-    const hosts = (toMeetUrl(input).match(/meet\.google\.com/gi) || []).length;
+    const out = toMeetUrl(input) || '';
+    const hosts = (out.match(/meet\.google\.com/gi) || []).length;
     assert.ok(hosts <= 1,
-      `${JSON.stringify(input)} produced ${hosts} hosts: ${toMeetUrl(input)}`);
+      `${JSON.stringify(input)} produced ${hosts} hosts: ${out}`);
   }
 });
 
-test('null and undefined do not throw — the field can be empty', () => {
+test('null, undefined and empty do not throw, and find no link — the field can be empty', () => {
   const toMeetUrl = loadToMeetUrl();
   // The join button reads a text input, so this is reachable, not theoretical.
-  assert.equal(toMeetUrl(null), 'https://meet.google.com/');
-  assert.equal(toMeetUrl(undefined), 'https://meet.google.com/');
+  // No link → the button stays disabled (isJoinableUrl is false).
+  assert.equal(toMeetUrl(null), undefined);
+  assert.equal(toMeetUrl(undefined), undefined);
+  assert.equal(toMeetUrl(''), undefined);
 });
 
-test('both prepend sites go through toMeetUrl, not startsWith', () => {
+test('both call sites go through findCallLink, not startsWith', () => {
   // The original bug existed at TWO sites (isJoinableUrl and the join-button
   // handler). Fixing one and missing the other would look fixed in the panel's
   // validation while still failing the actual navigation, so pin both.
@@ -99,7 +101,7 @@ test('both prepend sites go through toMeetUrl, not startsWith', () => {
     'isJoinableUrl still uses the startsWith test');
   assert.ok(!/if \(!url\.startsWith\('http'\)\) url = 'https:\/\/meet\.google\.com\/'/.test(panelSrc),
     'the join-button handler still prepends the host directly');
-  const uses = (panelSrc.match(/toMeetUrl\(/g) || []).length;
-  // definition + isJoinableUrl + join handler
-  assert.ok(uses >= 3, `expected toMeetUrl at both call sites, found ${uses} references`);
+  const uses = (panelSrc.match(/findCallLink\(/g) || []).length;
+  // isJoinableUrl + the join handler (+ the paste normalizer)
+  assert.ok(uses >= 2, `expected findCallLink at both call sites, found ${uses} references`);
 });

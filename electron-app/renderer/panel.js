@@ -1309,43 +1309,15 @@ shareCallLogBtn?.addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Meet URL validation
+// Call link validation (findCallLink lives in call-link.js, shared with tests).
+// toMeetUrl's #483 fix (a scheme-less "meet.google.com/x" must not get the host
+// twice) lives on there; tests/panel-meet-url.test.mjs pins it.
 // ---------------------------------------------------------------------------
 
-function isValidMeetUrl(url) {
-  return /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(url);
-}
-
-// A Slack workspace/channel URL — joining it switches the app to the Slack
-// provider at runtime and auto-joins that channel's huddle.
-function isValidSlackUrl(url) {
-  return /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(url);
-}
-
-// Turn whatever was pasted into a full Meet URL.
-//
-// The old test was `url.startsWith('http')`, which misses the single most
-// common paste: "meet.google.com/abc-defg-hij". Chrome HIDES the scheme in the
-// address bar, so copying from there — or from a chat message, or a calendar
-// entry — gives a host-qualified string with no https://. That failed the
-// startsWith check, so the host was prepended a SECOND time and the bot
-// navigated to
-//     https://meet.google.com/meet.google.com/abc-defg-hij
-// which fails as "the page ended up somewhere else instead of the meeting".
-//
-// The MCP path already handles this (mcp-server/meet-room.js, #314/#319); the
-// panel — the front door for anyone using the app by hand — never did.
-function toMeetUrl(raw) {
-  const s = String(raw == null ? '' : raw).trim();
-  if (/^https?:\/\//i.test(s)) return s;
-  // Already host-qualified, just scheme-less. Strip the host rather than
-  // stacking another one in front of it.
-  return 'https://meet.google.com/' + s.replace(/^(?:www\.)?meet\.google\.com\//i, '');
-}
-
+// Anything with a joinable meeting link in it: a bare link, or a whole pasted
+// invite (findCallLink, call-link.js, scans the text and ignores the prose).
 function isJoinableUrl(url) {
-  if (isValidSlackUrl(url)) return true;
-  return isValidMeetUrl(toMeetUrl(url));
+  return !!findCallLink(url);
 }
 
 // --- Pre-call modes -------------------------------------------------------
@@ -1563,6 +1535,18 @@ function dismissCallUrl() {
   if (manualUrlToggle) manualUrlToggle.setAttribute('aria-expanded', 'false');
   updateJoinBtnState();
 }
+
+// A pasted invite collapses to just its meeting link, so it's clear what was
+// found (and that something was). Paste only: typing is left alone.
+meetUrlInput.addEventListener('paste', () => {
+  setTimeout(() => {
+    const link = findCallLink(meetUrlInput.value);
+    if (link && meetUrlInput.value.trim() !== link.url) {
+      meetUrlInput.value = link.url;
+      updateJoinBtnState();
+    }
+  }, 0);
+});
 
 meetUrlInput.addEventListener('input', () => {
   // Clearing the box is a dismissal — it's the obvious gesture for "no, not
@@ -2646,13 +2630,17 @@ joinBtn.addEventListener('click', async (e) => {
     return;
   }
 
-  let url = meetUrlInput.value.trim();
-  if (!url) return;
-  if (isValidSlackUrl(url)) {
+  const link = findCallLink(meetUrlInput.value);
+  if (!link) return;
+  const url = link.url;
+  if (link.provider === 'slack') {
     // Runtime provider switch: build the Slack surface + auto-join the huddle.
     api.send('join-detected-slack', { url });
+  } else if (link.provider === 'zoom') {
+    api.send('join-detected-zoom', { url });
+  } else if (link.provider === 'teams') {
+    api.send('join-detected-teams', { url });
   } else {
-    url = toMeetUrl(url);
     api.joinMeet(url);
   }
   setJoinPhase('joining');

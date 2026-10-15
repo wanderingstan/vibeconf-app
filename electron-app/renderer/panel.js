@@ -159,6 +159,8 @@ const meetSignInBtn = document.getElementById('meetSignInBtn');
 const meetSignOutBtn = document.getElementById('meetSignOutBtn');
 const slackSignInBtn = document.getElementById('slackSignInBtn');
 const slackSignOutBtn = document.getElementById('slackSignOutBtn');
+const zoomSignInBtn = document.getElementById('zoomSignInBtn');
+const zoomSignOutBtn = document.getElementById('zoomSignOutBtn');
 
 // Settings
 const botNameInput = document.getElementById('botName');
@@ -1307,43 +1309,15 @@ shareCallLogBtn?.addEventListener('click', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// Meet URL validation
+// Call link validation (findCallLink lives in call-link.js, shared with tests).
+// toMeetUrl's #483 fix (a scheme-less "meet.google.com/x" must not get the host
+// twice) lives on there; tests/panel-meet-url.test.mjs pins it.
 // ---------------------------------------------------------------------------
 
-function isValidMeetUrl(url) {
-  return /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(url);
-}
-
-// A Slack workspace/channel URL — joining it switches the app to the Slack
-// provider at runtime and auto-joins that channel's huddle.
-function isValidSlackUrl(url) {
-  return /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(url);
-}
-
-// Turn whatever was pasted into a full Meet URL.
-//
-// The old test was `url.startsWith('http')`, which misses the single most
-// common paste: "meet.google.com/abc-defg-hij". Chrome HIDES the scheme in the
-// address bar, so copying from there — or from a chat message, or a calendar
-// entry — gives a host-qualified string with no https://. That failed the
-// startsWith check, so the host was prepended a SECOND time and the bot
-// navigated to
-//     https://meet.google.com/meet.google.com/abc-defg-hij
-// which fails as "the page ended up somewhere else instead of the meeting".
-//
-// The MCP path already handles this (mcp-server/meet-room.js, #314/#319); the
-// panel — the front door for anyone using the app by hand — never did.
-function toMeetUrl(raw) {
-  const s = String(raw == null ? '' : raw).trim();
-  if (/^https?:\/\//i.test(s)) return s;
-  // Already host-qualified, just scheme-less. Strip the host rather than
-  // stacking another one in front of it.
-  return 'https://meet.google.com/' + s.replace(/^(?:www\.)?meet\.google\.com\//i, '');
-}
-
+// Anything with a joinable meeting link in it: a bare link, or a whole pasted
+// invite (findCallLink, call-link.js, scans the text and ignores the prose).
 function isJoinableUrl(url) {
-  if (isValidSlackUrl(url)) return true;
-  return isValidMeetUrl(toMeetUrl(url));
+  return !!findCallLink(url);
 }
 
 // --- Pre-call modes -------------------------------------------------------
@@ -1487,7 +1461,7 @@ function updateJoinBtnState() {
     manualUrlToggle.setAttribute('aria-expanded', String(addMode));
     manualUrlToggle.title = addMode
       ? 'Dismiss this call — go back to starting a new one'
-      : "Add the bot to a call that's already running — paste its Meet or Slack URL";
+      : "Add the bot to a call that's already running: paste its meeting link, or the whole invite";
   }
 
   if (optionHeld) {
@@ -1561,6 +1535,18 @@ function dismissCallUrl() {
   if (manualUrlToggle) manualUrlToggle.setAttribute('aria-expanded', 'false');
   updateJoinBtnState();
 }
+
+// A pasted invite collapses to just its meeting link, so it's clear what was
+// found (and that something was). Paste only: typing is left alone.
+meetUrlInput.addEventListener('paste', () => {
+  setTimeout(() => {
+    const link = findCallLink(meetUrlInput.value);
+    if (link && meetUrlInput.value.trim() !== link.url) {
+      meetUrlInput.value = link.url;
+      updateJoinBtnState();
+    }
+  }, 0);
+});
 
 meetUrlInput.addEventListener('input', () => {
   // Clearing the box is a dismissal — it's the obvious gesture for "no, not
@@ -2244,6 +2230,7 @@ function loadConfigIntoControls() {
   rememberedMeetName = result?.lastMeetName || null;   // #282 remembered names
   rememberedSlackName = result?.lastSlackName || null;
   refreshSlackIdentity();
+  refreshZoomIdentity();
   try { updateBotNameBig(); } catch { /* defined below; ignore on first paint */ }
   // The headline shows the RESOLVED name with a provenance tag for launched/named
   // test bots ("Alice [CLI name]") — the biggest cue when monitoring tests — while
@@ -2492,25 +2479,50 @@ const ERROR_ACTIONS = {
   'open-bot-sign-in': () => api.invoke('open-bot-sign-in'),
 };
 
-const errorActionBtn = document.getElementById('errorAction');
+// How many errors the bar shows at once. It used to show only the newest, so a
+// generic late error (an unhandled rejection, a clipboard confirmation) hid an
+// older actionable one AND its button: the "sign the bot in" warning vanished
+// under "Unhandled promise rejection" on 2026-10-15. Three, newest first, and a
+// count for the rest, so nothing is hidden without saying so.
+const ERROR_BAR_MAX_ROWS = 3;
+
 function _renderErrorBar() {
-  const top = _errorStack[_errorStack.length - 1];
-  if (!top) { errorBar.style.display = 'none'; return; }
-  document.getElementById('errorText').textContent = top.message;
-  if (errorActionBtn) {
-    const act = top.action && ERROR_ACTIONS[top.action.id] ? top.action : null;
-    errorActionBtn.textContent = act ? act.label : '';
-    errorActionBtn.style.display = act ? '' : 'none';
+  const rows = document.getElementById('errorRows');
+  if (!_errorStack.length) { rows.replaceChildren(); errorBar.style.display = 'none'; return; }
+  const shown = _errorStack.slice(-ERROR_BAR_MAX_ROWS).reverse();   // newest first
+  const children = shown.map((entry) => {
+    const row = document.createElement('div');
+    row.className = 'error-row';
+    const text = document.createElement('span');
+    text.className = 'error-text';
+    text.textContent = entry.message;
+    row.appendChild(text);
+    // The payload crosses IPC: an unknown id paints nothing rather than a
+    // button that does nothing.
+    const run = entry.action && ERROR_ACTIONS[entry.action.id];
+    if (run) {
+      const btn = document.createElement('button');
+      btn.className = 'notice-action';
+      btn.textContent = entry.action.label;
+      // Bound to THIS entry, not to "whatever is on top": each row offers its
+      // own error's fix.
+      btn.addEventListener('click', async () => {
+        try { await run(); } catch (err) { console.warn('[panel] error action failed', err); }
+      });
+      row.appendChild(btn);
+    }
+    return row;
+  });
+  const hidden = _errorStack.length - shown.length;
+  if (hidden > 0) {
+    const more = document.createElement('div');
+    more.className = 'error-more';
+    more.textContent = `+${hidden} more`;
+    children.push(more);
   }
+  rows.replaceChildren(...children);
   errorBar.style.display = 'flex';
 }
-
-errorActionBtn?.addEventListener('click', async () => {
-  const top = _errorStack[_errorStack.length - 1];
-  const run = top?.action && ERROR_ACTIONS[top.action.id];
-  if (!run) return;
-  try { await run(); } catch (err) { console.warn('[panel] error action failed', err); }
-});
 
 function showError(message, key, action) {
   // Re-raising the same condition replaces it in place rather than stacking a
@@ -2643,13 +2655,17 @@ joinBtn.addEventListener('click', async (e) => {
     return;
   }
 
-  let url = meetUrlInput.value.trim();
-  if (!url) return;
-  if (isValidSlackUrl(url)) {
+  const link = findCallLink(meetUrlInput.value);
+  if (!link) return;
+  const url = link.url;
+  if (link.provider === 'slack') {
     // Runtime provider switch: build the Slack surface + auto-join the huddle.
     api.send('join-detected-slack', { url });
+  } else if (link.provider === 'zoom') {
+    api.send('join-detected-zoom', { url });
+  } else if (link.provider === 'teams') {
+    api.send('join-detected-teams', { url });
   } else {
-    url = toMeetUrl(url);
     api.joinMeet(url);
   }
   setJoinPhase('joining');
@@ -2989,6 +3005,14 @@ async function refreshSlackIdentity() {
 }
 refreshSlackIdentity();
 
+// Zoom identity (#318): same shape as Slack's. Cookie check via get-zoom-mode.
+async function refreshZoomIdentity() {
+  let signedIn = false;
+  try { signedIn = !!(await api.invoke('get-zoom-mode'))?.signedIn; } catch { /* treat as unknown */ }
+  if (zoomSignOutBtn) zoomSignOutBtn.style.display = signedIn ? '' : 'none';
+}
+refreshZoomIdentity();
+
 botSignOutMainBtn?.addEventListener('click', async () => {
   botSignOutMainBtn.disabled = true;
   try { await api.invoke('meet-sign-out-bot'); applyMeetMode('guest'); } catch { /* ignore */ }
@@ -3016,8 +3040,9 @@ setInterval(() => {
     }
     // else: stable (guest, or account with email already shown) → just the cheap cookie read above
   }).catch(() => {});
-  // Keep the Slack row honest too — same cheap cookie read (get-slack-mode).
+  // Keep the Slack and Zoom rows honest too — same cheap cookie reads.
   refreshSlackIdentity();
+  refreshZoomIdentity();
 }, 7000);
 
 // (The "⚡ Fast model" health line + its 7s reachability poll lived here. The
@@ -3225,6 +3250,36 @@ slackSignInBtn?.addEventListener('click', async () => {
     slackSignInBtn.disabled = false;
     slackSignInBtn.textContent = 'Sign into Slack as bot';
     refreshSlackIdentity();
+  }, 1500);
+});
+
+zoomSignInBtn?.addEventListener('click', async () => {
+  zoomSignInBtn.disabled = true;
+  zoomSignInBtn.textContent = 'Opening Zoom…';
+  try {
+    await api.invoke('zoom-sign-in');
+  } catch (err) {
+    showError('Zoom sign-in failed: ' + err.message);
+  }
+  setTimeout(() => {
+    zoomSignInBtn.disabled = false;
+    zoomSignInBtn.textContent = 'Sign into Zoom as bot';
+    refreshZoomIdentity();
+  }, 1500);
+});
+
+zoomSignOutBtn?.addEventListener('click', async () => {
+  zoomSignOutBtn.disabled = true;
+  zoomSignOutBtn.textContent = 'Signing out of Zoom…';
+  try {
+    await api.invoke('zoom-sign-out');
+  } catch (err) {
+    showError('Zoom sign-out failed: ' + err.message);
+  }
+  setTimeout(() => {
+    zoomSignOutBtn.disabled = false;
+    zoomSignOutBtn.textContent = 'Sign out of Zoom';
+    refreshZoomIdentity();
   }, 1500);
 });
 

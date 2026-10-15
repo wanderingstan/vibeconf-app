@@ -609,7 +609,7 @@ test('the flag is off by default and only applies to a calendar join', () => {
   assert.match(body, /store\.get\('sessionPerCalendarInvitees'\) !== true\) return ''/,
     'must be an explicit opt-in — anything looser turns it on for existing bots');
   // No event behind the join means no invitees means no folder: today's behaviour.
-  assert.match(main, /launchClaudeTerminal\(meetCode, \{ onboardingCall, calendarEvent \}\)/);
+  assert.match(main, /launchClaudeTerminal\(meetCode, \{ onboardingCall, calendarEvent, summoned \}\)/);
   assert.match(main, /const invitees = calendarEvent && Array\.isArray\(calendarEvent\.attendees\)/);
 });
 

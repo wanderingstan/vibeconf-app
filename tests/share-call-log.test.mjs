@@ -129,7 +129,7 @@ test('stopping does not pretend to unsend', () => {
   // Scoped to the share code: "cancel" appears elsewhere in the panel for
   // unrelated controls, and a file-wide check fails on those instead.
   const share = panelJs.slice(panelJs.indexOf('function setShareMsg'),
-    panelJs.indexOf('// ---------------------------------------------------------------------------\n// Meet URL validation'));
+    panelJs.indexOf('// ---------------------------------------------------------------------------\n// Call link validation'));
   assert.doesNotMatch(share, /Cancelled|Undo|Unshare/i);
   // No em-dashes in copy (a standing preference). Checked on the STRINGS only —
   // the comments around them are not copy.

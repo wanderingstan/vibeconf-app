@@ -147,6 +147,12 @@ function ts() {
 // Set in createMainWindow when --provider=slack.
 let slackProviderMode = false;
 let slackSurface = null;
+// Zoom (#318) is one surface like Meet, so it needs no routing here: meetView is
+// the Zoom web-client view and preload-zoom.js handles every command. The flag
+// only tells provider switches and the join path which view is live.
+let zoomProviderMode = false;
+// Microsoft Teams: single surface like Zoom (preload-teams.js on meetView).
+let teamsProviderMode = false;
 // In Slack mode, ONLY these commands target the huddle POPUP (huddle-UI / DOM
 // ops handled by SlackProvider). Everything else — TTS/play-* (VirtualMic),
 // avatar/engagement (VirtualCamera), etc. — is a page-inject op on the MAIN
@@ -475,6 +481,14 @@ function cropCallRecordingEnabled() {
   try { return !!prefValue('cropCallRecording'); } catch { return true; }
 }
 
+// The measured crop (record-region.js) only understands Meet's layout: it keys
+// on Meet's [data-participant-id] tiles, then falls back to the union of
+// <video> elements, which on Zoom/Teams can be a fraction of the picture
+// (#814). Everywhere else, record the whole view.
+function recordingCropApplies() {
+  return cropCallRecordingEnabled() && !slackProviderMode && !zoomProviderMode && !teamsProviderMode;
+}
+
 // force=true is the explicit request (start_recording MCP tool): record
 // even when the recordCallAudio pref is off. The auto path (bot-joined) leaves
 // force=false so it stays gated. Returns a small status for the MCP tool.
@@ -547,13 +561,18 @@ function startCallRecording(room, botName, { force = false } = {}) {
       // front (createCallRecordingWindow is synchronous; the first real
       // measurement lands over IPC within the renderer's short grace period).
       const crop = cropCallRecordingEnabled() ? recordRegion.fallbackRect() : null;
+      // Off Meet (#814) the window still gets the full-frame region, so the
+      // file comes out a standard 1920x1080 with the whole view scaled in
+      // (a null crop takes the raw-frame path: 1920x1294 on Zoom, measured) —
+      // it just never gets a MEASURED one, because the loop below is Meet-only.
+      const measured = recordingCropApplies();
       // The chrome sizes the output frame deterministically: see the renderer's
       // OUTPUT SHAPE note. Without it the canvas came from whatever crop had
       // been measured 1.5s in, which is usually still the LOBBY.
       activeRecordingWindow = createCallRecordingWindow(meetView, { crop, chrome: botViewLayout.MEET_CHROME_CSS });
       startRecordingStatsPush(); // #328 — feed the window its running size
-      if (crop) startRecordRegionLoop();
-      console.log(`[call-record] recording control window created — capturing video${crop ? ' (cropped to the measured Meet video region)' : ' (raw frame)'}`);
+      if (measured) startRecordRegionLoop();
+      console.log(`[call-record] recording control window created — capturing video${measured ? ' (cropped to the measured Meet video region)' : crop ? ' (whole view, not cropped: crop is Meet-only)' : ' (raw frame)'}`);
     } catch (err) {
       activeRecordingWindow = null;
       console.warn('[call-record] could not start video capture (falling back to audio-only):', err.message);
@@ -1373,6 +1392,21 @@ function revokeCallLogShare(reason) {
   _sharingWeEnabled = false;
 }
 
+// The Meet URL this app has joined (or is joining), and the last Meet URL the
+// browser-tab poll notified about. ONE variable each, at module scope, shared by
+// every join path (panel, detected-tab, --meet-url, MCP /join-call, calendar),
+// the leave teardown, the browser-tab poll and the #347 guest fallback.
+//
+// These used to be declared with `let` INSIDE app.whenReady(), while the
+// module-level join/teardown/guest-fallback code assigned and read them with no
+// declaration in scope. main.js is sloppy-mode, so those writes silently made a
+// SECOND, implicit global: teardown reset the global and never the poll's copy,
+// and a --meet-url launch set only the inner copy, so the guest fallback's read
+// of the never-created global threw "ReferenceError: currentMeetUrl is not
+// defined" (seen live 2026-10-15) and the guest join never happened.
+let currentMeetUrl = null;
+let detectedMeetUrl = null;
+
 // The actual teardown. It lives here, callable from main, rather than only at
 // the end of a main → renderer → main round trip.
 //
@@ -2024,6 +2058,12 @@ const localServer = new globalThis.LocalServer({
     // "confirm in-call + start the loop". For Meet, navigate as before.
     if (slackProviderMode || /^slack-/.test(meetCode || '')) {
       console.log('[local-server] Slack join — bot already in huddle, skipping Meet navigation');
+    } else if (/^teams-/.test(meetCode || '')) {
+      // Teams: activateTeamsProvider (via onJoinTeams) already loaded the meeting.
+      console.log('[local-server] Teams join — meeting view already loading, skipping Meet navigation');
+    } else if (zoomProviderMode || /^zoom-/.test(meetCode || '')) {
+      // Zoom: activateZoomProvider (via onJoinZoom) already loaded the meeting.
+      console.log('[local-server] Zoom join — meeting view already loading, skipping Meet navigation');
     } else {
       const meetUrl = `https://meet.google.com/${meetCode}`;
       // Track what we've joined for EVERY join path — the panel paths set this,
@@ -2076,6 +2116,15 @@ const localServer = new globalThis.LocalServer({
     console.log('[local-server] Join Slack huddle requested by agent:', url);
     activateSlackProvider(url, { autojoin: true });
     return localServer.roomId || null;
+  },
+  onJoinTeams: (url) => {
+    console.log('[local-server] Join Teams meeting requested by agent:', url);
+    return activateTeamsProvider(url);
+  },
+  onJoinZoom: (url) => {
+    // Programmatic Zoom join (#318), the Zoom analog of onJoinSlack.
+    console.log('[local-server] Join Zoom meeting requested by agent:', url);
+    return activateZoomProvider(url);
   },
   // The agent has finished its after-call work. Ends the phase now instead of
   // waiting out the backstop.
@@ -2957,7 +3006,7 @@ const localServer = new globalThis.LocalServer({
     // "URL navigated" and "actually admitted" is misleading — especially when
     // entry is denied, since that 15s grace window leaves the button visible
     // while we wait for the denial page to be detected.
-    broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : 'meet' });
+    broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : teamsProviderMode ? 'teams' : 'meet' });
     // Rebuild the menu bar for the same reason: Call Now and Hang Up are a
     // pair, and exactly one of them should be available. A handful of rebuilds
     // per call (idle → joining → in-call → idle), not a poll.
@@ -3439,12 +3488,15 @@ const localServer = new globalThis.LocalServer({
       tts.updateConfig?.({ [key]: value });
     } else if (key === 'botName') {
       applyAllWindowTitles(); // every window is named after the bot, not just the main one
+      pushAvatarPosture();    // the name is part of the posture seed
     } else if (key === 'avatarBackgroundSvg') {
       pushAvatarBackground(value);
       // (The panel re-renders its own avatar — and its switcher thumbnail — off
       // these prefs directly, so nothing to invalidate here.)
     } else if (key === 'emojiSet') {
       pushEmojiSet(value);
+    } else if (key === 'avatarPostureShifts') {
+      pushAvatarPosture();
     } else if (key === 'meetViewSize') {
       applyMeetViewSize();
     } else if (key === 'captionLanguage') {
@@ -3728,6 +3780,21 @@ function warnIfEmptyEmojiDir(value) {
   }
 }
 
+// Per-bot resting posture + occasional posture shifts for the avatar face
+// (avatar-posture.js, drawn in page-inject). The seed is host + profile + bot
+// name, so it is stable for this bot across calls and Meet reloads, and two bots
+// in the same Meet (different machines, profiles or names) sit differently.
+function pushAvatarPosture() {
+  if (!meetView || meetView.webContents.isDestroyed()) return;
+  const def = require('./preferences-schema').PREFERENCES.avatarPostureShifts?.default;
+  const enabled = (store?.get('avatarPostureShifts') ?? def) !== false;
+  const seed = [require('os').hostname(), appProfile, store?.get('botName') || ''].join('|');
+  meetView.webContents.send('extension-message', {
+    action: 'set-avatar-posture',
+    payload: { enabled, seed },
+  });
+}
+
 function pushEmojiSet(value) {
   warnIfEmptyEmojiDir(value);
   if (!meetView || meetView.webContents.isDestroyed()) return;
@@ -3806,20 +3873,37 @@ async function buildBackgroundSvgFromImage(filePath) {
     '</svg>';
 }
 
+// The Meet view's webContents if it is still alive, else null. Re-read it after
+// every await: the guest-join fallback (#347 guest join, #795 anonymous guest)
+// tears meetView down and builds a new one while an async caller is suspended,
+// so a check made BEFORE the await says nothing about the view AFTER it.
+function liveMeetWc() {
+  return meetView && !meetView.webContents.isDestroyed() ? meetView.webContents : null;
+}
+
 async function pushAvatarBackground(svgSource) {
-  if (!meetView || meetView.webContents.isDestroyed()) return;
+  if (!liveMeetWc()) return;
   try {
     const resolved = (typeof svgSource === 'string' && svgSource.trim())
       ? await resolveSvg(svgSource)
       : '';
-    meetView.webContents.send('extension-message', {
+    // resolveSvg reads file:// images; the guest fallback can replace meetView
+    // during that read. The old pre-await guard let this hit a null view, and the
+    // catch below then hit it again, escaping as an unhandledRejection whose
+    // panel error buried the "sign the bot in" warning (2026-10-15).
+    const wc = liveMeetWc();
+    if (!wc) return;
+    wc.send('extension-message', {
       action: 'set-avatar-background',
       payload: { svg: resolved },
     });
   } catch (err) {
     console.warn('[electron] Failed to resolve avatar background SVG:', err.message);
-    // Fall back to clearing — renderer goes back to default gradient.
-    meetView.webContents.send('extension-message', {
+    // Fall back to clearing — renderer goes back to default gradient. Same
+    // re-check: the view may be gone by now, and a throw here is unhandled.
+    const wc = liveMeetWc();
+    if (!wc) return;
+    wc.send('extension-message', {
       action: 'set-avatar-background',
       payload: { svg: '' },
     });
@@ -4627,7 +4711,15 @@ async function setRunwayFace(seat, on) {
         try { await mod.endAvatarSession({ sessionId: s.sessionId, roomName: s.roomName }); } catch (e) {}
         return;
       }
-      meetView.webContents.send('runway-avatar', { type: 'connect', url: s.livekitUrl, token: s.botToken });
+      // Re-check after the awaits: the guest fallback can replace meetView while
+      // the session is being minted. End what we created rather than leak it, and
+      // throw so the catch's 30s retry runs against the new view.
+      const wc = liveMeetWc();
+      if (!wc) {
+        try { await mod.endAvatarSession({ sessionId: s.sessionId, roomName: s.roomName }); } catch (e) {}
+        throw new Error('Meet view went away while minting the avatar session');
+      }
+      wc.send('runway-avatar', { type: 'connect', url: s.livekitUrl, token: s.botToken });
       // Log session + avatar ids — the 06-29 post-mortem stalled because neither was on the record.
       console.log('[runway] face', prevSession ? 'RENEWED' : 'ON', 'for', seat, '→ room', s.roomName, 'gen', gen, 'session', s.sessionId, 'avatar', (mod.AVATARS || {})[seat]);
       st.sessionId = s.sessionId; st.roomName = s.roomName; st.mod = mod;
@@ -5439,7 +5531,9 @@ function getWebsiteUrl() {
 // triggered by one (#299) — recorded on the local server (setRoom clears any
 // prior one first) so get_room_info can tell the spawned agent WHY it's
 // here, instead of it walking into the call cold.
-function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false, calendarEvent = null } = {}) {
+// summoned: brought into a call already in progress by /call-new-bot — see
+// launchClaudeTerminal.
+function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false, calendarEvent = null, summoned = false } = {}) {
   currentMeetUrl = meetUrl;
   loadMeetURL(meetUrl);
 
@@ -5457,9 +5551,101 @@ function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false, calen
     // calendarEvent rides along for #570: its invitees are what a per-meeting
     // session is keyed on. Only this path has it — a panel join or a pasted
     // link has no event, and so keeps the bot's single session.
-    launchClaudeTerminal(meetCode, { onboardingCall, calendarEvent }); // the agent behind the face
+    launchClaudeTerminal(meetCode, { onboardingCall, calendarEvent, summoned }); // the agent behind the face
   } else {
     console.log('[electron] Agent terminal not spawned — the caller is already an agent');
+  }
+}
+
+// The AppleScript that lists Meet / Slack / blank tabs in Chrome, Safari and
+// Brave. Shared by the background Meet poll (startMeetDetection) and the
+// one-shot scanBrowserMeetUrls below, so the perf lessons recorded in
+// startMeetDetection (no System Events, batched tab reads) apply to both.
+function browserTabScanScript() {
+  const browserScanBlock = (appName) => `
+if application "${appName}" is running then
+  try
+    tell application "${appName}"
+      repeat with w in windows
+        try
+          set tabURLs to URL of tabs of w
+          set tabTitles to title of tabs of w
+          repeat with i from 1 to count of tabURLs
+            try
+              set tabURL to (item i of tabURLs) as text
+              set tabTitle to ""
+              try
+                set tabTitle to (item i of tabTitles) as text
+              end try
+              if tabURL starts with "https://meet.google.com/" then
+                set allURLs to allURLs & "MEET:" & tabURL & linefeed
+              else if tabURL starts with "https://app.slack.com/client/" then
+                set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
+              else if tabURL is "about:blank" then
+                set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
+              end if
+            end try
+          end repeat
+        end try
+      end repeat
+    end tell
+  end try
+end if`;
+  const appleScript = `
+set allURLs to ""
+${browserScanBlock('Google Chrome')}
+${browserScanBlock('Safari')}
+${browserScanBlock('Brave Browser')}
+allURLs`;
+  return appleScript;
+}
+
+// One-shot scan for Meet URLs open in the user's browser, for /call-new-bot.
+// The background poll can't answer this: it deliberately stops while THIS
+// instance is in a call, which is exactly when someone summons a second bot.
+// Resolves [] on any failure (no Automation permission, not macOS, a timeout) —
+// the caller treats "no tabs" as "start a fresh call", and a scan error is not
+// a reason to refuse that.
+function scanBrowserMeetUrls({ timeoutMs = 8000 } = {}) {
+  if (process.platform !== 'darwin') return Promise.resolve([]);
+  const { execFile } = require('child_process');
+  return new Promise((resolve) => {
+    execFile('osascript', ['-e', browserTabScanScript()], { timeout: timeoutMs }, (err, stdout) => {
+      if (err) {
+        console.log('[call-new-bot] browser tab scan failed:', (err.killed ? 'timeout' : err.message || '').slice(0, 120));
+        resolve([]);
+        return;
+      }
+      resolve(String(stdout || '').split('\n').map((l) => l.trim())
+        .filter((l) => l.startsWith('MEET:')).map((l) => l.slice(5)));
+    });
+  });
+}
+
+// Join a call at launch because /call-new-bot asked for it (--join-url, plus
+// --summoned=true when the call was already in progress). Same paths the
+// panel's own join buttons take, agent included: this instance was just
+// created, so nothing else is driving it. A FRESH Meet is created by the
+// instance that received /call-new-bot (it is already signed in) and arrives
+// here as an ordinary --join-url.
+function joinSummonedCall({ url = null, summoned = false } = {}) {
+  try {
+    if (!url) return;
+    const { parseCallTarget } = require('./new-bot-target.js');
+    const t = parseCallTarget(url);
+    if (!t.ok) { console.warn('[call-new-bot]', t.error); return; }
+    console.log(`[call-new-bot] joining ${t.provider} call${summoned ? ' already in progress' : ''}`);
+    if (t.provider === 'meet') {
+      joinMeetUrl(t.url, { summoned });
+      return;
+    }
+    const activate = { slack: (u) => { activateSlackProvider(u, { autojoin: true }); return localServer.roomId; },
+      zoom: (u) => activateZoomProvider(u), teams: (u) => activateTeamsProvider(u) }[t.provider];
+    const room = activate && activate(t.url);
+    if (room) launchClaudeTerminal(room, { summoned });
+    else console.warn('[call-new-bot] not a joinable', t.provider, 'link; skipping');
+  } catch (err) {
+    console.warn('[call-new-bot] join at launch failed:', err.message);
   }
 }
 
@@ -6159,6 +6345,25 @@ function notifyMeetSignInNeeded(email) {
 // ground truth for "logged into Slack". We can't name the workspace/user from
 // the cookie alone (that needs the huddle DOM — #283), but we CAN say
 // connected-vs-not, which is all the main panel needs.
+// Zoom's sign-in page, for the bot's Zoom identity (#318).
+const ZOOM_SIGN_IN_URL = 'https://zoom.us/signin';
+
+// Signed into Zoom? Observed on a real sign-in (Google SSO, 2026-10-14): Zoom
+// set _zm_kms (HttpOnly, ~3-month expiry) at the moment of login, and it's the
+// only non-analytics cookie that did. _zm_ssid is Zoom's session id when
+// present. (_zm_everlogin_type is NOT a signal: it means "has ever logged in".)
+// Any failure reads as "not signed in", like the Slack check.
+const ZOOM_SESSION_COOKIES = ['_zm_kms', '_zm_ssid'];
+async function isSignedInToZoom(sess) {
+  try {
+    const all = await sess.cookies.get({});
+    return all.some((c) => /(^|\.)zoom\.us$/.test((c.domain || '').replace(/^\./, ''))
+      && ZOOM_SESSION_COOKIES.includes(c.name) && c.value);
+  } catch {
+    return false;
+  }
+}
+
 async function isSignedInToSlack(sess) {
   try {
     const all = await sess.cookies.get({ domain: '.slack.com' });
@@ -6368,7 +6573,7 @@ function configureMeetSession(sess) {
 // ---------------------------------------------------------------------------
 
 // Flags that take a value; used to catch the silently-ignored space form below.
-const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'bot-name', 'bot-view', 'config']);
+const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'join-url', 'bot-name', 'bot-view', 'config']);
 
 function parseCLIArgs() {
   const args = process.argv.slice(1); // skip electron binary
@@ -6547,8 +6752,11 @@ function _callTabUrlFragment(callId) {
     }
     return null;
   }
+  // Zoom room ids are "zoom-<meeting number>" → a web-client tab (/wc/<n>/...).
+  // A tab on the /j/ launch page or the desktop app won't match; best-effort.
+  if (/^zoom-\d+$/.test(callId)) return '/wc/' + String(callId).slice(5);
   // Default: a Google Meet code → meet.google.com/<code>.
-  // (Future: zoom.us/j/<id>, teams.microsoft.com/... — add branches here.)
+  // (Future: teams.microsoft.com/... — add branches here.)
   const code = String(callId).replace(/[^a-zA-Z0-9-]/g, '');
   return code ? 'meet.google.com/' + code : null;
 }
@@ -7876,7 +8084,10 @@ function notifyClaudeSignInNeeded() {
   }).catch(() => { /* dismissed */ });
 }
 
-async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendarEvent = null } = {}) {
+// summoned: this bot was brought into a call ALREADY in progress by
+// /call-new-bot. The agent starts with `/join-call <code> --summoned`, which
+// skips /join-call's onboarding hand-off — see joinSlashCommand in agent-spawn.js.
+async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendarEvent = null, summoned = false } = {}) {
   const { execFile } = require('child_process');
   // Test fleets drive the bot from the harness over MCP — they have no use for a
   // spawned agent, and every start_call left another Terminal window on the
@@ -8069,14 +8280,16 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
   const resumeFlag = claudeResumeFlag(plan.resumeSessionId);
   const nameFlag = claudeNameFlag(plan.sessionName);
   const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
-  const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"/${slashCmd} ${meetCode} ${botName.replace(/"/g, '')}\\"`;
+  const { joinSlashCommand } = require('./agent-spawn.js');
+  const slashLine = joinSlashCommand({ slashCmd, meetCode, botName: botName.replace(/"/g, ''), summoned });
+  const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"${slashLine}\\"`;
 
   // #242: run the agent as our own child instead, when asked to. Everything
   // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
   // only difference is who owns the process and therefore who can see it work.
   if (store.get('agentHosting') === 'headless') {
     const launched = launchClaudeHeadless({
-      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall, summoned,
     });
     // Falling through to the Terminal path on refusal is deliberate. The
     // alternative is joining a call with an agent that never starts, which
@@ -8098,7 +8311,7 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
   // then headless, then a loud failure — never a silent no-agent.
   if (process.platform === 'linux') {
     const launched = launchClaudeLinuxTerminal({
-      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall, summoned,
     });
     if (launched) return;
     // No terminal emulator AND no tmux. Headless is the last automatic option,
@@ -8106,7 +8319,7 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
     // the allowlist mode that would make this refusal much rarer).
     console.log('[electron] no Linux terminal available — trying headless');
     const headless = launchClaudeHeadless({
-      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall,
+      meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall, summoned,
     });
     if (headless) return;
     // Loud, because the alternative is the failure this whole issue exists to
@@ -8261,7 +8474,7 @@ function binaryExists(bin) {
 // Returns true if the agent is now running in a Linux terminal, false to fall
 // back to headless. See linux-terminal.js for the shapes and why tmux is an
 // upgrade rather than a requirement.
-function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
+function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false, summoned = false }) {
   const { spawn, execFileSync } = require('child_process');
   const {
     detectTerminalEmulator, chooseAgentTerminalPlan, tmuxSessionName,
@@ -8294,6 +8507,7 @@ function launchClaudeLinuxTerminal({ meetCode, botName, claudeDir, dangerousMode
     mcpConfigPath,
     ...planAgentSession(claudeDir, botName),
     onboardingCall,
+    summoned,
   })];
 
   // Same env contract as the headless spawn: strip the parent Claude session's
@@ -8386,7 +8600,7 @@ let headlessAgentCallOver = false;
 let headlessAgentGeneration = 0;
 
 // Returns true if the agent is now running headlessly, false to fall back.
-function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false }) {
+function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, claudeBin, mcpConfigPath, onboardingCall = false, summoned = false }) {
   const { buildAgentArgs, headlessBlockedReason, spawnHeadlessAgent } = require('./agent-spawn.js');
 
   const blocked = headlessBlockedReason({ dangerous: dangerousMode });
@@ -8475,6 +8689,7 @@ function launchClaudeHeadless({ meetCode, botName, claudeDir, dangerousMode, cla
     mcpConfigPath,
     ...planAgentSession(claudeDir, botName),
     onboardingCall,
+    summoned,
   });
 
   // The stream becomes the activity source BEFORE the spawn, so the very first
@@ -9099,7 +9314,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '66';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '69';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -9496,29 +9711,56 @@ app.whenReady().then(async () => {
       profileStore.set('onboardingCallComplete', false);
     }
 
-    // A brand-new bot otherwise ships with the plain animated gradient — the
-    // SAME one every other unconfigured bot has, which makes the switcher
-    // useless for telling several fresh bots apart at a glance. Seed one of
-    // the bundled presets at random instead, right here at the one moment a
-    // profile is genuinely new — covers every path that creates a bot ("New
-    // bot…", /call-new-bot, and the very first default-profile launch), since
-    // they all funnel through this same per-process startup.
-    if (isBrandNewProfile && !profileStore.get('avatarBackgroundSvg')) {
+    // A brand-new DEFAULT-profile bot with no --bot-name would otherwise join
+    // its first call as "Unnamed bot" (a named --profile humanizes its dir name
+    // instead; "New bot…" and the first-run wizard seed a name already). The
+    // guided setup no longer asks for a name: it shows the one the bot already
+    // has, and Meet takes the display name at JOIN, so a name picked in-call
+    // would leave the tile wrong until a leave+rejoin. Seed it here, before any
+    // join, so the tile is right from the first frame. Only a brand-new
+    // profile: a stray instance of an existing one must still read "Unnamed
+    // bot" (bot-name-default.test.mjs).
+    if (isBrandNewProfile && isDefaultInstance && !cliArgs['bot-name'] && !profileStore.get('botName')) {
       try {
-        const bgDir = __dirname.includes('.asar')
-          ? path.join(process.resourcesPath, 'backgrounds', 'presets')
-          : path.join(__dirname, 'backgrounds', 'presets');
-        const BG_EXTS = /\.(svg|png|jpe?g|webp|gif)$/i;
-        const files = fs.readdirSync(bgDir).filter((f) => BG_EXTS.test(f));
-        if (files.length) {
-          const chosen = files[Math.floor(Math.random() * files.length)];
-          const svg = await buildBackgroundSvgFromImage(path.join(bgDir, chosen));
-          profileStore.set('avatarBackgroundSvg', svg);
-          profileStore.set('avatarBackgroundCaption', chosen.replace(BG_EXTS, ''));
-        }
+        const { randomBotName } = require('./bot-names.js');
+        profileStore.set('botName', randomBotName({ taken: takenBotNames() }));
       } catch (err) {
-        console.warn('[config] could not seed a random background for new bot:', err.message);
+        console.warn('[config] could not seed a random name for new bot:', err.message);
       }
+    }
+
+    // A new bot gets one of the bundled background presets at random instead
+    // of the plain gradient every unconfigured bot shares. "New" means EITHER
+    // no config.json existed at all (bare --profile launch, first default
+    // profile) OR seedNewBotName left its one-shot marker: "New bot…" and
+    // /call-new-bot pre-seed config.json before this instance starts, so
+    // isBrandNewProfile is already false for them. See new-bot-background.js
+    // for why a marker rather than inferring it from an empty background.
+    {
+      const nbb = require('./new-bot-background.js');
+      const marker = profileStore.get(nbb.SEED_BACKGROUND_MARKER);
+      if (nbb.shouldSeedRandomBackground({
+        isBrandNewProfile,
+        marker,
+        currentSvg: profileStore.get('avatarBackgroundSvg'),
+      })) {
+        try {
+          const bgDir = __dirname.includes('.asar')
+            ? path.join(process.resourcesPath, 'backgrounds', 'presets')
+            : path.join(__dirname, 'backgrounds', 'presets');
+          const chosen = nbb.pickBackgroundPreset(fs.readdirSync(bgDir));
+          if (chosen) {
+            const svg = await buildBackgroundSvgFromImage(path.join(bgDir, chosen));
+            profileStore.set('avatarBackgroundSvg', svg);
+            profileStore.set('avatarBackgroundCaption', nbb.presetCaption(chosen));
+          }
+        } catch (err) {
+          console.warn('[config] could not seed a random background for new bot:', err.message);
+        }
+      }
+      // One shot, success or not: once consumed, an empty background is the
+      // user's choice (or a failed seed) and must never be re-rolled.
+      if (marker !== undefined) profileStore.delete(nbb.SEED_BACKGROUND_MARKER);
     }
   }
 
@@ -9849,10 +10091,10 @@ app.whenReady().then(async () => {
 
   // --- Meet/Slack detection: poll Chrome/Safari/Brave tabs for active Meet
   // calls and Slack huddles ---
-  let detectedMeetUrl = null;
+  // currentMeetUrl and detectedMeetUrl are module-level (see their declaration):
+  // the leave teardown resets them, and every join path sets currentMeetUrl.
   let detectedSlackHuddle = null;
   let meetDetectionInterval = null;
-  let currentMeetUrl = null; // Track what we've joined
   let automationPromptShown = false; // only nag about Automation permission once
   // Last Meet-poll failure message, so an identical one isn't logged every tick.
   // null = nothing failing right now; a success clears it, so a recurrence is
@@ -9898,48 +10140,14 @@ app.whenReady().then(async () => {
     // Per-window try blocks skip a misbehaving window without aborting the
     // whole scan; the per-item try skips tabs whose URL is `missing value`
     // (empty Safari tabs).
-    const browserScanBlock = (appName) => `
-if application "${appName}" is running then
-  try
-    tell application "${appName}"
-      repeat with w in windows
-        try
-          set tabURLs to URL of tabs of w
-          set tabTitles to title of tabs of w
-          repeat with i from 1 to count of tabURLs
-            try
-              set tabURL to (item i of tabURLs) as text
-              set tabTitle to ""
-              try
-                set tabTitle to (item i of tabTitles) as text
-              end try
-              if tabURL starts with "https://meet.google.com/" then
-                set allURLs to allURLs & "MEET:" & tabURL & linefeed
-              else if tabURL starts with "https://app.slack.com/client/" then
-                set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
-              else if tabURL is "about:blank" then
-                set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
-              end if
-            end try
-          end repeat
-        end try
-      end repeat
-    end tell
-  end try
-end if`;
-    const appleScript = `
-set allURLs to ""
-${browserScanBlock('Google Chrome')}
-${browserScanBlock('Safari')}
-${browserScanBlock('Brave Browser')}
-allURLs`;
+    const appleScript = browserTabScanScript();
 
     console.log('[electron] Meet/Slack detection started');
 
     function pollForMeet() {
       if (currentMeetUrl || pollInFlight) return;
-      // Already in a call (joined via the panel OR /join-call MCP, where
-      // currentMeetUrl isn't set)? Don't scan the browser for other Meets —
+      // Already in a call by some path that didn't set currentMeetUrl (Slack,
+      // Zoom, Teams)? Don't scan the browser for other Meets —
       // it's pointless mid-call and was spamming "Google Meet Detected" push
       // notifications (and burning AppleScript timeouts) during live calls.
       if (localServer.callStatus === 'in-call') return;
@@ -10530,6 +10738,29 @@ allURLs`;
     }
   });
 
+  // Join a pasted Zoom or Teams link from the panel. Same shape as the Slack
+  // handler: switch provider (which joins and sets the zoom-/teams- room id),
+  // then start the agent on that room; onJoinCall skips Meet navigation for
+  // those codes, so /join-call just starts the conversation loop.
+  for (const [channel, activate, label] of [
+    ['join-detected-zoom', (url) => activateZoomProvider(url), 'Zoom'],
+    ['join-detected-teams', (url) => activateTeamsProvider(url), 'Teams'],
+  ]) {
+    ipcMain.on(channel, (_event, { url } = {}) => {
+      if (!url) return;
+      console.log('[electron] Join pasted ' + label + ' link:', url);
+      const room = activate(url);
+      if (room) launchClaudeTerminal(room);
+      else console.warn('[electron] ' + channel + ': not a joinable ' + label + ' link; skipping');
+    });
+  }
+
+  // /call-new-bot: a new bot launched straight into a call. Not --meet-url,
+  // which loads the page but starts no agent — a face with nobody behind it.
+  if (cliArgs['join-url']) {
+    joinSummonedCall({ url: cliArgs['join-url'], summoned: cliArgs['summoned'] === 'true' });
+  }
+
   // Auto-join if launched with --meet-url
   if (cliArgs['meet-url']) {
     const meetUrl = cliArgs['meet-url'];
@@ -10653,10 +10884,11 @@ app.on('before-quit', () => {
 // / #170). Handles all per-view setup that the previous inline block did:
 // audio muting, zoom on dom-ready, and optional DevTools open at launch.
 // Returns the view; caller is responsible for addBrowserView + load.
-function createMeetView(partition) {
+// `preload` swaps in another single-surface provider's preload (Zoom, #318).
+function createMeetView(partition, { preload = 'preload-meet.js' } = {}) {
   const view = new BrowserView({
     webPreferences: {
-      preload: path.join(__dirname, 'preload-meet.js'),
+      preload: path.join(__dirname, preload),
       contextIsolation: false,
       sandbox: false,
       partition,
@@ -11419,6 +11651,7 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
   });
   meetView = surface.view;
   slackProviderMode = true;
+  zoomProviderMode = false;
   slackSurface = surface;
   mainWindow.addBrowserView(meetView);
   layoutViews();
@@ -11430,11 +11663,13 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
 // Ensure the embedded view is a Google Meet view (switching back from Slack if
 // needed) before loading a Meet URL.
 function activateMeetProvider() {
-  if (!slackProviderMode && meetView && !meetView.webContents.isDestroyed()) return;
+  if (!slackProviderMode && !zoomProviderMode && !teamsProviderMode && meetView && !meetView.webContents.isDestroyed()) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ')');
+  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ', zoom=' + zoomProviderMode + ', teams=' + teamsProviderMode + ')');
   destroyProviderView();
   slackProviderMode = false;
+  zoomProviderMode = false;
+  teamsProviderMode = false;
   slackSurface = null;
   // #347: follows the active partition, so a provider switch mid-fallback
   // doesn't silently drop the bot back onto the blocked account.
@@ -11442,6 +11677,148 @@ function activateMeetProvider() {
   meetView = createMeetView(activeMeetPartition);
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
+}
+
+// Room code for a Zoom meeting (zoom-<number>) → local server + sync, the Zoom
+// analog of setupSlackRoom.
+function setupZoomRoom(zoomUrl) {
+  const { ZOOM } = require('./zoom-selectors');
+  return registerProviderRoom('Zoom', ZOOM.roomCodeFromUrl(zoomUrl), zoomUrl);
+}
+
+// Room code → local server + vibeconferencing.com sync + ensureRoom, for the
+// single-surface providers (Zoom, Teams). `label` is only for the log.
+function registerProviderRoom(label, room, url) {
+  if (!room) {
+    console.warn('[electron] ' + label + ': no meeting id in URL; room code not set —', url);
+    return null;
+  }
+  localServer.setRoom(room);
+  sync.updateConfig({ roomId: room, baseUrl: getWebsiteUrl() });
+  console.log('[electron] ' + label + ' room code:', room);
+  sync.ensureRoom().then((ok) => {
+    sync.startPolling();
+    console.log('[electron] ' + label + ' room ensured:', room,
+      ok ? 'OK' : '(NOT created — log into ' + getWebsiteUrl() + ' so the bot can create rooms)');
+  }).catch((e) => console.warn('[electron] ' + label + ' ensureRoom error:', e && e.message));
+  return room;
+}
+
+async function clearTeamsPlatformCookies(sess) {
+  const { TEAMS } = require('./teams-selectors');
+  let removed = 0;
+  try {
+    for (const c of await sess.cookies.get({})) {
+      const d = (c.domain || '').replace(/^\./, '');
+      if (!TEAMS.platformCookies.includes(c.name)) continue;
+      if (!TEAMS.url.hosts.some((h) => d === h || d.endsWith('.' + h))) continue;
+      try { await sess.cookies.remove(`https://${d}${c.path || '/'}`, c.name); removed++; } catch { /* best effort */ }
+    }
+  } catch (err) {
+    console.warn('[electron] Teams: clearing platform cookies failed:', err.message);
+  }
+  if (removed) console.log('[electron] Teams: cleared', removed, 'platform cookie(s) so the client is re-detected');
+}
+
+// Switch the embedded view to the Microsoft Teams web client and join. The
+// invite link itself is loaded: it lands on Teams' launcher, and preload-teams
+// takes "Continue on this browser", the guest pre-join and the lobby from there.
+function activateTeamsProvider(teamsUrl) {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const { TEAMS } = require('./teams-selectors');
+  if (!TEAMS.isTeamsUrl(teamsUrl)) { console.warn('[electron] Teams: not a meeting link —', teamsUrl); return null; }
+  console.log('[electron] Activating Teams provider:', teamsUrl);
+  destroyProviderView();
+  slackProviderMode = false;
+  slackSurface = null;
+  zoomProviderMode = false;
+  teamsProviderMode = true;
+  ensureMeetSessionConfigured(SESSION_PARTITION);
+  meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-teams.js' });
+  // Present as current Chrome in the string AND the Sec-CH-UA* headers: Teams'
+  // server redirects what it takes for the Classic Teams Electron client to
+  // /error/eoa on the FIRST request, before any page script runs (live,
+  // 2026-10-15). Same spoof as the Slack surface (slack-ua.js).
+  const browserId = require('./slack-ua');
+  meetView.webContents.setUserAgent(browserId.UA);
+  try { browserId.installHeaderSpoof(session.fromPartition(SESSION_PARTITION)); } catch { /* best effort */ }
+  meetView.webContents.on('console-message', (_e, _level, message) => {
+    if (typeof message === 'string' && (message.includes('[teams]') || message.includes('[bots-in-calls]'))) console.log(message);
+  });
+  // Self-heal "Classic Teams is no longer available" (/error/eoa). Teams
+  // remembers a bad client classification in origin storage, not just cookies
+  // (a service worker, by the look of it: the launcher itself answered with the
+  // redirect even after the platform cookies were cleared). On landing there,
+  // wipe the Teams origins' storage once and retry the invite.
+  let eoaRetried = false;
+  const view = meetView;
+  view.webContents.on('did-navigate', (_e, url) => {
+    if (eoaRetried || !/\/error\/eoa\b/.test(url)) return;
+    eoaRetried = true;
+    console.warn('[electron] Teams sent the bot to /error/eoa (Classic Teams) — clearing Teams storage and retrying once');
+    const sess = session.fromPartition(SESSION_PARTITION);
+    Promise.all(TEAMS.url.hosts.map((h) => sess.clearStorageData({
+      origin: 'https://' + h,
+      storages: ['serviceworkers', 'cachestorage', 'localstorage', 'indexdb', 'cookies'],
+    }).catch(() => {})))
+      .then(() => { if (!view.webContents.isDestroyed()) view.webContents.loadURL(TEAMS.lightMeetingUrl(teamsUrl) || teamsUrl); });
+  });
+  attachMeetViewForState();
+  layoutViews();
+  const room = registerProviderRoom('Teams', TEAMS.roomCodeFromUrl(teamsUrl), teamsUrl);
+  // Teams pins its client classification in a platformId cookie, and the
+  // launcher redirects on it with no page script involved. One bad visit (e.g.
+  // before preload-teams hid window.process) left platformId=1415 and every
+  // later join went to /error/eoa. Clear it so each join is classified afresh.
+  // Prefer the light guest client: the launcher sometimes routes to the full v2
+  // app, which detects Electron and bounces to /error/eoa; the light client
+  // never did. Links without a /meet/ code still go through the launcher.
+  const startUrl = TEAMS.lightMeetingUrl(teamsUrl) || teamsUrl;
+  console.log('[electron] Teams: loading', startUrl === teamsUrl ? 'the invite (launcher)' : 'the light guest client directly');
+  clearTeamsPlatformCookies(session.fromPartition(SESSION_PARTITION))
+    .finally(() => { if (meetView && !meetView.webContents.isDestroyed()) meetView.webContents.loadURL(startUrl); });
+  return room;
+}
+
+// Switch the embedded view to the Zoom web client and join the meeting (#318).
+// Any zoom.us link works: it's rewritten to the direct /wc/join/<n> URL, which
+// renders the meeting top-level where preload-zoom.js can reach it. preload-zoom
+// handles pre-join, computer audio and in-call reporting itself.
+function activateZoomProvider(zoomUrl) {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const { ZOOM } = require('./zoom-selectors');
+  // A meeting link joins. Any other zoom.us page (e.g. https://zoom.us/signin)
+  // just loads, so the bot's Zoom account can be signed in to in this profile:
+  // a signed-in bot skips the guest join page and its reCAPTCHA.
+  let webUrl = ZOOM.webClientJoinUrl(zoomUrl);
+  const isMeeting = !!webUrl;
+  if (!isMeeting) {
+    let host = '';
+    try { host = new URL(zoomUrl).hostname.toLowerCase(); } catch { /* not a URL */ }
+    if (host !== 'zoom.us' && !host.endsWith('.zoom.us')) { console.warn('[electron] Zoom: not a zoom.us link —', zoomUrl); return null; }
+    webUrl = zoomUrl;
+  }
+  console.log('[electron] Activating Zoom provider:', webUrl);
+  destroyProviderView();
+  slackProviderMode = false;
+  slackSurface = null;
+  teamsProviderMode = false;
+  zoomProviderMode = true;
+  ensureMeetSessionConfigured(SESSION_PARTITION);
+  meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-zoom.js' });
+  // The web client checks the browser; present as current Chrome (the same
+  // spoof the Slack surface uses; preload-zoom shims userAgentData to match).
+  meetView.webContents.setUserAgent(require('./slack-ua').UA);
+  meetView.webContents.on('console-message', (_e, _level, message) => {
+    // [zoom] = preload-zoom/provider; [bots-in-calls] = page-inject (screen
+    // capture, virtual mic), the only record of what a share actually sent.
+    if (typeof message === 'string' && (message.includes('[zoom]') || message.includes('[bots-in-calls]'))) console.log(message);
+  });
+  attachMeetViewForState();
+  layoutViews();
+  const room = isMeeting ? setupZoomRoom(zoomUrl) : null;
+  meetView.webContents.loadURL(webUrl);
+  return room;
 }
 
 // Let the avatar banner run to the very top of the window, behind the window
@@ -12048,6 +12425,17 @@ function createMainWindow() {
     meetView = createMeetView(SESSION_PARTITION);
   }
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
+  // Zoom (#318): --provider=zoom --zoom-url=<any zoom.us meeting link> joins at
+  // launch. Swaps the Meet view just built for a Zoom one.
+  // Teams: --provider=teams --teams-url=<invite link> joins at launch.
+  if (cliArgs['provider'] === 'teams') {
+    if (cliArgs['teams-url']) activateTeamsProvider(cliArgs['teams-url']);
+    else console.warn('[electron] --provider=teams needs --teams-url=<meeting link>');
+  }
+  if (cliArgs['provider'] === 'zoom') {
+    if (cliArgs['zoom-url']) activateZoomProvider(cliArgs['zoom-url']);
+    else console.warn('[electron] --provider=zoom needs --zoom-url=<meeting link>');
+  }
 
   // Open DevTools on demand from panel — registered once, references the
   // current module-level meetView so it always targets the live one after
@@ -12285,8 +12673,9 @@ function createMainWindow() {
   mainWindow.on('resize', layoutViews);
 
   // Load idle placeholder in the Meet view. In Slack mode the surface already
-  // loaded app.slack.com (or the channel deep-link) in createSlackSurface.
-  if (!slackMode) loadIdlePage('main-window created');
+  // loaded app.slack.com (or the channel deep-link) in createSlackSurface; in
+  // Zoom mode activateZoomProvider already loaded the meeting.
+  if (!slackMode && !zoomProviderMode && !teamsProviderMode) loadIdlePage('main-window created');
 
   // 'close' (cancellable) before 'closed' (already gone).
   mainWindow.on('close', confirmQuitBeforeClose);
@@ -12468,6 +12857,8 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
   if (boundEmail) console.log('[electron] Pinning Meet account via authuser:', boundEmail);
 
   meetView = createMeetView(activeMeetPartition);
+  zoomProviderMode = false; // a Meet view replaces any Zoom one (#318)
+  teamsProviderMode = false; // ... or Teams one
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 
@@ -12542,6 +12933,8 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
         });
         updateDebugOverlayPushInterval(true);
       }
+      // Avatar posture seed + on/off, across Meet reloads.
+      pushAvatarPosture();
     }
   });
 }
@@ -12743,6 +13136,7 @@ function setupIPC() {
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
+    if (key === 'avatarPostureShifts' || key === 'botName') pushAvatarPosture();
     if (key === 'meetViewSize') applyMeetViewSize();
     if (key === 'botName') applyAllWindowTitles();
     if (key === 'watchSharedScreen') reconcileScreenSettleWatcher();
@@ -13319,6 +13713,24 @@ function setupIPC() {
     return running;
   }
 
+  // The same scan, but with what each instance is DOING: its call status and
+  // room. /call-new-bot reads this to find a call already in progress.
+  async function scanCallInstances() {
+    const running = await scanRunningInstances();
+    const out = await Promise.all(Object.entries(running).map(async ([profile, port]) => {
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 900);
+        const r = await fetch(`http://127.0.0.1:${port}/api/sync/no-room`, { signal: ctrl.signal });
+        clearTimeout(t);
+        if (!r.ok) return null;
+        const j = await r.json();
+        return { profile, port, callStatus: j?.status?.callStatus || null, roomId: j?.roomId || null };
+      } catch { return null; }
+    }));
+    return out.filter(Boolean);
+  }
+
   ipcMain.handle('list-profiles', async () => {
     const named = profileManager.listProfiles(PROFILES_ROOT);
     const reg = profileManager.loadPortRegistry(BASE_USER_DATA);
@@ -13438,6 +13850,11 @@ function setupIPC() {
       // needed — which means a genuinely NEW bot has to say otherwise
       // explicitly, right here, at the one moment it's actually created.
       const seeded = { ...existing, botName, onboardingCallComplete: false };
+      // The new instance's startup sees this config.json and so does NOT treat
+      // the profile as brand new; this marker is what tells it to seed a random
+      // background preset (consumed on that first launch, see
+      // new-bot-background.js).
+      seeded[require('./new-bot-background.js').SEED_BACKGROUND_MARKER] = true;
       if (adopt && adopt.workdir) seeded.claudeWorkDir = adopt.workdir;
       if (adopt && adopt.session) seeded.agentSession = adopt.session;
       fs.writeFileSync(file, JSON.stringify(seeded, null, 2));
@@ -13450,7 +13867,9 @@ function setupIPC() {
     }
   }
 
-  async function launchOrFocusProfile(name, { openSettings = false } = {}) {
+  // extraArgs: further --flags for a FRESH launch only (a running profile is
+  // focused, never relaunched — so they can't move a bot out of its call).
+  async function launchOrFocusProfile(name, { openSettings = false, extraArgs = [] } = {}) {
     const isDefault = isDefaultName(name);
     if (!profileManager.isValidProfileName(name)) {
       return { ok: false, error: 'Invalid profile name (letters, numbers, . _ - only)' };
@@ -13486,6 +13905,7 @@ function setupIPC() {
     // A newly created bot lands on Settings rather than "Call now" — it has no
     // name, voice or face yet, so that page IS its next step.
     if (openSettings) args = [...args, '--open-settings=true'];
+    if (extraArgs.length) args = [...args, ...extraArgs];
 
     // #379: open the new profile window where THIS one is, not centered. The main
     // window honors --window-x/y (createMainWindow, as the test launcher uses),
@@ -13618,7 +14038,19 @@ function setupIPC() {
   // said out loud (see addressable-name.js) — it is the user's existing word
   // for this thing, so it beats a random one. When it cannot, the random pool
   // takes over rather than shipping a bot that never answers to itself.
-  adoptSessionAsBot = async ({ workdir, session, botName } = {}) => {
+  //
+  // And it joins a call (/call-new-bot, 2026-10-15). `target` is an explicit
+  // Meet code/URL, Slack huddle, Zoom or Teams link; without one, the call some
+  // running instance is in, then a Meet open in the user's browser, then a
+  // fresh Meet. Several distinct candidates → { needsChoice, candidates } and
+  // NOTHING is created, so the caller can ask and come back with a target. The
+  // order lives in new-bot-target.js. `join: false` keeps the old create-only
+  // behaviour.
+  //
+  // Always a NEW profile on its own port. Never /join-call's path, which drives
+  // an EXISTING instance — with one running, an unknown name there is a rename
+  // of that bot, which pulls it out of the call it is in.
+  adoptSessionAsBot = async ({ workdir, session, botName, target = null, join = true } = {}) => {
     const dir = String(workdir || '').trim();
     if (!dir) return { ok: false, error: 'A working directory is required — that is where the session lives.' };
     if (!fs.existsSync(dir)) return { ok: false, error: `No such directory: ${dir}` };
@@ -13626,10 +14058,72 @@ function setupIPC() {
     // a session name means nothing without the directory it was recorded in.
     const { resolveSessionName } = require('./agent-session.js');
     const sessionRef = resolveSessionName(session) || '';
+
+    // Decide the call BEFORE creating anything: an ambiguous answer has to go
+    // back to the user, and a bot made in the meantime would be an orphan.
+    let call = null;
+    if (join !== false) {
+      const { resolveNewBotTarget } = require('./new-bot-target.js');
+      const explicit = target && String(target).trim() ? String(target).trim() : null;
+      // Only look around when nothing was named; the scans cost seconds.
+      const instances = explicit ? [] : await scanCallInstances();
+      let decided = resolveNewBotTarget({ explicit, instances });
+      // The browser is only consulted when no instance is in a call, so the
+      // AppleScript scan (and any Automation prompt) is skipped when unneeded.
+      if (decided.action === 'new') {
+        decided = resolveNewBotTarget({ explicit, instances, browserMeetUrls: await scanBrowserMeetUrls() });
+      }
+      if (decided.action === 'error') return { ok: false, error: decided.error };
+      if (decided.action === 'ask') {
+        return {
+          ok: false,
+          needsChoice: true,
+          source: decided.source,
+          candidates: decided.candidates,
+          error: `More than one call is in progress (${decided.candidates.map((c) => c.roomId).join(', ')}). Say which one, and pass it as target.`,
+        };
+      }
+      if (decided.action === 'new') {
+        // Made HERE, not by the new instance: this one is running and signed in,
+        // while a profile that has existed for half a second may not have its
+        // login cookie yet. The new bot then joins it like any other link.
+        const r = await websiteRequest('/api/meet/create', {
+          method: 'POST',
+          headers: { 'Idempotency-Key': require('crypto').randomUUID() },
+        });
+        if (!(r.status === 200 && r.json?.meetingUri)) {
+          const why = { 401: 'not signed in to vibeconferencing.com', 429: 'too many calls started recently', 502: 'Google could not create the room' }[r.status]
+            || (r.status === 0 ? `offline (${r.error})` : `status ${r.status}`);
+          return { ok: false, error: `No call to join, and a new one could not be started: ${why}.` };
+        }
+        call = { source: 'new', url: r.json.meetingUri, summoned: false };
+      } else {
+        // A call someone is already in. The bot joins as a participant, not
+        // through its guided setup — see joinSlashCommand.
+        call = { source: decided.source, url: decided.url, roomId: decided.roomId, summoned: true };
+      }
+    }
+
     const name = nextBotProfileName();
     seedNewBotName(name, { workdir: dir, session: sessionRef, botName });
-    const result = await launchOrFocusProfile(name, { openSettings: true });
-    return { ...result, profile: name, adopted: { workdir: dir, session: sessionRef } };
+    const extraArgs = call ? [`--join-url=${call.url}`, ...(call.summoned ? ['--summoned=true'] : [])] : [];
+    // Joining → the window opens on the call, not on Settings.
+    const result = await launchOrFocusProfile(name, { openSettings: !call, extraArgs });
+    if (call && result.ok && !result.launched) {
+      // nextBotProfileName picks an unused directory, so this should not
+      // happen — but if it did, the "new" bot is a running one, and it must
+      // not be redirected out of whatever it is doing.
+      return { ok: false, error: `Profile ${name} was already running, so no new bot was made. Nothing was joined.` };
+    }
+    if (call && result.ok && call.source === 'new') openExternalUrl(call.url);
+    return {
+      ...result,
+      profile: name,
+      adopted: { workdir: dir, session: sessionRef },
+      // The link is reported for a call we MADE (the user needs it); a call
+      // already in progress is reported by room only.
+      call: call ? { source: call.source, roomId: call.roomId || null, ...(call.source === 'new' ? { url: call.url } : {}) } : null,
+    };
   };
   ipcMain.handle('adopt-session-as-bot', async (_event, args) => adoptSessionAsBot(args));
 
@@ -13798,6 +14292,13 @@ function setupIPC() {
   // so this is just connected-vs-not for the Slack row on the main panel.
   ipcMain.handle('get-slack-mode', async () => {
     const signedIn = await isSignedInToSlack(session.fromPartition(SESSION_PARTITION));
+    return { signedIn };
+  });
+
+  // Is this profile signed into Zoom (#318)? Same cookie-authoritative idea as
+  // Slack. A signed-in bot joins without the guest page and its reCAPTCHA.
+  ipcMain.handle('get-zoom-mode', async () => {
+    const signedIn = await isSignedInToZoom(session.fromPartition(SESSION_PARTITION));
     return { signedIn };
   });
 
@@ -14097,6 +14598,35 @@ function setupIPC() {
     return { ok: true };
   });
 
+  // --- Bot Zoom identity (#318) — parity with Slack above. Opens Zoom's
+  // sign-in page in the bot's view (visible, #498) on the shared partition. ---
+  ipcMain.handle('zoom-sign-in', () => {
+    activateZoomProvider(ZOOM_SIGN_IN_URL);
+    revealBotViewForSignIn();
+    return { ok: true };
+  });
+
+  // Remove ONLY zoom.us cookies (Google and Slack logins preserved), then show
+  // the sign-in page, since signing out is usually a prelude to signing back in.
+  ipcMain.handle('zoom-sign-out', async () => {
+    try {
+      const sess = session.fromPartition(SESSION_PARTITION);
+      let removed = 0;
+      for (const c of await sess.cookies.get({})) {
+        const d = (c.domain || '').replace(/^\./, '');
+        if (/(^|\.)zoom\.us$/.test(d)) {
+          try { await sess.cookies.remove(`https://${d}${c.path || '/'}`, c.name); removed++; } catch { /* best-effort */ }
+        }
+      }
+      console.log('[electron] Zoom sign-out — removed', removed, 'zoom.us cookies (Google/Slack logins preserved)');
+    } catch (err) {
+      console.warn('[electron] zoom-sign-out failed:', err.message);
+    }
+    activateZoomProvider(ZOOM_SIGN_IN_URL);
+    revealBotViewForSignIn();
+    return { ok: true };
+  });
+
   // --- TTS ---
   ipcMain.on('speak', (_event, text) => {
     if (!text) return;
@@ -14377,6 +14907,11 @@ function setupIPC() {
         }
         localServer.waiters = [];
         localServer.clearRoom();
+        // We never made it into this Meet, so we haven't "joined" it. Now that
+        // currentMeetUrl is one shared variable, leaving it set here would keep
+        // the browser-tab poll paused (it early-returns while it is set) until
+        // some later teardown, which a failed join never reaches.
+        currentMeetUrl = null;
         // Reset the panel UI — without this it keeps showing "leave call"
         // even though we never made it into the meeting.
         // errorAction rides along: the panel re-shows `message` on top of the

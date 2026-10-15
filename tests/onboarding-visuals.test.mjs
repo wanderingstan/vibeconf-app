@@ -21,11 +21,11 @@ const mcp = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
 require('../electron-app/local-server.js');
 const LocalServer = globalThis.LocalServer;
 
-// Slice a numbered sub-step by its TITLE, not its letter. Steps get renumbered
-// (adding the language step shifted every one of them), and letter-based slices
-// silently start reading the wrong section rather than failing loudly.
+// Slice a reference section ("Changing one setting") by its TITLE. They were
+// lettered Step 4 sub-steps until the one-screen setup, and letter-based slices
+// silently started reading the wrong section whenever one was inserted.
 const step = (title) => {
-  const m = skill.match(new RegExp('^### 4[a-z]\\. .*' + title, 'm'));
+  const m = skill.match(new RegExp('^### .*' + title, 'm'));
   if (!m) throw new Error(`no step titled ${title}`);
   const from = skill.indexOf(m[0]);
   const next = skill.indexOf('\n### ', from + 1);
@@ -319,7 +319,7 @@ test('the wrap-up says how to end the call, and how to invite people', () => {
   // Setup finishes and nothing indicates the call is now idle rather than
   // working. Without being told, people close the tab on the bot or sit through
   // a silence wondering whether something is still running.
-  const wrap = skill.slice(skill.indexOf('## Step 5: Wrap up'));
+  const wrap = skill.slice(skill.indexOf('## Step 6:'));
   assert.match(wrap, /Tell me when you're done and I'll drop off/);
   assert.match(wrap, /invite them in/);
   assert.match(wrap, /the call does not end itself/);
@@ -327,15 +327,20 @@ test('the wrap-up says how to end the call, and how to invite people', () => {
   assert.match(wrap, /you are a normal call now, not a\s+wizard/);
 });
 
-test('language is chosen FIRST, before the name', () => {
+test('language is settled FIRST, before the card, when the locale is not English', () => {
   // Mechanical, not politeness: the bot hears the room by reading Meet's
   // captions, which transcribe in ONE configured language. Set wrong, Meet turns
-  // correct speech into nonsense and the bot answers the nonsense. The name step
-  // depends on it directly — checking whether a name comes back cleanly means
-  // nothing until the language is right.
-  const lang = skill.indexOf('### 4a. Language');
-  const name = skill.indexOf('### 4b. Name');
-  assert.ok(lang > -1 && name > lang, 'language must come before the name step');
+  // correct speech into nonsense and the bot answers the nonsense. So the
+  // language fallback is the one question allowed before the card — and only
+  // when the computer's locale is not English or cannot be read.
+  const step2 = skill.slice(skill.indexOf('## Step 2:'), skill.indexOf('## Step 3:'));
+  assert.match(step2, /defaults read -g AppleLocale/, 'the locale is read, not asked');
+  assert.match(step2, /\*\*English\*\*[^]*No question/, 'an English locale asks nothing');
+  assert.match(step2, /\*\*Not English, or the read failed\?\*\*[^]*BEFORE the card/);
+  assert.match(skill, /allowed-tools:.*Bash\(defaults read -g AppleLocale\)/);
+  const lang = skill.indexOf('### Language');
+  const name = skill.indexOf('### Name');
+  assert.ok(lang > -1 && name > lang, 'the language reference still precedes the name one');
   assert.match(skill, /set_caption_language/);
   assert.match(skill, /allowed-tools:.*mcp__vibeconferencing__set_caption_language/);
 });

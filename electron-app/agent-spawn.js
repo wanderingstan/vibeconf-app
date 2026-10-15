@@ -64,6 +64,17 @@ function cleanAgentEnv(env) {
   return out;
 }
 
+// The slash command a spawned agent starts with. `--summoned` marks a bot that
+// /call-new-bot brought into a call ALREADY in progress: /join-call skips its
+// onboarding hand-off for it, because the guided setup is a conversation with
+// the bot's owner and running it in someone else's meeting would hijack the
+// room. The bot stays flagged for setup (onboardingCallComplete: false) and gets
+// it on a call of its own. Never set together with onboardingCall.
+function joinSlashCommand({ slashCmd, meetCode, botName, summoned = false }) {
+  const tail = summoned && slashCmd === 'join-call' ? ' --summoned' : '';
+  return `/${slashCmd} ${meetCode}${tail} ${botName || ''}`.replace(/\s+$/, '');
+}
+
 // Build the agent's argv.
 //
 // Pure and exported for its own sake: this is the part that must be exactly
@@ -71,7 +82,7 @@ function cleanAgentEnv(env) {
 // Code installed. An ARRAY, never a string — the bot name is user-supplied and
 // arrives here unescaped, which through the Terminal path meant stripping quotes
 // out of it and hoping.
-function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false }) {
+function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false, summoned = false }) {
   const args = [];
   // Before -p, so the prompt stays the trailing value of its own flag. Empty
   // means "start a new session"; the SessionStart hook records the id the CLI
@@ -87,7 +98,7 @@ function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, re
   // — so this is "no UI", not "one shot". onboardingCall runs /onboarding-call
   // instead, which walks the user through setup rather than free conversation.
   const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
-  args.push('-p', `/${slashCmd} ${meetCode} ${botName}`.trim());
+  args.push('-p', joinSlashCommand({ slashCmd, meetCode, botName, summoned }));
   // The whole point: NDJSON events instead of rendered terminal output.
   // --verbose is not optional here; the CLI rejects stream-json without it
   // ("When using --print, --output-format=stream-json requires --verbose").
@@ -132,7 +143,7 @@ function buildAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, re
 // user-supplied and arrives unescaped. The macOS path interpolates it into an
 // AppleScript-wrapped shell string and copes by stripping quotes out of it
 // (`botName.replace(/"/g, '')`). Nothing here needs to strip anything.
-function buildInteractiveAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false }) {
+function buildInteractiveAgentArgs({ meetCode, botName, dangerous, model, mcpConfigPath, resumeSessionId, sessionName, onboardingCall = false, summoned = false }) {
   const args = [];
   if (resumeSessionId) args.push('--resume', resumeSessionId);
   if (sessionName) args.push('--name', sessionName);
@@ -142,7 +153,7 @@ function buildInteractiveAgentArgs({ meetCode, botName, dangerous, model, mcpCon
   const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
   // Trailing positional, after the flags — one element however many spaces or
   // quotes the bot name contains.
-  args.push(`/${slashCmd} ${meetCode} ${botName}`.trim());
+  args.push(joinSlashCommand({ slashCmd, meetCode, botName, summoned }));
   return args;
 }
 
@@ -216,6 +227,6 @@ function spawnHeadlessAgent({ claudePath, args, cwd, env, source, onExit, log = 
 }
 
 module.exports = {
-  buildAgentArgs, buildInteractiveAgentArgs, headlessBlockedReason, spawnHeadlessAgent,
+  buildAgentArgs, buildInteractiveAgentArgs, joinSlashCommand, headlessBlockedReason, spawnHeadlessAgent,
   cleanAgentEnv, PARENT_SESSION_VARS,
 };

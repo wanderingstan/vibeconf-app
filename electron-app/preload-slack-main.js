@@ -59,6 +59,11 @@ window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');
 };
 
+// Call recording: start/stop the page recorder and carry its tracks to main
+// (#814). This window is the one main sends 'trigger-record' to (meetView),
+// and it owns the media; without this a Slack recording was silent video.
+require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[slack-main]' });
+
 // Bridge main → page-inject (same generic forward as google-meet-provider's
 // inbound handler). The VirtualMic AND the virtual-camera avatar both live HERE
 // in the main window, so page-inject needs the avatar-state messages too —

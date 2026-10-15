@@ -73,11 +73,11 @@ test('the launch log says what the agent actually got', () => {
 test('--strict-mcp-config is still passed', () => {
   // Dropping it would "fix" the missing tools by letting the user-scoped
   // vibeconferencing entry load too — pointing the agent at the wrong app.
-  assert.match(spawn.slice(0, 9000), /mcpFlags = ` --mcp-config .* --strict-mcp-config`/);
+  assert.match(spawn.slice(0, 10000), /mcpFlags = ` --mcp-config .* --strict-mcp-config`/);
 });
 
 test('the default profile is left alone', () => {
   // It uses the global config and never had this problem; the pin exists only
   // to disambiguate NAMED profiles from the primary app.
-  assert.match(spawn.slice(0, 9000), /if \(!isDefaultInstance\)/);
+  assert.match(spawn.slice(0, 10000), /if \(!isDefaultInstance\)/);
 });

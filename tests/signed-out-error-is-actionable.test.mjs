@@ -71,24 +71,25 @@ test('main ships the action alongside the message', () => {
 });
 
 test('the error bar renders the button and runs only known ids', () => {
-  assert.match(panelHtml, /<button class="notice-action" id="errorAction"/);
+  // Rows (and their buttons) are built by panel.js now that the bar shows up to
+  // three errors; the behaviour itself is exercised in error-bar-stack.test.mjs.
+  assert.match(panelHtml, /id="errorRows"/);
   assert.match(panelJs, /const ERROR_ACTIONS = \{/);
   assert.match(panelJs, /'reveal-bot-view': \(\) => api\.invoke\('reveal-bot-view'\)/);
   // The payload crosses IPC, so an unknown id must render nothing rather than
   // being dispatched blind.
   const render = panelJs.slice(panelJs.indexOf('function _renderErrorBar()'));
-  assert.match(render.slice(0, 600), /ERROR_ACTIONS\[top\.action\.id\]/,
+  assert.match(render.slice(0, 1500), /ERROR_ACTIONS\[entry\.action\.id\]/,
     'unknown ids must not paint a button that does nothing');
   assert.match(panelJs, /showError\(message\.message, message\.key, message\.errorAction\)/);
 });
 
 test('the action follows the stack, like the message it belongs to', () => {
   // #533 made the bar a stack; an action pinned to the bar rather than to the
-  // entry would offer the wrong fix for whatever is showing on top.
+  // entry would offer the wrong fix for the error it sits next to.
   assert.match(panelJs, /_errorStack\.push\(\{ message, key: key \|\| null, action: action \|\| null \}\)/);
-  const click = panelJs.slice(panelJs.indexOf("errorActionBtn?.addEventListener('click'"));
-  assert.match(click.slice(0, 400), /_errorStack\[_errorStack\.length - 1\]/,
-    'the button runs the top entry\'s action, not a remembered one');
+  assert.doesNotMatch(panelJs, /errorActionBtn/,
+    'no single bar-wide button: each row carries its own entry\'s action');
 });
 
 test('the App Settings warning ends at a visible button', () => {

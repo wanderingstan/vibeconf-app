@@ -67,6 +67,10 @@ const DRAWN = {
   // to mean "close", so at that angle it must land on exactly the ✕ above rather
   // than a second, slightly different cross.
   plus: '<path d="M12 5 L12 19 M5 12 L19 12"/>',
+  // ⓘ Troubleshooting. The 🚧 it replaced didn't say what it opened; a circled
+  // lowercase i is the platform-standard "more info" mark. The dot is a
+  // zero-length stroke, so the round cap draws it at the shared weight.
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11 L12 16.5 M12 7.6 L12 7.6"/>',
 };
 
 // Icons vendored from another set, verbatim. OpenMoji's ⚙ is a hairline outline

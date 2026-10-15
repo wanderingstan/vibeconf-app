@@ -140,7 +140,7 @@ test('no step asks for a bare number', () => {
   assert.match(skill, /label the entries \*\*"Option 1", "Option 2"\*\*/);
   assert.match(skill, /someone reading "Option 3" says "option three" without being told/);
   // The voice step is where it was first noticed, so it says so.
-  const voice = skill.slice(skill.indexOf('### 4c. Voice'), skill.indexOf('### 4d.'));
+  const voice = skill.slice(skill.indexOf('### Voice'), skill.indexOf('### Personality'));
   assert.match(voice, /Option 1/);
 });
 
@@ -154,7 +154,7 @@ test('the language step does not depend on a bare number', () => {
   // already written in the user's own language on the board, so it needs no
   // English at all. Numbers stay as a fallback, spoken as "number five".
   const skill = readFileSync(join(root, 'mcp-server/onboarding-call-skill.md'), 'utf8');
-  const step = skill.slice(skill.indexOf('### 4a. Language'), skill.indexOf('### 4b. Name'));
+  const step = skill.slice(skill.indexOf('### Language'), skill.indexOf('### Name'));
   assert.match(step, /say the language's name, as written on the board/);
   assert.match(step, /"Deutsch" and "option three" both transcribe; "three" does not/);
 });

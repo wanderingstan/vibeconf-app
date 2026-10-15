@@ -51,7 +51,7 @@
              Over the avatar they're unmissable and cost no space. One shared
              stack so two at once sit under each other instead of colliding. -->
         <div class="hero-notices">
-          <div class="error-bar hero-notice" id="errorBar" style="display:none"><span id="errorText"></span><!-- #346: an error that names a fix you have to go and find leaves people stuck (see #446 for the same lesson on the calendar banner). When main sends an action with the error, this button IS the fix. --><button class="notice-action" id="errorAction" style="display:none"></button><button class="error-close" id="errorClose">&times;</button></div>
+          <div class="error-bar hero-notice" id="errorBar" style="display:none"><!-- Up to three errors, newest first, then "+N more". panel.js builds the rows. #346: an error that names a fix you have to go and find leaves people stuck (see #446 for the same lesson on the calendar banner), so a row whose error carries an action gets its own button, and that button IS the fix. --><div class="error-rows" id="errorRows"></div><button class="error-close" id="errorClose">&times;</button></div>
 
           <!-- #381: shown only when the bot genuinely cannot make a sound —
                a platform with no built-in voice (Linux, #21) and neither an
@@ -116,8 +116,8 @@
         <div class="hero-bottom">
           <div class="hero-precall">
           <div class="field" id="callUrlField" style="display:none">
-            <label for="meetUrl">Meet / Slack URL</label>
-            <input type="text" id="meetUrl" placeholder="meet.google.com/xxx-xxxx-xxx or app.slack.com/client/…" />
+            <label for="meetUrl">Meeting link</label>
+            <input type="text" id="meetUrl" placeholder="Paste a Meet, Zoom, Teams or Slack link (or invite)" />
           </div>
           <div class="join-row">
             <!-- 👀 sits left of the main button in BOTH states. Before a call it
@@ -141,7 +141,7 @@
                  icons either side of it. Its arms match ui-icon-close exactly, so
                  rotated it lands on the same ✕ used elsewhere in the panel. The
                  icon carries .join-caret so CSS rotates IT, not the button pill. -->
-            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its Meet or Slack URL"><i class="ui-icon ui-icon-plus join-caret"></i></button>
+            <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its meeting link, or the whole invite"><i class="ui-icon ui-icon-plus join-caret"></i></button>
           </div>
           </div>
 
@@ -173,7 +173,7 @@
               <button id="openBrainBtn" class="join-more" title="See what the agent is thinking and doing — its live activity feed"><i class="ui-icon ui-icon-brain"></i></button>
               <button id="botViewToggleBtn" class="join-more botview-toggle-btn" title="See what the bot sees"><i class="ui-icon ui-icon-eyes"></i></button>
               <button id="leaveCallBtn" class="primary danger">Leave Call</button>
-              <button id="openTroubleshootingBtn" class="join-more" title="Troubleshooting: live call state, captions, and the agent's view"><i class="ui-icon ui-icon-construction"></i></button>
+              <button aria-label="Troubleshooting" id="openTroubleshootingBtn" class="join-more" title="Troubleshooting: live call state, captions, and the agent's view"><i class="ui-icon ui-icon-info"></i></button>
             </div>
           </div>
 
@@ -411,7 +411,8 @@
         <h2>Identity &amp; Calendar</h2>
         <p class="helper-text" style="margin:0 0 8px">
           Optional. Sign the bot into Google so it's auto-admitted to invite-only
-          Meets, or into Slack so it can join huddles. Signing in uses that
+          Meets, into Slack so it can join huddles, or into Zoom so it isn't
+          stopped by Zoom's guest CAPTCHA. Signing in uses that
           account's name instead of the one above. Logins persist across launches.
         </p>
         <div id="meetAccountEmail" class="account-email" style="display:none"></div>
@@ -419,6 +420,8 @@
         <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
         <button id="slackSignInBtn">Sign into Slack as bot</button>
         <button id="slackSignOutBtn" style="display:none">Sign out of Slack</button>
+        <button id="zoomSignInBtn">Sign into Zoom as bot</button>
+        <button id="zoomSignOutBtn" style="display:none">Sign out of Zoom</button>
 
         <!-- Calendar auto-join identity (#299): add this address as a guest on
              a Google Calendar event (it never needs to resolve to a real
@@ -716,6 +719,7 @@
        it stops new users mistaking the bot's view for their own call. -->
   <script src="svg-cover.js"></script>
   <script src="svg-scope.js"></script>
+  <script src="call-link.js"></script>
   <script src="panel.js"></script>
 </body>
 </html>

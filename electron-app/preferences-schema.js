@@ -666,6 +666,19 @@ const PREFERENCES = {
       'Any emoji not in the chosen set falls back to the native glyph. Reskin the ' +
       'bot\'s face (#316).',
   },
+  avatarPostureShifts: {
+    type: 'boolean',
+    default: true,
+    label: 'Natural posture in the video tile',
+    description:
+      'ON (default): the avatar face gets its own resting spot and size in its ' +
+      'Meet tile (a little off-centre, a little bigger or smaller, stable for this ' +
+      'bot), and every minute or two, or sometimes just after it finishes ' +
+      'speaking, it shifts to a new nearby pose in one quick 1–2 second move, ' +
+      'then holds still. Hearing its name makes it sit up: more centred and a ' +
+      'little larger. Never moves the face out of frame. OFF: the face sits dead ' +
+      'centre at a fixed size, as before. See avatar-posture.js.',
+  },
   updateChannel: {
     type: 'string',
     default: 'release',

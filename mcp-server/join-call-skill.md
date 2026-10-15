@@ -22,6 +22,13 @@ ever actually been set, live, by the guided onboarding call
   same rules as Step 1 below). Stop reading this skill here.
 - **`true`**: this bot has already been onboarded. Continue with the normal join below.
 
+**Exception — `--summoned` in `$ARGUMENTS`:** the app adds this token when `/call-new-bot`
+brought this bot into a call that was **already in progress**. Skip the onboarding hand-off
+even if `onboardingCallComplete` is `false`, and do a normal join: the guided setup is a
+conversation with the bot's owner, and running it in a meeting full of other people would
+take over the room. Leave the preference as it is, so setup still happens on a call of its
+own. Drop the `--summoned` token before parsing the room and name in Step 1.
+
 ## Step 1: Determine the room code and bot name
 
 Parse `$ARGUMENTS` for the room. **Accept either a bare meet code (`xxx-xxxx-xxx`) OR a full Meet URL** — most people will paste the call's URL, not a code. If it's a `https://meet.google.com/xxx-xxxx-xxx` URL, **extract the `xxx-xxxx-xxx` code** from it and use that (strip any `?`/`#` query). If found (either form), use it directly and skip detection. Any remaining non-code argument is the bot name.

@@ -74,6 +74,18 @@ npm run smoke:codex-mcp -- \
 
 Expect output including `Codex MCP smoke passed`, `Profile: codex`, and a `get_room_info` response with the right `Local server:` URL.
 
+### Bringing another bot into the call you're in: `/call-new-bot`
+
+From any Claude Code session, `/call-new-bot` makes a **new** profile that resumes that session and sends it into a call:
+
+```
+/call-new-bot                        # join the call in progress, else a fresh Meet
+/call-new-bot abc-defg-hij Rowan     # that Meet, as Rowan
+/call-new-bot https://app.slack.com/client/T0…/C0…   # a Slack huddle
+```
+
+With no call named, it joins the call a running bot on this machine is already in, then a Meet open in your browser, and only then starts a fresh Meet. More than one candidate call and it asks instead of guessing. It always launches a new profile on its own port, so it never renames or moves a bot that is already in a call (which is what `/join-call <code> <unknown name>` does when only one instance is running). A bot summoned into a call already in progress skips its guided setup there and runs it later, on a call of its own. The ordering lives in `electron-app/new-bot-target.js`.
+
 ### Each profile has its own Google login
 
 This is a feature, not a bug. The Codex profile can be signed into a different Google account than the default profile — so the two bots appear in the call as distinct participants with their own identities. Sign in once per profile (Vibeconferencing panel → Sign in with Google).

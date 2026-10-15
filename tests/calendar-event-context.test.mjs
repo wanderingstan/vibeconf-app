@@ -56,7 +56,7 @@ test('the /api/sync/:roomId status payload includes calendarEventContext', () =>
 test('joinMeetUrl accepts calendarEvent and forwards it to setCalendarEventContext', () => {
   assert.match(
     main,
-    /function joinMeetUrl\(meetUrl, \{ spawnAgent = true, onboardingCall = false, calendarEvent = null \} = \{\}\)/,
+    /function joinMeetUrl\(meetUrl, \{ spawnAgent = true, onboardingCall = false, calendarEvent = null, summoned = false \} = \{\}\)/,
   );
   const start = main.indexOf('function joinMeetUrl(meetUrl,');
   assert.ok(start > 0);

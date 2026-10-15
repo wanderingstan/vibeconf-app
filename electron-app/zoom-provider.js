@@ -217,6 +217,19 @@ class ZoomProvider extends CallProvider {
   }
   isSharing() { return isVisible(this.doc().querySelector(ZOOM.share.stopButton)); }
 
+  // Who else is sharing: [{ name, id }] (id = their Zoom userId, the same one
+  // the captions carry). The web client shows one remote share at a time, so
+  // this is at most one entry.
+  remoteShares() {
+    const d = this.doc();
+    const tip = d.querySelector(ZOOM.share.viewingIndicator);
+    if (!tip || !isVisible(tip)) return [];
+    const m = (tip.getAttribute('aria-label') || norm(tip.textContent)).match(ZOOM.share.viewingAriaRe);
+    if (!m) return [];
+    const player = d.querySelector(ZOOM.share.sharePlayer);
+    return [{ name: norm(m[1]), id: (player && player.getAttribute('node-id')) || null }];
+  }
+
   // Pause (true) / resume (false) the share's computer audio. While it's on,
   // Zoom keeps the bot's mic muted, so the bot can't talk over its own share.
   setShareAudioPaused(paused) {

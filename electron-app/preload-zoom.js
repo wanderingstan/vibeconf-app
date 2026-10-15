@@ -161,6 +161,8 @@ let botName = '';
 ipcRenderer.invoke('get-meet-bot-name').then((n) => { botName = n || ''; }).catch(() => {});
 
 let lastSharing = false;
+let lastPresenter = null;
+let lastSharesKey = '[]';
 let prejoinTried = false;
 let captchaReported = false;
 let audioJoinTried = false;
@@ -231,6 +233,23 @@ function tick() {
       emit(CALL_EVENTS.selfPresenting, { presenting: sharing });
       console.log('[zoom] self-presenting:', sharing);
       if (sharing) setTimeout(() => provider.setShareAudioPaused(true), 500);
+    }
+
+    // Someone else's share: someone-presenting drives shared-screen reading and
+    // the change-wake (#673); screen-shares-updated lists every share, ours
+    // included, the way Meet's people pane does.
+    const remote = provider.remoteShares();
+    const presenter = remote.length ? remote[0].name : null;
+    if (presenter !== lastPresenter) {
+      lastPresenter = presenter;
+      emit(CALL_EVENTS.someonePresenting, { presenting: !!presenter, presenterName: presenter });
+      console.log('[zoom] someone presenting:', presenter);
+    }
+    const shares = sharing ? [...remote, { name: botName || 'self', id: 'self' }] : remote;
+    const sharesKey = JSON.stringify(shares);
+    if (sharesKey !== lastSharesKey) {
+      lastSharesKey = sharesKey;
+      emit(CALL_EVENTS.screenSharesUpdated, shares);
     }
 
     const parts = provider.getParticipants();

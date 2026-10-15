@@ -276,6 +276,13 @@ const ZOOM = {
     pauseAudioButton: 'button.sharer-button[aria-label="Pause Audio Share" i]',
     resumeAudioButton: 'button.sharer-button[aria-label="Resume Audio Share" i]', // TBD verify
     mutedWhileSharingGotIt: 'button.muted-while-sharing-tips2__got-it',
+    // Someone ELSE sharing (verified 2026-10-15, Stan sharing his screen): a
+    // "You are viewing Stan's screen" indicator over #sharee-container, and a
+    // <video-player media-type="share" node-id="<their Zoom userId>">.
+    viewingIndicator: '.sharee-sharing-indicator__tip',
+    viewingAriaRe: /You are viewing\s+(.+?)['\u2019]s screen/i,
+    shareeContainer: '#sharee-container',
+    sharePlayer: 'video-player[media-type="share"]',
   },
 
   // -------------------------------------------------------------------------

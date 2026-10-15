@@ -73,6 +73,14 @@ test('parseChatAria: sender, recipient, time and text (text may contain commas)'
   assert.equal(ZOOM.parseChatAria('garbage'), null);
 });
 
+test('viewingAriaRe: the presenter from the "You are viewing …\'s screen" indicator (#810)', () => {
+  const name = (s) => (s.match(ZOOM.share.viewingAriaRe) || [])[1] || null;
+  assert.equal(name("You are viewing Stan's screen,"), 'Stan'); // aria-label, verified live
+  assert.equal(name('You are viewing  Ana Lima’s screen'), 'Ana Lima'); // textContent, curly apostrophe
+  assert.equal(name('You are viewing James\'s screen'), 'James');
+  assert.equal(name("You're screen sharing"), null); // the bot's OWN share bar is not someone else
+});
+
 test('mcp-server parses the same Zoom links into the same room id (it cannot import zoom-selectors, #708)', () => {
   // Pull the inline Zoom match out of join_call and run it against the cases
   // above, so the two parsers can't drift apart silently.

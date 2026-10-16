@@ -32,7 +32,7 @@ const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
 const recordRegion = require('./record-region.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
-const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveMeetUrl: resolveCalendarMeetUrl, shouldSkipCalendarJoin } = require('./calendar-auto-join.js');
+const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveEventCallLink, shouldSkipCalendarJoin } = require('./calendar-auto-join.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 const {
@@ -10338,11 +10338,16 @@ app.whenReady().then(async () => {
   // poll tick, and pushes proactively to the panel so its "upcoming
   // meeting" notice updates without a refresh.
   function pushUpcomingCalendarEvents(events) {
-    latestUpcomingCalendarEvents = events;
+    // callUrl: the meeting this event is FOR (#813), so the panel's banner can
+    // link a Zoom or Teams meeting as well as a Meet.
+    latestUpcomingCalendarEvents = (events || []).map((e) => {
+      const link = resolveEventCallLink(e);
+      return link ? { ...e, callUrl: link.url } : e;
+    });
     // A successful poll produced these events, so any prior poll error is over.
     latestCalendarPollError = null;
     if (panelView && !panelView.webContents.isDestroyed()) {
-      panelView.webContents.send('calendar-upcoming', { events, error: null });
+      panelView.webContents.send('calendar-upcoming', { events: latestUpcomingCalendarEvents, error: null });
     }
   }
 
@@ -10373,7 +10378,8 @@ app.whenReady().then(async () => {
   // manually inside exactly that gap — every earlier gate had already been
   // passed. The event still gets marked handled above: its start has arrived and
   // the bot IS in its room, which is the outcome auto-join was after.
-  function performScheduledCalendarJoin(event, meetUrl) {
+  function performScheduledCalendarJoin(event, link) {
+    const meetUrl = link.url;
     scheduledCalendarJoins.delete(eventDedupeKey(event));
     const joinedIds = evictStaleEventIds(store.get('joinedCalendarEventIds') || {}, Date.now());
     store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
@@ -10384,9 +10390,24 @@ app.whenReady().then(async () => {
         + 'Rejoining would drop the screen share and wipe the whiteboard.');
       return;
     }
-    console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}"`);
-    activateMeetProvider(); // no-op if already on a live Meet view
-    joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
+    console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}" (${link.provider})`);
+    if (link.provider === 'meet') {
+      activateMeetProvider(); // no-op if already on a live Meet view
+      joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
+      return;
+    }
+    // Zoom / Teams (#813): the same path as joining a pasted link from the panel
+    // (join-detected-zoom / -teams): switch provider, which joins and registers
+    // the zoom-/teams- room, then start the agent on that room. The calendar
+    // context is set AFTER the provider registers its room, because setting the
+    // room resets it; joinMeetUrl does the same for Meet.
+    const room = link.provider === 'zoom' ? activateZoomProvider(meetUrl) : activateTeamsProvider(meetUrl);
+    if (!room) {
+      console.warn(`[calendar] Could not start the ${link.provider} join for "${event.summary || event.id}" (${meetUrl})`);
+      return;
+    }
+    localServer.setCalendarEventContext(event);
+    launchClaudeTerminal(room, { calendarEvent: event });
   }
 
   // Schedules (rather than immediately performing) the join for a just-
@@ -10395,12 +10416,12 @@ app.whenReady().then(async () => {
   // Idempotent: a later poll tick re-seeing the same still-pending event is
   // a no-op (scheduledCalendarJoins already has it), so this is safe to call
   // every time selectEventToJoin picks the same event across polls.
-  function scheduleCalendarJoin(event, meetUrl) {
+  function scheduleCalendarJoin(event, link) {
     const key = eventDedupeKey(event);
     if (scheduledCalendarJoins.has(key)) return;
     const delayMs = Math.max(0, msUntilStart(event, Date.now()) || 0);
     console.log(`[calendar] Scheduling auto-join for "${event.summary || event.id}" in ${Math.round(delayMs / 1000)}s`);
-    const timer = setTimeout(() => performScheduledCalendarJoin(event, meetUrl), delayMs);
+    const timer = setTimeout(() => performScheduledCalendarJoin(event, link), delayMs);
     scheduledCalendarJoins.set(key, timer);
   }
 
@@ -10550,10 +10571,13 @@ app.whenReady().then(async () => {
         + 'only scheduling one, the rest will be reconsidered next poll.');
     }
 
-    const meetUrl = resolveCalendarMeetUrl(event.hangoutLink);
-    if (!meetUrl) {
-      console.warn(`[calendar] Matched event "${event.summary || event.id}" but its hangoutLink `
-        + `("${event.hangoutLink}") isn't a recognizable Meet URL — skipping, still marking as handled.`);
+    // #813: Meet's hangoutLink, or a Meet / Zoom / Teams link found in the
+    // event's conference data, location or description.
+    const link = resolveEventCallLink(event);
+    const meetUrl = link && link.url;
+    if (!link) {
+      console.warn(`[calendar] Matched event "${event.summary || event.id}" but found no Meet, Zoom or Teams `
+        + 'link in it — skipping, still marking as handled.');
       store.set('joinedCalendarEventIds', { ...joinedIds, [eventDedupeKey(event)]: Date.now() });
       return;
     }
@@ -10572,7 +10596,7 @@ app.whenReady().then(async () => {
       return;
     }
 
-    scheduleCalendarJoin(event, meetUrl);
+    scheduleCalendarJoin(event, link);
   }
 
   function startCalendarPolling() {

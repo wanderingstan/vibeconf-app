@@ -43,6 +43,7 @@ const MEET_CODE_RE = /meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/;
 // bot out of a call it was already in, which dropped the live screen share and
 // wiped the whiteboard. Both entry points now funnel through one rule.
 // rejoin-guard.js is pure too, so this file stays plain-Node testable.
+const { findCallLink } = require('./renderer/call-link.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
 
 // Case-insensitive substring/equality helpers. Kept tiny and local rather
@@ -268,6 +269,45 @@ function resolveMeetUrl(hangoutLink) {
   return null;
 }
 
+// Calendar descriptions arrive in two shapes: Google Calendar's HTML (links in
+// <a href>) and Outlook-sent prose, where a link is written as
+// "Join the meeting<https://teams.microsoft.com/...>". Pull hrefs out as text,
+// then drop ONLY real HTML tags: a blanket <...> strip would delete exactly the
+// Outlook-style <https://...> links this is looking for.
+const HTML_TAG_RE = /<\/?(?:a|abbr|b|blockquote|body|br|div|em|font|h[1-6]|head|hr|html|i|img|li|ol|p|pre|small|span|strong|sub|sup|table|tbody|td|th|thead|tr|u|ul)\b[^>]*>/gi;
+function eventLinkText(html) {
+  return String(html || '')
+    .replace(/<a\b[^>]*?\bhref\s*=\s*(["'])(.*?)\1[^>]*>/gi, ' $2 ')
+    .replace(HTML_TAG_RE, ' ')
+    .replace(/&nbsp;/gi, ' ').replace(/&quot;/gi, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&amp;/gi, '&');
+}
+
+// Providers calendar auto-join can put the bot into. Slack huddles have no
+// calendar shape, so a stray Slack link in a description is not a meeting.
+const CALENDAR_JOINABLE = new Set(['meet', 'zoom', 'teams']);
+
+// The call an event is FOR (#813): { provider: 'meet'|'zoom'|'teams', url },
+// or null. Meet's hangoutLink wins; then the event's video entry points (where
+// Zoom and Teams add-ons put theirs, when the backend passes conferenceData
+// through), then location, then the description. The text is scanned by the
+// same findCallLink the panel's paste box uses, so it skips "Meeting options" /
+// "Learn more" links and unwraps Outlook Safe Links the same way.
+function resolveEventCallLink(event) {
+  if (!event) return null;
+  const meet = resolveMeetUrl(event.hangoutLink);
+  if (meet) return { provider: 'meet', url: meet };
+  const cd = event.conferenceData || {};
+  const entryUris = (Array.isArray(cd.entryPoints) ? cd.entryPoints : [])
+    .filter((p) => p && p.entryPointType === 'video')
+    .map((p) => p.uri);
+  for (const text of [...entryUris, event.location, eventLinkText(event.description)]) {
+    const hit = text ? findCallLink(text) : null;
+    if (hit && CALENDAR_JOINABLE.has(hit.provider)) return hit;
+  }
+  return null;
+}
+
 // The Meet code ("abc-defg-hij") inside a Meet URL, or null. Same capture
 // joinMeetUrl uses to derive the room id it hands to localServer.setRoom, so a
 // code from here compares directly against the app's current roomId.
@@ -312,6 +352,8 @@ module.exports = {
   selectEventToJoin,
   selectUpcomingMatches,
   resolveMeetUrl,
+  resolveEventCallLink,
+  eventLinkText,
   meetCodeFromUrl,
   shouldSkipCalendarJoin,
 };

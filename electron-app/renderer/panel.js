@@ -2103,14 +2103,12 @@ refreshClaudeAuthBanner();
 const calendarUpcomingBanner = document.getElementById('calendarUpcomingBanner');
 const calendarUpcomingText = document.getElementById('calendarUpcomingText');
 const calendarReconnectBtn = document.getElementById('calendarReconnectBtn');
-// The video-call link of a Google Calendar event: Meet's hangoutLink, else the
-// first video entry point in conferenceData (where Zoom and other add-ons put
-// theirs). https only; null when the event has no usable link.
+// The meeting a calendar event is for. main.js resolves it (callUrl: Meet's
+// hangoutLink, else a Meet / Zoom / Teams link in the event's conference data,
+// location or description; #813); hangoutLink is the fallback for an older
+// main. https only; null when the event has no usable link.
 function calendarMeetingUrl(event) {
-  const entry = event && event.conferenceData && Array.isArray(event.conferenceData.entryPoints)
-    ? event.conferenceData.entryPoints.find((p) => p && p.entryPointType === 'video')
-    : null;
-  const url = String((event && event.hangoutLink) || (entry && entry.uri) || '').trim();
+  const url = String((event && (event.callUrl || event.hangoutLink)) || '').trim();
   return /^https:\/\//i.test(url) ? url : null;
 }
 function paintCalendarUpcoming(events, error) {

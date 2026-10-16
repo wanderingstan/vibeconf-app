@@ -38,6 +38,7 @@ test('installDomProbe: logs a ::before opacity flip on a descendant (the #847 ca
   const outline = { tagName: 'DIV', attributes: [{ name: 'data-tid', value: 'voice-level-stream-outline' }], parentElement: null, getAttribute: (a) => (a === 'data-tid' ? 'voice-level-stream-outline' : null) };
   const tile = { tagName: 'DIV', attributes: [{ name: 'data-tid', value: 'Stan James' }], parentElement: null, getAttribute: (a) => (a === 'data-tid' ? 'Stan James' : null), querySelectorAll: () => [outline] };
   outline.parentElement = tile;
+  tile.children = [outline];
   const computed = (el, pseudo) => {
     const base = { content: pseudo ? '""' : 'normal', opacity: el === outline && pseudo === '::before' ? state.ring : '1', length: 0 };
     return new Proxy(base, { get: (t, k) => (k in t ? t[k] : '') });
@@ -56,7 +57,7 @@ test('installDomProbe: logs a ::before opacity flip on a descendant (the #847 ca
   tickFn();               // the ring lights up
   const changes = lines.filter((l) => l.includes('CHANGE'));
   assert.equal(changes.length, 1, lines.join('\n'));
-  assert.match(changes[0], /^\[teams\] \[dom-probe\] CHANGE Stan James \| div\[voice-level-stream-outline\]::before \{"opacity":\["0","1"\]\}$/);
+  assert.match(changes[0], /^\[teams\] \[dom-probe\] CHANGE Stan James \| div:0\[voice-level-stream-outline\]::before \{"opacity":\["0","1"\]\}$/);
 });
 
 test('installDomProbe is a no-op when not switched on', () => {
@@ -77,4 +78,58 @@ test('every provider page installs it, tagged with a prefix its console forwarde
   const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
   assert.match(main, /KNOWN_VALUE_FLAGS = new Set\([^)]*'dom-probe'/);
   assert.match(main, /process\.env\.VIBECONF_DOM_PROBE = cliArgs\['dom-probe'\]/);
+});
+
+test('sibling elements get distinct labels, so the probe never diffs one against the other (Zoom rows)', () => {
+  // A row with two sibling svgs (video, mic). Nothing changes between samples,
+  // so a correct probe logs NO changes; the old tag-only labels logged one
+  // every sample, as the two svgs overwrote each other's fingerprint.
+  const mk = (cls) => ({ tagName: 'svg', attributes: [{ name: 'class', value: cls }], getAttribute: () => null });
+  const video = mk('lazy-icon-icons/participants-list/video-on');
+  const mic = mk('lazy-icon-icons/participants-list/audio-unmuted-1');
+  const row = { tagName: 'DIV', attributes: [], parentElement: null, children: [video, mic], getAttribute: (a) => (a === 'aria-label' ? 'Stan (Host)' : null), querySelectorAll: () => [video, mic] };
+  video.parentElement = row; mic.parentElement = row;
+  const lines = []; let tickFn = null;
+  const win = {
+    console: { log: (...a) => lines.push(a.join(' ')) },
+    getComputedStyle: (el, pseudo) => new Proxy({ content: pseudo ? 'none' : 'normal', length: 0 }, { get: (t, k) => (k in t ? t[k] : '') }),
+    document: { querySelectorAll: () => [row] },
+    setInterval: (fn) => { tickFn = fn; return 1; },
+  };
+  installDomProbe({ tag: '[zoom]', defaultSelector: '.participants-li', env: { VIBECONF_DOM_PROBE: '1' }, win });
+  tickFn(); tickFn(); tickFn();
+  assert.equal(lines.filter((l) => l.includes('CHANGE')).length, 0, lines.join('\n'));
+  assert.ok(lines.some((l) => l.includes('Stan (Host) | svg:0 ')) && lines.some((l) => l.includes('Stan (Host) | svg:1 ')));
+});
+
+test('long attribute values (an SVG path) are checksummed, so a change past the first chars still shows', () => {
+  const { attrValue } = require('../electron-app/dom-probe.js');
+  const base = 'M9.667 8V3.333a1.667 1.667 0 0 0-3.334 0V8a1.667 1.667 0 0 0 3.334 0'.repeat(3);
+  assert.equal(attrValue('short'), 'short');
+  assert.notEqual(attrValue(base + 'a'), attrValue(base + 'b'));
+  assert.match(attrValue(base), /…\[\d+ chars #[0-9a-f]+\]$/);
+});
+
+test('elements inserted and removed log APPEAR / GONE (Zoom inserts a span in the row while someone talks)', () => {
+  const span = { tagName: 'SPAN', attributes: [{ name: 'class', value: 'speaking' }], getAttribute: () => null };
+  const svg = { tagName: 'svg', attributes: [], getAttribute: () => null };
+  const row = { tagName: 'DIV', attributes: [], parentElement: null, children: [svg], getAttribute: (a) => (a === 'aria-label' ? 'Stan (Host)' : null) };
+  svg.parentElement = row; span.parentElement = row;
+  let talking = false;
+  row.querySelectorAll = () => (talking ? [svg, span] : [svg]);
+  const setKids = () => { row.children = talking ? [svg, span] : [svg]; };
+  const lines = []; let tickFn = null;
+  const win = {
+    console: { log: (...a) => lines.push(a.join(' ')) },
+    getComputedStyle: (el, pseudo) => new Proxy({ content: pseudo ? 'none' : 'normal', length: 0 }, { get: (t, k) => (k in t ? t[k] : '') }),
+    document: { querySelectorAll: () => [row] },
+    setInterval: (fn) => { tickFn = fn; return 1; },
+  };
+  installDomProbe({ tag: '[zoom]', defaultSelector: '.participants-li', env: { VIBECONF_DOM_PROBE: '1' }, win });
+  tickFn();                                   // init: row + svg
+  talking = true; setKids(); tickFn();        // span inserted
+  talking = false; setKids(); tickFn();       // span removed
+  talking = true; setKids(); tickFn();        // and back
+  const events = lines.filter((l) => / (APPEAR|GONE) /.test(l)).map((l) => l.split(' ')[2] + ' ' + l.split(' | ')[1].split(' ')[0]);
+  assert.deepEqual(events, ['APPEAR span:1', 'GONE span:1', 'APPEAR span:1']);
 });

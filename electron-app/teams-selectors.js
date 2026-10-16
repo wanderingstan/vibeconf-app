@@ -124,14 +124,22 @@ const TEAMS = {
 
   // -------------------------------------------------------------------------
   // Participants / stage, verified (2 people). Video tiles are keyed by display
-  // name in data-tid; voice-level-stream-outline looks like a per-person
-  // speaking indicator (TBD verify it tracks speech).
+  // name in data-tid. The speaking ring is verified (#847, below).
   // -------------------------------------------------------------------------
   stage: {
     tileByNamePrefix: 'video-item-container-', // data-tid="video-item-container-<Name>"
-    // On EVERY tile all the time (live, 2026-10-15) — its presence is not a
-    // speaking signal. What changes on it while someone talks is TBD.
+    // The speaking ring (#847, verified live 2026-10-16 with a probe at 10 Hz).
+    // The div is on EVERY remote tile all the time, so its presence means
+    // nothing (2026-10-15: reading presence made the bot hear everyone talking
+    // forever). The ring is DRAWN by its ::before / ::after, whose computed
+    // opacity is 1 while that person is talking and 0 otherwise. Its markup and
+    // its own computed styles don't change, which is why snapshots missed it;
+    // its class does toggle `vdi-frame-occlusion`, but out of step with speech.
+    // Teams updates the ring about once a second: it rises ~1–3s BEFORE the
+    // caption for the same words appears, and falls ~1–3s after speech ends.
+    // The bot's own tile has no ring.
     speakingOutline: '[data-tid="voice-level-stream-outline"]',
+    speakingRingPseudo: '::before',
     // Someone sharing (verified 2026-10-15, Stan sharing a terminal): a stream
     // element whose data-tid IS the presenter's display name, inside their
     // video-item-container. aria-label "Shared content view".

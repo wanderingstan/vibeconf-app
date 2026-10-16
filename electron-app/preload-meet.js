@@ -6,6 +6,9 @@ const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+// Research (dom-probe.js): --dom-probe=1 watches every participant tile. Off by
+// default. Tagged [bots-in-calls] so the Meet view's console forwarder keeps it.
+require('./dom-probe').installDomProbe({ tag: '[bots-in-calls]', defaultSelector: '[data-participant-id]' });
 
 // The user's hour-cycle preference, for page-inject's canvas clock. It runs in
 // the page's world with no node access, and macOS keeps the 24-hour choice

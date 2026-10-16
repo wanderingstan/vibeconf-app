@@ -908,6 +908,46 @@ const PREFERENCES = {
       'human, a false negative there only costs latency. Set 0 to restore the ' +
       'old immediate-clear behaviour.',
   },
+  ringOnlyYieldMs: {
+    type: 'number',
+    default: 2500,
+    min: 0,
+    max: 30_000,
+    description:
+      'Only when the audio analyser has heard nothing this call (Teams today): how ' +
+      'long a participant\'s speaking ring must stay lit, with no caption from them, ' +
+      'before the bot stops talking for it (#847). A ring alone lights for coughs, ' +
+      'background noise and the bot\'s own voice echoed through a listener\'s laptop ' +
+      'speakers, so a short one is ridden out. A caption from that person yields at ' +
+      'once; this is the fallback for overlapping talk, when captions can drop out. ' +
+      '0 yields on the ring alone, as before. No effect when the analyser is working ' +
+      '(Meet).',
+  },
+  ringCaptionWindowMs: {
+    type: 'number',
+    default: 2000,
+    min: 0,
+    max: 10_000,
+    description:
+      'Only when the audio analyser has heard nothing this call (Teams today): how ' +
+      'recent a caption from a ringing participant must be to count as proof they are ' +
+      'really talking over the bot (#847). A caption since the barge-in monitor armed ' +
+      'always counts; this widens the window to cover captions that landed just ' +
+      'before it. No effect when the analyser is working (Meet).',
+  },
+  ringStaleMs: {
+    type: 'number',
+    default: 6000,
+    min: 0,
+    max: 120_000,
+    description:
+      'Only when the audio analyser has heard nothing this call (Teams today): a ' +
+      'speaking ring lit this long with no caption from that person in the same span ' +
+      'stops counting as speech for the floor, so the bot can take its turn (#847). ' +
+      'Live, a Teams ring stayed lit 31s through total silence and the bot held its ' +
+      'reply the whole time. A new caption from them makes the ring count again. 0 ' +
+      'never discounts a ring. No effect when the analyser is working (Meet).',
+  },
   bargeInGraceMinMs: {
     type: 'number',
     default: 900,

@@ -16,10 +16,10 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { resolveNewBotTarget, parseCallTarget, roomIdToJoinUrl } = require('../electron-app/new-bot-target.js');
+const { resolveNewBotTarget, parseCallTarget, roomIdToJoinUrl, instanceJoinUrl } = require('../electron-app/new-bot-target.js');
 const { buildAgentArgs, buildInteractiveAgentArgs, joinSlashCommand } = require('../electron-app/agent-spawn.js');
 
-const inCall = (profile, roomId, callStatus = 'in-call') => ({ profile, port: 7865, callStatus, roomId });
+const inCall = (profile, roomId, callStatus = 'in-call', joinUrl = null) => ({ profile, port: 7865, callStatus, roomId, joinUrl });
 const idle = (profile) => ({ profile, port: 7866, callStatus: 'idle', roomId: null });
 
 // --- the order ---------------------------------------------------------------
@@ -129,10 +129,74 @@ test('a Slack huddle in progress is rejoinable from its room id', () => {
   assert.equal(r.url, 'https://app.slack.com/client/T0ABC/C0DEF');
 });
 
-test('a Zoom call in progress cannot be rejoined from its room id → error asking for the link', () => {
-  const r = resolveNewBotTarget({ instances: [inCall('d', 'zoom-12345678901')] });
+// Stan, 2026-10-16 (call teams-9361264884308-20261016T151416Z, ~16 min in):
+// /call-new-bot found the Teams call and then asked for the invite link. The
+// running bot LOADED that link; it should hand it over.
+const TEAMS_LINK = 'https://teams.live.com/meet/9361264884308?p=AbCdEf123';
+const ZOOM_LINK = 'https://us02web.zoom.us/j/12345678901?pwd=xyz';
+
+test('a Teams call in progress is joined with the full link the running bot loaded', () => {
+  const r = resolveNewBotTarget({ instances: [inCall('default', 'teams-9361264884308', 'in-call', TEAMS_LINK)] });
+  assert.equal(r.action, 'join');
+  assert.equal(r.source, 'in-progress');
+  assert.equal(r.provider, 'teams');
+  assert.equal(r.url, TEAMS_LINK, 'passcode kept');
+  assert.equal(r.roomId, 'teams-9361264884308');
+  assert.deepEqual(r.profiles, ['default']);
+});
+
+test('a Zoom call in progress is joined with the full link, passcode and all', () => {
+  const r = resolveNewBotTarget({ instances: [inCall('default', 'zoom-12345678901', 'in-call', ZOOM_LINK)] });
+  assert.equal(r.action, 'join');
+  assert.equal(r.provider, 'zoom');
+  assert.equal(r.url, ZOOM_LINK);
+});
+
+test('two bots in one Teams call, only one knowing the link: still one call, joined', () => {
+  const r = resolveNewBotTarget({ instances: [
+    inCall('old-build', 'teams-9361264884308'),
+    inCall('default', 'teams-9361264884308', 'joining', TEAMS_LINK),
+  ] });
+  assert.equal(r.action, 'join');
+  assert.equal(r.url, TEAMS_LINK);
+  assert.deepEqual(r.profiles, ['old-build', 'default']);
+});
+
+test('several calls → each candidate carries its joinable url, Teams included', () => {
+  const r = resolveNewBotTarget({ instances: [
+    inCall('default', 'teams-9361264884308', 'in-call', TEAMS_LINK),
+    inCall('bot2', 'aaa-bbbb-ccc'),
+  ] });
+  assert.equal(r.action, 'ask');
+  assert.equal(r.candidates[0].url, TEAMS_LINK);
+  assert.equal(r.candidates[1].url, 'https://meet.google.com/aaa-bbbb-ccc');
+  // ...and passing a candidate's url back as the target joins it.
+  const again = resolveNewBotTarget({ explicit: r.candidates[0].url });
+  assert.equal(again.action, 'join');
+  assert.equal(again.url, TEAMS_LINK);
+});
+
+test('a Zoom or Teams call whose link is unknown (older build) → error asking for the link', () => {
+  for (const room of ['zoom-12345678901', 'teams-9361264884308']) {
+    const r = resolveNewBotTarget({ instances: [inCall('d', room)] });
+    assert.equal(r.action, 'error', room);
+    assert.match(r.error, /meeting link/);
+  }
+});
+
+test('a link that does not produce the reported room is never used', () => {
+  // A leftover link from an earlier call must not send a bot somewhere else.
+  assert.equal(instanceJoinUrl('teams-9361264884308', 'https://teams.live.com/meet/1111111111111?p=x'), null);
+  assert.equal(instanceJoinUrl('zoom-12345678901', 'https://zoom.us/j/99999999999?pwd=x'), null);
+  assert.equal(instanceJoinUrl('teams-9361264884308', ZOOM_LINK), null);
+  assert.equal(instanceJoinUrl('zoom-12345678901', 'https://meet.google.com/aaa-bbbb-ccc'), null);
+  const r = resolveNewBotTarget({ instances: [inCall('d', 'teams-9361264884308', 'in-call', 'https://teams.live.com/meet/1111111111111?p=x')] });
   assert.equal(r.action, 'error');
-  assert.match(r.error, /meeting link/);
+});
+
+test('Meet and Slack still come from the room id, whatever link is reported', () => {
+  assert.equal(instanceJoinUrl('aaa-bbbb-ccc', 'https://meet.google.com/aaa-bbbb-ccc?authuser=1'), 'https://meet.google.com/aaa-bbbb-ccc');
+  assert.equal(instanceJoinUrl('slack-t1-c2', null), 'https://app.slack.com/client/T1/C2');
 });
 
 // --- explicit targets ---------------------------------------------------------
@@ -224,6 +288,21 @@ test('the new instance joins at launch with its agent, via the shared join paths
   const helper = main.slice(main.indexOf('function joinSummonedCall'), main.indexOf('async function websiteRequest'));
   assert.match(helper, /joinMeetUrl\(t\.url, \{ summoned \}\)/);
   assert.match(helper, /launchClaudeTerminal\(room, \{ summoned \}\)/);
+});
+
+test('each running instance reports the link it loaded, and Zoom/Teams/Slack record it', () => {
+  const scan = main.slice(main.indexOf('async function scanCallInstances'), main.indexOf("ipcMain.handle('list-profiles'"));
+  assert.match(scan, /joinUrl: j\?\.currentMeetUrl/);
+  const reg = main.slice(main.indexOf('function registerProviderRoom'), main.indexOf('async function clearTeamsPlatformCookies'));
+  assert.match(reg, /localServer\.setCurrentUrl\(url\)/);
+  const slack = main.slice(main.indexOf('function setupSlackRoom'), main.indexOf('function activateSlackProvider'));
+  assert.match(slack, /localServer\.setCurrentUrl\(slackUrl\)/);
+});
+
+test('the skill no longer asks for a link the running bot already has', () => {
+  const skill = readFileSync(join(root, 'mcp-server/call-new-bot-skill.md'), 'utf8');
+  assert.match(skill, /candidate's \*\*`url`\*\* as\s+`target`/);
+  assert.doesNotMatch(skill, /cannot be rejoined from its room id alone; ask for the link/);
 });
 
 test('the browser scan used by /call-new-bot is the SAME script as the background Meet poll', () => {

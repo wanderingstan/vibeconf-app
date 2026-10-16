@@ -9322,7 +9322,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '69';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '70';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -11671,6 +11671,7 @@ function setupSlackRoom(slackUrl) {
     return;
   }
   localServer.setRoom(slackRoom);
+  localServer.setCurrentUrl(slackUrl); // as registerProviderRoom does for Zoom/Teams
   sync.updateConfig({ roomId: slackRoom, baseUrl: getWebsiteUrl() });
   console.log('[electron] Slack room code:', slackRoom);
   sync.ensureRoom().then((ok) => {
@@ -11740,6 +11741,11 @@ function registerProviderRoom(label, room, url) {
     return null;
   }
   localServer.setRoom(room);
+  // The FULL link, passcode included: the room id alone cannot rejoin a Zoom or
+  // Teams call, and /call-new-bot reads this (via /api/sync/no-room, 127.0.0.1
+  // only) to bring a second bot into the call this one is in. loadMeetURL does
+  // the same for Meet; clearRoom() resets it on leave.
+  localServer.setCurrentUrl(url);
   sync.updateConfig({ roomId: room, baseUrl: getWebsiteUrl() });
   console.log('[electron] ' + label + ' room code:', room);
   sync.ensureRoom().then((ok) => {
@@ -13779,8 +13785,10 @@ function setupIPC() {
     return running;
   }
 
-  // The same scan, but with what each instance is DOING: its call status and
-  // room. /call-new-bot reads this to find a call already in progress.
+  // The same scan, but with what each instance is DOING: its call status, room,
+  // and the link it loaded. /call-new-bot reads this to find a call already in
+  // progress; the link (joinUrl) is what lets it rejoin a Zoom or Teams call,
+  // whose room id drops the passcode. Local only, and never logged.
   async function scanCallInstances() {
     const running = await scanRunningInstances();
     const out = await Promise.all(Object.entries(running).map(async ([profile, port]) => {
@@ -13791,7 +13799,13 @@ function setupIPC() {
         clearTimeout(t);
         if (!r.ok) return null;
         const j = await r.json();
-        return { profile, port, callStatus: j?.status?.callStatus || null, roomId: j?.roomId || null };
+        return {
+          profile,
+          port,
+          callStatus: j?.status?.callStatus || null,
+          roomId: j?.roomId || null,
+          joinUrl: j?.currentMeetUrl || null,
+        };
       } catch { return null; }
     }));
     return out.filter(Boolean);

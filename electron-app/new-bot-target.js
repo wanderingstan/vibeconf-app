@@ -68,11 +68,10 @@ function parseCallTarget(raw) {
   return { ok: false, error: `"${s}" is not a call this can join. Pass a Meet code (abc-defg-hij), a Meet URL, a Slack huddle URL, or a Zoom or Teams meeting link.` };
 }
 
-// A running instance reports its ROOM ID, not the link it joined. Turn that back
-// into something a new instance can join. Meet codes and Slack huddles round-
-// trip (Slack team/channel ids are uppercase; the room id lowercased them).
-// Zoom loses its passcode and Teams its whole link, so those return null and the
-// caller has to ask for the link instead of joining something half-formed.
+// A running instance reports its ROOM ID. Meet codes and Slack huddles round-
+// trip from that alone (Slack team/channel ids are uppercase; the room id
+// lowercased them). Zoom loses its passcode and Teams its whole link, so those
+// return null here — see instanceJoinUrl for how they are joined anyway.
 function roomIdToJoinUrl(roomId) {
   const r = String(roomId || '').trim();
   if (!r || r === 'no-room') return null;
@@ -80,6 +79,35 @@ function roomIdToJoinUrl(roomId) {
   const slack = r.match(/^slack-([a-z0-9]+)-([a-z0-9]+)$/i);
   if (slack) return `https://app.slack.com/client/${slack[1].toUpperCase()}/${slack[2].toUpperCase()}`;
   return null;
+}
+
+// The room id a Zoom or Teams link registers as — the same derivation main.js
+// uses when it activates the provider (registerProviderRoom), so a link and the
+// room it produced compare equal. Null for anything else.
+function providerRoomIdForUrl(url) {
+  const { TEAMS } = require('./teams-selectors');
+  const { ZOOM } = require('./zoom-selectors');
+  const s = String(url || '');
+  if (TEAMS_URL.test(s)) return TEAMS.roomCodeFromUrl(s);
+  if (ZOOM_HOST.test(s)) return ZOOM.roomCodeFromUrl(s);
+  return null;
+}
+
+// What a new bot should load to join the call a running instance is in.
+// Meet and Slack: rebuilt from the room id. Zoom and Teams: the room id is not
+// enough (no passcode, no link), but the instance LOADED the full link and
+// reports it (its currentMeetUrl), so that is used — 2026-10-16, Stan in a
+// Teams call: "the app is the one that's in this call now, so it should know".
+// Only when that link produces the SAME room the instance reports: a link left
+// over from some earlier call must never send a bot into a different meeting.
+// Null when neither works; the caller then asks for the link.
+function instanceJoinUrl(roomId, joinUrl) {
+  const fromRoom = roomIdToJoinUrl(roomId);
+  if (fromRoom) return fromRoom;
+  if (!joinUrl || !roomId) return null;
+  const room = providerRoomIdForUrl(joinUrl);
+  if (!room || room.toLowerCase() !== String(roomId).trim().toLowerCase()) return null;
+  return parseCallTarget(joinUrl).ok ? String(joinUrl) : null;
 }
 
 // Group by call, keeping the order things were found in. Several bots in the
@@ -102,8 +130,12 @@ function distinctCalls(items) {
  *
  * @param {object} input
  * @param {string|null} input.explicit          what the user passed, if anything
- * @param {Array<{profile, port, callStatus, roomId}>} input.instances
- *        running Vibeconferencing instances (any profile, including the caller's)
+ * @param {Array<{profile, port, callStatus, roomId, joinUrl?}>} input.instances
+ *        running Vibeconferencing instances (any profile, including the caller's).
+ *        joinUrl is the link the instance loaded (its currentMeetUrl); it is
+ *        what makes a Zoom or Teams call rejoinable. It can carry a passcode:
+ *        it travels only over 127.0.0.1 (instance → this app → the local
+ *        caller, and as --join-url to the new instance) and is not logged.
  * @param {string[]} input.browserMeetUrls       Meet URLs open in the user's browser
  *
  * @returns one of
@@ -124,13 +156,13 @@ function resolveNewBotTarget({ explicit = null, instances = [], browserMeetUrls 
   // 2. A call some running instance is in.
   const live = distinctCalls((instances || [])
     .filter((i) => i && isActiveCallStatus(i.callStatus) && i.roomId && i.roomId !== 'no-room')
-    .map((i) => ({ roomId: String(i.roomId), url: roomIdToJoinUrl(i.roomId), profile: i.profile || null })));
+    .map((i) => ({ roomId: String(i.roomId), url: instanceJoinUrl(i.roomId, i.joinUrl), profile: i.profile || null })));
   if (live.length === 1) {
     const only = live[0];
     if (!only.url) {
       return {
         action: 'error',
-        error: `${only.profiles.join(', ') || 'A bot'} is in ${only.roomId}, but a Zoom or Teams call can't be rejoined from its room id alone. Pass the meeting link.`,
+        error: `${only.profiles.join(', ') || 'A bot'} is in ${only.roomId}, but its meeting link isn't known (an older build, or a link that doesn't match the room), and a Zoom or Teams call can't be rejoined from its room id alone. Pass the meeting link.`,
       };
     }
     const t = parseCallTarget(only.url);
@@ -156,6 +188,7 @@ module.exports = {
   resolveNewBotTarget,
   parseCallTarget,
   roomIdToJoinUrl,
+  instanceJoinUrl,
   isActiveCallStatus,
   ACTIVE_CALL_STATUSES,
 };

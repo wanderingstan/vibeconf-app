@@ -1,6 +1,6 @@
 // Tests for electron-app/system-voices.js — the parsing and PowerShell-quoting
-// half of the built-in-voice path (#18). Pure, so both platforms' formats can be
-// exercised from one machine.
+// half of the built-in-voice path (#18, #575). Pure, so every platform's format
+// can be exercised from one machine.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -9,12 +9,15 @@ const require = createRequire(import.meta.url);
 const {
   parseSayVoices,
   parseSapiVoices,
+  parseEspeakVoices,
   psQuote,
   sapiRenderScript,
   encodePowerShellCommand,
   powerShellArgs,
   systemVoiceLabel,
   macosTier,
+  SYSTEM_VOICE_PLATFORMS,
+  ESPEAK_LIST_ARGS,
 } = require('../electron-app/system-voices.js');
 
 // --- macOS `say -v '?'` ----------------------------------------------------
@@ -92,6 +95,77 @@ test('parseSapiVoices sorts non-English after English', () => {
   assert.deepEqual(out.map((v) => v.name), ['Microsoft Zira Desktop', 'Microsoft Hedda Desktop']);
 });
 
+// --- Linux `espeak-ng --voices` (#575) --------------------------------------
+
+// The real header + a representative slice of espeak-ng 1.51's output, spacing
+// and all: a plain code, a hyphenated one, a name with parens and underscores,
+// a numeric region, a three-part code, and a trailing "Other Languages" column.
+const ESPEAK_VOICES_OUTPUT = [
+  'Pty Language       Age/Gender VoiceName          File                 Other Languages',
+  ' 5  af             --/M      Afrikaans            gmw/af',
+  ' 5  en-gb          --/M      English_(Great_Britain) gmw/en           (en 2)',
+  ' 5  en-us          --/M      English_(America)    gmw/en-US            (en 2)',
+  ' 5  en-029         --/M      English_(Caribbean)  gmw/en-029           (en 10)',
+  ' 2  en-gb-scotland --/M      English_(Scotland)   gmw/en-GB-scotland   (en 4)',
+  ' 5  fr             --/F      French_(France)      roa/fr               (fr-fr 5)',
+  '',
+].join('\n');
+
+test('parseEspeakVoices reads the columns and normalizes the locale', () => {
+  const out = parseEspeakVoices(ESPEAK_VOICES_OUTPUT);
+  const byName = Object.fromEntries(out.map((v) => [v.name, v]));
+  assert.deepEqual(byName['English_(America)'], {
+    name: 'English_(America)', locale: 'en_US', sample: 'Male', tier: 1,
+  });
+  // A 2-letter region is uppercased to the macOS en_US form; numeric and word
+  // tails are left alone.
+  assert.equal(byName['English_(Caribbean)'].locale, 'en_029');
+  assert.equal(byName['English_(Scotland)'].locale, 'en_GB_scotland');
+  assert.equal(byName['Afrikaans'].locale, 'af');
+  assert.equal(byName['French_(France)'].sample, 'Female');
+});
+
+test('parseEspeakVoices keeps the VoiceName verbatim — it is what -v matches', () => {
+  const out = parseEspeakVoices(ESPEAK_VOICES_OUTPUT);
+  // Underscores and parens intact: espeak's SelectVoiceByName compares against
+  // exactly this string, so a name from the picker can go straight back as -v.
+  assert.ok(out.some((v) => v.name === 'English_(Great_Britain)'));
+  assert.ok(!out.some((v) => v.name.includes(' ')));
+});
+
+test('parseEspeakVoices drops the header and any other non-voice line', () => {
+  const out = parseEspeakVoices(ESPEAK_VOICES_OUTPUT);
+  assert.ok(!out.some((v) => v.name === 'VoiceName'));
+  assert.equal(out.length, 6);
+  assert.deepEqual(parseEspeakVoices(''), []);
+  assert.deepEqual(parseEspeakVoices(undefined), []);
+  assert.deepEqual(parseEspeakVoices('total nonsense\n\n'), []);
+});
+
+test('parseEspeakVoices puts every espeak voice in the recommended tier', () => {
+  // Same call as SAPI's: espeak's languages are all a Linux box has, so
+  // demoting them would leave the picker's main built-in group empty.
+  const out = parseEspeakVoices(ESPEAK_VOICES_OUTPUT);
+  assert.ok(out.every((v) => v.tier === 1));
+});
+
+test('parseEspeakVoices sorts English first, then by name', () => {
+  const out = parseEspeakVoices(ESPEAK_VOICES_OUTPUT).map((v) => v.name);
+  assert.deepEqual(out.slice(0, 4), [
+    'English_(America)', 'English_(Caribbean)', 'English_(Great_Britain)', 'English_(Scotland)',
+  ]);
+  assert.deepEqual(out.slice(4), ['Afrikaans', 'French_(France)']);
+});
+
+test('parseEspeakVoices tolerates a missing gender', () => {
+  const out = parseEspeakVoices(' 5  af             --/-      Afrikaans            gmw/af\n');
+  assert.deepEqual(out, [{ name: 'Afrikaans', locale: 'af', sample: '', tier: 1 }]);
+});
+
+test('ESPEAK_LIST_ARGS is the only enumeration espeak offers', () => {
+  assert.deepEqual(ESPEAK_LIST_ARGS, ['--voices']);
+});
+
 // --- PowerShell quoting ----------------------------------------------------
 
 test("psQuote doubles the single quote — the only escape PowerShell honors there", () => {
@@ -156,5 +230,15 @@ test('powerShellArgs runs non-interactively with no profile', () => {
 test('systemVoiceLabel names the platform for user-facing copy', () => {
   assert.equal(systemVoiceLabel('darwin'), 'macOS');
   assert.equal(systemVoiceLabel('win32'), 'Windows');
-  assert.equal(systemVoiceLabel('linux'), 'system');
+  assert.equal(systemVoiceLabel('linux'), 'Linux');
+  assert.equal(systemVoiceLabel('freebsd'), 'system');
+});
+
+test('every enumerable platform has a label and vice versa (#575)', () => {
+  // The list and the label drifted apart before: Linux could speak, so it
+  // reached the copy, but was never enumerable, so the picker stayed empty.
+  for (const platform of SYSTEM_VOICE_PLATFORMS) {
+    assert.notEqual(systemVoiceLabel(platform), 'system', `${platform} needs a label`);
+  }
+  assert.deepEqual(SYSTEM_VOICE_PLATFORMS, ['darwin', 'win32', 'linux']);
 });

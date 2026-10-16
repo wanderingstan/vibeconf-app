@@ -293,9 +293,14 @@ test('Linux never falls through to the AppleScript launcher', () => {
   // The #317 bug: on Linux every path below the platform branch is osascript,
   // which fails ENOENT, gets swallowed, and presents as a bot that joined with
   // no agent. The branch must return on every path.
-  const branch = main.slice(main.indexOf("if (process.platform === 'linux') {"),
+  // Anchored to THIS function's Linux branch, not merely the first one in the
+  // file — main.js has other platform branches above it (the built-in-voice
+  // enumeration, #575), and a bare indexOf would silently slice from one of
+  // those and assert about the wrong code.
+  const launcher = main.indexOf('#329: Linux gets a real terminal');
+  const branch = main.slice(main.indexOf("if (process.platform === 'linux') {", launcher),
     main.indexOf('// Open a Terminal window running the command'));
-  assert.ok(branch.length > 0, 'the Linux branch must sit before the AppleScript path');
+  assert.ok(launcher > 0 && branch.length > 0, 'the Linux branch must sit before the AppleScript path');
   assert.match(branch, /launchClaudeLinuxTerminal/);
   assert.match(branch, /launchClaudeHeadless/, 'terminal → headless → loud error, per #329');
   assert.match(branch, /showMessageBox|console\.error/, 'the final failure must be loud');

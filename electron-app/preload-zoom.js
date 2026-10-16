@@ -47,6 +47,9 @@ require('./slack-ua').installClientHintsShim();
 // Recon (#814): log where Zoom's call audio lives. Off unless
 // VIBECONF_AUDIO_PROBE=1. Installed before page-inject and Zoom's scripts.
 if (process.env.VIBECONF_AUDIO_PROBE === '1') require('./audio-probe').installAudioProbe('[zoom]');
+// Research (dom-probe.js): --dom-probe=1 watches participant rows and video
+// tiles, where Zoom's speaking indicator is still unverified. Off by default.
+require('./dom-probe').installDomProbe({ tag: '[zoom]', defaultSelector: '.participants-li, .video-avatar__avatar, .speaker-active-container__wrap' });
 
 // The RTCPeerConnection audio-capture hook is Meet-shaped and unused here (we
 // don't read call audio); keep the getUserMedia virtual mic + play-tts path.

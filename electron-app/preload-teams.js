@@ -38,6 +38,9 @@ require('./slack-ua').installClientHintsShim();
 // Recon (#814): log where Teams' call audio lives. Off unless
 // VIBECONF_AUDIO_PROBE=1. Installed before page-inject and Teams' scripts.
 if (process.env.VIBECONF_AUDIO_PROBE === '1') require('./audio-probe').installAudioProbe('[teams]');
+// Research (dom-probe.js): --dom-probe=1 watches every video tile. Off by default.
+// Installed here, before the `delete window.process` below, which it needs.
+require('./dom-probe').installDomProbe({ tag: '[teams]', defaultSelector: '[data-tid^="video-item-container-"]' });
 
 // The Meet-shaped RTCPeerConnection audio hook is unused here; keep the
 // getUserMedia virtual mic + play-tts path (as Slack and Zoom do).
@@ -266,9 +269,57 @@ function tick() {
   } catch { /* DOM not ready yet */ }
 }
 
+// Who is speaking (#847), from each tile's speaking ring. Polled faster than the
+// 1s heartbeat: Teams moves the ring about once a second, and a 1s poll on top
+// of that would add up to another second before the bot knows to hold its turn.
+//
+// Two outputs, the same pair Meet's speaker tracker produces:
+//   - participantsUpdated with speaking flags: LocalServer.setParticipants turns
+//     these into the floor (anyoneSpeaking / activeSpeakerCount / peakSpeakers)
+//     that the urgency and barge-in gates read. Without it Teams read an empty
+//     floor and the bot talked over people (#847: peakSpeakers=0, 18 of 18).
+//   - speakingChanged per edge: room presence (main.js updateSpeakingState).
+// Shares lastRoster with tick(), so a roster sent here isn't re-sent there.
+const lastSpeaking = new Map(); // name -> boolean (non-self only)
+function pollSpeaking() {
+  if (!reportedInCall) return;
+  let parts;
+  try { parts = provider.getParticipants(); } catch { return; }
+  const seen = new Set();
+  let changed = false;
+  for (const p of parts) {
+    if (p.isSelf) continue;
+    seen.add(p.name);
+    if (lastSpeaking.get(p.name) !== p.speaking) {
+      // A first sighting that isn't speaking is not an edge worth announcing.
+      if (lastSpeaking.has(p.name) || p.speaking) {
+        emit(CALL_EVENTS.speakingChanged, { name: p.name, speaking: p.speaking });
+        console.log('[teams] speaking:', p.name, p.speaking ? 'started' : 'stopped');
+      }
+      lastSpeaking.set(p.name, p.speaking);
+      changed = true;
+    }
+  }
+  // Someone left (or their tile scrolled off) while lit: close their edge, or
+  // presence would show them talking forever.
+  for (const [name, was] of lastSpeaking) {
+    if (seen.has(name)) continue;
+    if (was) emit(CALL_EVENTS.speakingChanged, { name, speaking: false });
+    lastSpeaking.delete(name);
+    changed = true;
+  }
+  if (!changed) return;
+  const pk = JSON.stringify(parts);
+  if (parts.length && pk !== lastRoster) {
+    lastRoster = pk;
+    emit(CALL_EVENTS.participantsUpdated, parts);
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
-  console.log('[teams] DOMContentLoaded — starting heartbeat (1s); window.teamsProvider ready');
+  console.log('[teams] DOMContentLoaded — starting heartbeat (1s) and speaking poll (250ms); window.teamsProvider ready');
   setInterval(tick, 1000);
+  setInterval(pollSpeaking, 250);
 });
 
 // Hide Node's `process` from Teams. With contextIsolation:false it is a page

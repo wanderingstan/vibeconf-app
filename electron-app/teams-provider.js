@@ -9,7 +9,7 @@
 // Verified from recon: launcher, pre-join, lobby, toolbar ids, captions (a
 // persistent list that names each speaker), chat compose/send, leave.
 // Unverified until the Electron bot runs it: mic/camera on/off state labels,
-// screen share, the speaking outline.
+// screen share. The speaking ring is verified (#847, getParticipants).
 //
 // Pure-ish: requires only the contract + selectors. Browser globals resolve at
 // run time in the page (contextIsolation:false).
@@ -274,15 +274,25 @@ class TeamsProvider extends CallProvider {
   }
 
   // --- Roster (from stage tiles; the People pane is TBD) -------------------
+  // Is this tile's speaking ring lit? (#847) Read the ring's ::before opacity,
+  // NOT whether the outline element exists — it exists on every remote tile all
+  // the time, and reading its presence made the bot hear everyone talking
+  // forever and never speak (live, 2026-10-15). See TEAMS.stage.speakingOutline.
+  tileIsSpeaking(tile) {
+    const outline = tile && tile.querySelector(TEAMS.stage.speakingOutline);
+    if (!outline) return false;
+    const opacity = parseFloat(window.getComputedStyle(outline, TEAMS.stage.speakingRingPseudo).opacity);
+    return Number.isFinite(opacity) && opacity > 0.5;
+  }
+
   getParticipants() {
     const out = [];
     for (const el of document.querySelectorAll('[data-tid^="' + TEAMS.stage.tileByNamePrefix + '"]')) {
       const name = el.getAttribute('data-tid').slice(TEAMS.stage.tileByNamePrefix.length);
-      // speaking: false, NOT "the voice-level outline exists": that element is on
-      // every tile all the time, so it read as everyone always talking and the
-      // bot yielded forever without saying a word (live, 2026-10-15). The real
-      // per-tile signal is TBD; captions carry the turn-taking until then.
-      if (name) out.push({ name, speaking: false, isSelf: name === this.selfName });
+      if (!name) continue;
+      const isSelf = name === this.selfName;
+      // The bot's own tile has no ring, and we know when we speak anyway.
+      out.push({ name, speaking: !isSelf && this.tileIsSpeaking(el), isSelf });
     }
     return out;
   }

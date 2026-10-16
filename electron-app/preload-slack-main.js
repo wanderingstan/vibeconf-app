@@ -13,6 +13,9 @@
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
+// Research (dom-probe.js): no default target for Slack yet, so it needs a
+// selector: --dom-probe='<css selector>'. Off by default.
+require('./dom-probe').installDomProbe({ tag: '[slack]', defaultSelector: null });
 
 // Shim navigator.userAgentData (UA Client Hints) to match the spoofed Chrome UA
 // BEFORE Slack's scripts run, so its sign-in browser gate doesn't see the real

@@ -39,6 +39,8 @@ In this order, first match wins:
    meeting link.
 2. **A call already in progress**: one any running Vibeconferencing bot on this
    machine is in (or joining). Several bots in the same meeting count as one call.
+   Any provider: for Zoom and Teams the running bot hands over the full link it
+   joined with (passcode included), so you do not need to ask for it.
 3. **A Meet open in your browser** (Chrome, Brave or Safari tab scan; macOS only).
 4. **Nothing found** → a fresh Google Meet is created, the bot joins it, and your
    browser opens to it.
@@ -117,9 +119,15 @@ Read the reply:
   meeting may need to **admit** it.
 - **`needsChoice: true`** — more than one call is in progress. Nothing was
   created. Show the user `candidates` (room id, and which bots are in each) and
-  ask which one; then run Step 3 again with that room as `target`.
-- **`ok: false`** with `error` — say it plainly. A Zoom or Teams call a bot is
-  already in cannot be rejoined from its room id alone; ask for the link.
+  ask which one; then run Step 3 again with that candidate's **`url`** as
+  `target` (not its room id: a Zoom or Teams room id is not joinable). The `url`
+  can carry a meeting passcode — use it as the target, don't echo it back.
+  A candidate with no `url` is one whose link the running bot doesn't know;
+  for that one, ask for the meeting link.
+- **`ok: false`** with `error` — say it plainly. The one case to act on: a bot
+  is in a Zoom or Teams call but its link is unknown (an older build, or a link
+  that didn't match the room). Only then ask the user for the meeting link and
+  run Step 3 again with it as `target`.
 
 ## Step 4: Hand over
 

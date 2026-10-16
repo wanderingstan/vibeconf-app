@@ -2239,11 +2239,28 @@
       // The countdown to the bot taking its turn (absolute deadline, or null).
       // Absolute rather than a duration because the server re-arms: a duration
       // captured at arm time would be stale the moment the gate is corrected.
-      case 'set-silence-gate':
+      //
+      // `from` is the server's silenceStart, which is usually in the PAST — the
+      // last caption update, or the speaker's stop edge. Sweeping from there
+      // means the pendulum's first frame lands mid-swing: up to ~8° in one
+      // frame. On Teams (no speaking meter, so the gate is caption-driven) the
+      // gate fires, the caption that arrived meanwhile re-arms it with a fresh
+      // past `from`, and the head jumps out and drifts back every 1–2s while a
+      // human talks (teams-9361264884308-20261016T151416Z, ~2 min in). So a
+      // NEW sweep starts at arrival, at level, and still lands on the deadline.
+      // A re-arm of a sweep already in flight keeps its start, so it bends
+      // rather than restarting.
+      case 'set-silence-gate': {
+        const gateNow = Date.now();
         for (const cam of cameras.values()) {
-          cam.silenceGate = payload && payload.deadline ? payload : null;
+          if (!payload || !payload.deadline) { cam.silenceGate = null; continue; }
+          const prev = cam.silenceGate;
+          const live = prev && prev.deadline > gateNow;
+          const from = live ? prev.from : Math.max(payload.from || gateNow, gateNow);
+          cam.silenceGate = { deadline: payload.deadline, from: Math.min(from, payload.deadline) };
         }
         break;
+      }
 
       case 'set-anyone-speaking':
         if (typeof payload?.anyoneSpeaking === 'boolean') {

@@ -129,3 +129,69 @@ test('page-inject draws through the smoother, pendulum first', () => {
   assert.match(inject, /ctx\.rotate\(tilt\)/);
   assert.doesNotMatch(inject, /ctx\.rotate\(speakTilt/, 'the raw sum is being drawn again');
 });
+
+// ── The path the Teams call actually took ──────────────────────────────────
+// Teams has no speaking meter (the log shows peakSpeakers=0), so the gate is
+// caption-driven. The server arms it from the LAST CAPTION time, which is
+// already in the past when the renderer hears about it; when it fires and a
+// newer caption has arrived, it re-arms with another past `from`. Sweeping from
+// a past `from` starts the pendulum mid-swing: the head jumps out, drifts back
+// to level, and repeats every 1–2s while the human talks.
+
+// Mirrors page-inject's 'set-silence-gate' handler.
+const receiveGate = (prev, payload, now) => {
+  if (!payload || !payload.deadline) return null;
+  const live = prev && prev.deadline > now;
+  const from = live ? prev.from : Math.max(payload.from || now, now);
+  return { deadline: payload.deadline, from: Math.min(from, payload.deadline) };
+};
+
+// Captions every ~1s for 8s; the gate arms 2.5s after the latest caption,
+// fires, and re-arms from whichever caption is newest at that moment.
+function teamsCaptionRearms({ anchor }) {
+  const captions = Array.from({ length: 8 }, (_, i) => t0 + i * 1000);
+  const SIL = 2500;
+  const events = [];
+  let deadline = captions[0] + SIL;
+  events.push({ at: captions[0] + 400, payload: { from: captions[0], deadline } });
+  while (deadline < captions[captions.length - 1] + SIL) {
+    const fireAt = deadline;
+    const last = captions.filter((c) => c <= fireAt).pop();
+    events.push({ at: fireAt, payload: null });
+    deadline = last + SIL + 50;
+    events.push({ at: fireAt + 1, payload: { from: last, deadline } });
+  }
+  let g = null, ei = 0;
+  return (now) => {
+    while (ei < events.length && events[ei].at <= now) {
+      g = anchor ? receiveGate(g, events[ei].payload, events[ei].at) : events[ei].payload;
+      ei++;
+    }
+    return { gate: gateTiltAt(now, g, false) };
+  };
+}
+
+test('BEFORE: a gate armed from a past caption starts mid-swing (the Teams jolt)', () => {
+  const raw = run(330, teamsCaptionRearms({ anchor: false }), { smooth: false });
+  assert.ok(maxStep(raw) > 4 * DEG, `raw jump ${(maxStep(raw) / DEG).toFixed(1)}°`);
+});
+
+test('AFTER: anchoring a new sweep at arrival removes the jump at its source', () => {
+  const anchored = run(330, teamsCaptionRearms({ anchor: true }), { smooth: false });
+  assert.ok(maxStep(anchored) < SNAP, `largest frame step ${(maxStep(anchored) / DEG).toFixed(2)}°`);
+  const drawn = run(330, teamsCaptionRearms({ anchor: true }), { smooth: true });
+  assert.ok(maxStep(drawn) < SNAP);
+});
+
+test('the smoother alone would also have caught it', () => {
+  const drawn = run(330, teamsCaptionRearms({ anchor: false }), { smooth: true });
+  assert.ok(maxStep(drawn) < SNAP, `largest frame step ${(maxStep(drawn) / DEG).toFixed(2)}°`);
+});
+
+test("page-inject's gate handler anchors new sweeps and keeps a live one's start", () => {
+  const h = inject.slice(inject.indexOf("case 'set-silence-gate'"));
+  const body = h.slice(0, h.indexOf('break;'));
+  assert.match(body, /const live = prev && prev\.deadline > gateNow/);
+  assert.match(body, /live \? prev\.from : Math\.max\(payload\.from \|\| gateNow, gateNow\)/);
+  assert.match(body, /Math\.min\(from, payload\.deadline\)/);
+});

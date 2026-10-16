@@ -46,6 +46,11 @@ function makeServer(prefs = {}) {
       bargeInGraceMs: GRACE_MS,
       bargeInQuietConfirmMs: CONFIRM_MS,
       probeFiring: false,
+      // #847: these tests drive the DOM flag with no floor-audio events, which
+      // is the no-analyser (Teams) condition where a ring alone waits for a
+      // caption. 0 keeps the tracker-flag behaviour this file is about; the
+      // corroboration rules have their own file (barge-in-ring-corroboration).
+      ringOnlyYieldMs: 0,
       ...prefs,
     })[k],
   });
@@ -125,6 +130,19 @@ test('no analyser events at all falls back to the tracker flag', async () => {
   await settle(GRACE_MS + 40);
   assert.deepEqual(s.stops, ['human-interrupt'],
     'without analyser evidence the quiet verdict is not trusted — old behavior');
+});
+
+test('no analyser events, ring-only rules on (#847): still yields, just later', async () => {
+  // The #847 corroboration wait must not turn "absent analyser" into "never
+  // yields": an uncaptioned ring is believed once it has lasted ringOnlyYieldMs.
+  const s = makeServer({ ringOnlyYieldMs: GRACE_MS + 60 });
+  s._setBotState('speaking');
+  setDom(s, ['Stan']);
+
+  await settle(GRACE_MS + 20);
+  assert.deepEqual(s.stops, [], 'ring only, no caption: held past the grace');
+  await settle(100);
+  assert.deepEqual(s.stops, ['human-interrupt'], 'a sustained ring is believed');
 });
 
 test('an analyser OFF that predates the arm cannot vouch for quiet', async () => {

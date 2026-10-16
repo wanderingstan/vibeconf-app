@@ -452,6 +452,8 @@ class LocalServer {
     // at grace evaluation instead of trusting the tracker flag alone.
     this._audioFloorOffAt = 0;
     this._domFloorAt = 0;
+    // #847: per-call state for the ring-only floor (see _ringFloorActive).
+    this._resetRingFloor();
     // #343: how many participants (excl. self) are speaking RIGHT NOW. The old
     // `anyoneSpeaking` boolean collapses this away, but the count is the raw
     // interruptibility signal — 1 speaker is far more interruptible than 2-3 in
@@ -770,6 +772,7 @@ class LocalServer {
     this.anyoneSpeaking = false;
     this.activeSpeakerCount = 0;
     this._peakSpeakersSinceQuiet = 0;
+    this._resetRingFloor();
     this.speakingAloud = false;
     this.lastSpokeAloudAt = 0;
     this._currentUrgency = null;
@@ -828,6 +831,7 @@ class LocalServer {
     this.anyoneSpeaking = false;
     this.activeSpeakerCount = 0;
     this._peakSpeakersSinceQuiet = 0;
+    this._resetRingFloor();
     this.speakingAloud = false;
     this.lastSpokeAloudAt = 0;
     this._currentUrgency = null;
@@ -2495,6 +2499,9 @@ class LocalServer {
   // #115: record the fast floor edge and, when the DOM path later agrees, log
   // how far behind it was. That delta is the whole question the issue asks.
   setAudioFloor(speaking, at) {
+    // #847: any floor-audio event proves the analyser is wired for this call,
+    // which switches the ring-only floor rules off for the rest of it.
+    this._floorAudioSeenThisCall = true;
     if (speaking === this.audioFloorSpeaking) return;
     this.audioFloorSpeaking = speaking;
     const now = at || Date.now();
@@ -2592,7 +2599,11 @@ class LocalServer {
     // stays the load-bearing boolean everywhere else; activeSpeakerCount is the
     // new interruptibility signal, and we track the peak reached while the bot
     // waits (reset when it resolves a turn).
-    const speakingNow = this.participants.filter(p => p.speaking && !p.isSelf && p.name !== 'You');
+    // #847: with no analyser, a ring lit for ringStaleMs with no caption from
+    // that person is not counted (_ringIsStale). With the analyser this filter
+    // passes everything through, so Meet is unchanged.
+    this._trackRingEdges();
+    const speakingNow = this.participants.filter(p => this._countsAsSpeaking(p));
     this.activeSpeakerCount = speakingNow.length;
     this.anyoneSpeaking = this.activeSpeakerCount > 0;
     // #115: on the DOM path's rising edge, report how long after the analyser it
@@ -3163,6 +3174,8 @@ class LocalServer {
       const list = bySpeaker.get(t.speaker);
       if (list) list.push(t.text); else bySpeaker.set(t.speaker, [t.text]);
     }
+
+    this._noteCaptionActivity(bySpeaker, now);
 
     for (const [speaker, texts] of bySpeaker) {
       let knownCount = this._speakerTurnCount.get(speaker) || 0;
@@ -3982,6 +3995,7 @@ class LocalServer {
   // Barge-in / back-off helpers (#154) -----------------------------------------
 
   _clearBargeIn(reason) {
+    this._ringHoldPending = false; // #847
     clearTimeout(this._bargeInClearTimer);
     this._bargeInClearTimer = null;
     if (this._bargeInTimer) {
@@ -4112,6 +4126,217 @@ class LocalServer {
     return `analyser OFF ${now - this._audioFloorOffAt}ms ago`;
   }
 
+  // ---------------------------------------------------------------------------
+  // #847: the floor when there is no analyser (Teams today).
+  //
+  // On Meet the analyser hears the remote audio, so a DOM speaking flag is
+  // always checked against sound (_floorQuietPerAnalyser). On Teams nothing
+  // feeds the analyser ("analyser silent (no floor-audio events this call)"),
+  // so the tile's speaking ring decides alone. Live, that ring is a good "is
+  // the room quiet?" signal and a poor "someone started talking this instant"
+  // one (call teams-9361264884308-20261016T172706Z): it lit for a cough, for
+  // background noise, for the bot's OWN voice coming back through a listener's
+  // laptop speakers, and once stayed lit 31s with no captions while the bot
+  // held a reply it then played 24s late.
+  //
+  // So, only while the analyser has produced no floor-audio event this call:
+  //   1. Mid-speech: a ring alone does not make the bot yield. It needs a
+  //      caption from that person (since the monitor armed, or within
+  //      ringCaptionWindowMs), or the ring lit for ringOnlyYieldMs, because
+  //      captions can drop out during overlapping talk.
+  //   2. Start of speech: the ring still holds the bot's reply, but a ring lit
+  //      for ringStaleMs with no caption from that person in that time stops
+  //      counting as speech.
+  // Keyed off the analyser's silence rather than the provider, so whichever
+  // provider lacks an analyser gets it. On Meet the analyser's ON edge lands
+  // 400-700ms before the DOM flag, so these rules are off before any flag
+  // could reach them, and every helper below passes Meet's state through.
+  // ---------------------------------------------------------------------------
+
+  _resetRingFloor() {
+    this._floorAudioSeenThisCall = false;
+    this._ringOnSince = new Map();          // name key -> ms the ring lit
+    this._captionAtBySpeaker = new Map();   // name key -> ms their captions last changed
+    this._captionSnapBySpeaker = new Map(); // name key -> fingerprint of their visible captions
+    this._ringStaleNoted = new Set();       // name keys currently discounted as stale
+    this._ringHoldPending = false;
+    clearTimeout(this._ringStaleTimer);
+    this._ringStaleTimer = null;
+  }
+
+  _ringFloorActive() {
+    return !this._floorAudioSeenThisCall;
+  }
+
+  _ringKey(name) {
+    return String(name || '').trim().toLowerCase();
+  }
+
+  // When this person's captions last changed. The tile name and the caption
+  // name can differ by a suffix ("Stan James" vs "Stan James (Guest)"), so fall
+  // back to a prefix match either way.
+  _lastCaptionFrom(name) {
+    const k = this._ringKey(name);
+    if (!k) return 0;
+    let at = this._captionAtBySpeaker.get(k) || 0;
+    if (!at) {
+      for (const [ck, t] of this._captionAtBySpeaker) {
+        if (ck && (ck.startsWith(k) || k.startsWith(ck)) && t > at) at = t;
+      }
+    }
+    return at;
+  }
+
+  // Record each ring's rising edge (dropped when it goes out), then make sure
+  // a re-check is scheduled for when the oldest one could go stale.
+  _trackRingEdges(now = Date.now()) {
+    const lit = new Set();
+    for (const p of this.participants) {
+      if (!p || p.isSelf || p.name === 'You' || !p.speaking) continue;
+      const k = this._ringKey(p.name);
+      lit.add(k);
+      if (!this._ringOnSince.has(k)) this._ringOnSince.set(k, now);
+    }
+    for (const k of [...this._ringOnSince.keys()]) {
+      if (lit.has(k)) continue;
+      this._ringOnSince.delete(k);
+      this._ringStaleNoted.delete(k);
+    }
+    this._scheduleRingStaleCheck(now);
+  }
+
+  _ringIsStale(p, now = Date.now()) {
+    if (!this._ringFloorActive()) return false;
+    const staleMs = Number(this._pref('ringStaleMs'));
+    if (!(staleMs > 0)) return false;
+    const since = this._ringOnSince.get(this._ringKey(p.name));
+    if (!since || now - since < staleMs) return false;
+    return now - this._lastCaptionFrom(p.name) >= staleMs;
+  }
+
+  // The floor's view of one participant: speaking per the tracker, minus a
+  // stale ring when there is no analyser. With the analyser this is exactly
+  // the old `p.speaking && !p.isSelf && p.name !== 'You'`.
+  _countsAsSpeaking(p, now = Date.now()) {
+    if (!p || !p.speaking || p.isSelf || p.name === 'You') return false;
+    if (!this._ringIsStale(p, now)) return true;
+    const k = this._ringKey(p.name);
+    if (!this._ringStaleNoted.has(k)) {
+      this._ringStaleNoted.add(k);
+      console.log(ts(), '🔕 [ring-floor] ' + p.name + "'s speaking ring has been on "
+        + (now - this._ringOnSince.get(k)) + 'ms with no caption from them in the last '
+        + this._pref('ringStaleMs') + 'ms (ringStaleMs) — treating them as NOT speaking for the floor'
+        + ' (no analyser to check the ring against, #847)');
+    }
+    return false;
+  }
+
+  // A stale ring only stops counting when setParticipants runs again, and
+  // Teams sends participants only on a change, so a ring stuck on would never
+  // be re-read. Re-run it at the moment the next ring could go stale.
+  _scheduleRingStaleCheck(now = Date.now()) {
+    clearTimeout(this._ringStaleTimer);
+    this._ringStaleTimer = null;
+    if (!this._ringFloorActive() || this._ringOnSince.size === 0) return;
+    const staleMs = Number(this._pref('ringStaleMs'));
+    if (!(staleMs > 0)) return;
+    let next = Infinity;
+    for (const [k, since] of this._ringOnSince) {
+      if (this._ringStaleNoted.has(k)) continue;
+      next = Math.min(next, Math.max(since, this._lastCaptionFrom(k)) + staleMs);
+    }
+    if (!Number.isFinite(next)) return;
+    this._ringStaleTimer = setTimeout(() => {
+      this._ringStaleTimer = null;
+      this.setParticipants(this.participants);
+    }, Math.max(0, next - now) + 5);
+    if (this._ringStaleTimer.unref) this._ringStaleTimer.unref();
+  }
+
+  // Called from updateTurns with each speaker's visible caption texts. Stamps
+  // whoever's captions changed, which is the corroboration the ring rules read.
+  // Always recorded (it's cheap); only acted on while the ring floor is active.
+  _noteCaptionActivity(bySpeaker, now = Date.now()) {
+    const fresh = [];
+    for (const [speaker, texts] of bySpeaker) {
+      const k = this._ringKey(speaker);
+      const fp = texts.length + '|' + this._turnFp(speaker, texts[texts.length - 1] || '');
+      if (this._captionSnapBySpeaker.get(k) === fp) continue;
+      this._captionSnapBySpeaker.set(k, fp);
+      this._captionAtBySpeaker.set(k, now);
+      fresh.push(speaker);
+    }
+    if (!fresh.length || !this._ringFloorActive() || this._ringOnSince.size === 0) return;
+
+    // A discounted ring whose owner is now captioned is speech after all.
+    let revived = false;
+    for (const k of [...this._ringStaleNoted]) {
+      if (this._lastCaptionFrom(k) >= now) {
+        this._ringStaleNoted.delete(k);
+        revived = true;
+        console.log(ts(), '🔔 [ring-floor] caption from ' + k + ' — their ring counts as speech again (#847)');
+      }
+    }
+    if (revived) this.setParticipants(this.participants);
+    else this._scheduleRingStaleCheck(now);
+
+    // A barge-in waiting on corroboration gets its answer now, not at the
+    // next re-check.
+    if (this._ringHoldPending && this._bargeInTimer && this.botState === 'speaking') {
+      const lit = new Set(this._ringOnSince.keys());
+      const fromLit = fresh.some((sp) => {
+        const k = this._ringKey(sp);
+        for (const r of lit) if (r === k || r.startsWith(k) || k.startsWith(r)) return true;
+        return false;
+      });
+      if (fromLit) {
+        clearTimeout(this._bargeInTimer);
+        this._bargeInTimer = null;
+        this._evaluateBargeIn();
+      }
+    }
+  }
+
+  // Mid-speech (#847, no analyser): is any interrupter corroborated? If so,
+  // return false and let _evaluateBargeIn decide as it always has. If not,
+  // keep talking, re-arm the monitor for when the oldest ring would reach
+  // ringOnlyYieldMs, and return true. A caption from a lit speaker in the
+  // meantime re-evaluates at once (_noteCaptionActivity); the ring going out
+  // disarms the monitor through the usual falling edge.
+  _holdForRingCorroboration(interrupters, now = Date.now()) {
+    const windowMs = Math.max(0, Number(this._pref('ringCaptionWindowMs')) || 0);
+    const yieldMs = Number(this._pref('ringOnlyYieldMs'));
+    const since = Math.min(this._bargeInArmedAt || now, now - windowMs);
+    let wait = Infinity;
+    for (const p of interrupters) {
+      const capAt = this._lastCaptionFrom(p.name);
+      if (capAt && capAt >= since) {
+        console.log(ts(), '🛡️  [barge-in] ring corroborated by a caption from ' + p.name + ' '
+          + (now - capAt) + 'ms ago — a real interruption (#847, no analyser)');
+        return false;
+      }
+      const ringOn = now - (this._ringOnSince.get(this._ringKey(p.name)) || now);
+      if (!(yieldMs > 0) || ringOn >= yieldMs) {
+        console.log(ts(), '🛡️  [barge-in] ' + p.name + "'s ring has been on " + ringOn
+          + 'ms with no caption (>= ringOnlyYieldMs ' + yieldMs + 'ms) — long enough to believe'
+          + ' (#847, no analyser; captions can drop out during overlap)');
+        return false;
+      }
+      wait = Math.min(wait, yieldMs - ringOn);
+    }
+    const names = interrupters.map((p) => p.name).join(', ');
+    console.log(ts(), '🛡️  [barge-in] ring only, no caption yet from ' + names
+      + ' — keeping the floor, re-checking in ' + Math.round(wait) + 'ms (ringOnlyYieldMs '
+      + yieldMs + 'ms; #847, no analyser: a ring alone fires on coughs, noise and our own echo)');
+    this._ringHoldPending = true;
+    clearTimeout(this._bargeInTimer);
+    this._bargeInTimer = setTimeout(() => {
+      this._bargeInTimer = null;
+      this._evaluateBargeIn();
+    }, Math.max(20, wait));
+    return true;
+  }
+
   // Grace period elapsed. Decide whether to back off based on who's
   // interrupting. Caller guarantees the timer slot is clear so we can
   // re-arm with the random bot-vs-bot delay if needed.
@@ -4136,6 +4361,7 @@ class LocalServer {
   }
 
   _evaluateBargeIn() {
+    this._ringHoldPending = false; // #847: _holdForRingCorroboration re-sets it if it holds again
     if (this.botState !== 'speaking' || !this.floorBusy) {
       // Bot already stopped, or interrupter shut up during the grace
       // period — nothing to do. #138: floorBusy, not anyoneSpeaking, or an
@@ -4165,8 +4391,15 @@ class LocalServer {
       return;
     }
     const interrupters = this.participants.filter(
-      (p) => p.speaking && !p.isSelf && p.name !== 'You'
+      (p) => this._countsAsSpeaking(p)
     );
+    // #847: no analyser (Teams today), so the ring alone would decide. It lights
+    // for coughs, noise, and our own voice echoed through a listener's laptop
+    // speakers, so ask it for corroboration first. Returns true when it has
+    // decided to keep talking for now (and re-armed the monitor to look again).
+    if (interrupters.length > 0 && this._ringFloorActive() && this._holdForRingCorroboration(interrupters)) {
+      return;
+    }
     if (interrupters.length === 0) {
       // #138: the analyser hears someone but Meet's DOM tracker hasn't named
       // them (routinely, while TTS plays). We can't tell bot from human without

@@ -44,6 +44,11 @@ function makeServer(prefs = {}) {
       bargeInQuietConfirmMs: 0,
       bargeInClearHangoverMs: HANGOVER_MS,
       probeFiring: false,
+      // #847: these tests drive the DOM flag with no floor-audio events, which
+      // is the no-analyser (Teams) condition where a ring alone waits for a
+      // caption. 0 keeps the tracker-flag behaviour this file is about; the
+      // corroboration rules have their own file (barge-in-ring-corroboration).
+      ringOnlyYieldMs: 0,
       ...prefs,
     })[k],
   });

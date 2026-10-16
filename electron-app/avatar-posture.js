@@ -199,6 +199,66 @@ function stepPosture(s, now, w, h, busy) {
   return clampPosture(postureAt(s, now), w, h);
 }
 
+// ── Head-tilt continuity ────────────────────────────────────────────────────
+//
+// The face's rotation is a SUM of independent terms (speaking wobble, tick
+// pulse, name-mention cock, agent jostle, dead flip, turn-countdown pendulum),
+// several of which are switched by a condition rather than eased by one. When
+// a condition flips mid-motion the term drops to its new value in one frame and
+// the head snaps. The countdown pendulum was the one Stan saw (2026-10-16): it
+// swings out while the floor is quiet, the human carries on talking, the
+// `!anyoneSpeaking` guard zeroes it, and ~8° vanishes in a single frame.
+//
+// One mechanism for all of them: anything that moves faster than a legitimate
+// motion can (`maxRate`) is treated as a discontinuity. The jump is absorbed
+// into a CARRY that holds the face where it was and then eases out over
+// TILT_EASE_MS. Sine ease-in-out, not cubic: it starts and lands just as gently
+// but its steepest moment is half as steep (π/2 vs 3), so a large return never
+// has one fast frame in the middle that reads as a smaller snap.
+// Motion slower than `maxRate` passes through untouched, so every existing
+// animation draws exactly as before; only the snaps change.
+//
+// The threshold is a rate, not an angle, because the render loop's frame rate
+// varies. dt is clamped so a dropped frame cannot widen the threshold enough to
+// let a real snap through (a long gap just means a continuous motion gets eased,
+// which is harmless).
+const TILT_EASE_MS = 500;
+const TILT_MAX_RATE = 2.5;        // rad/s — above the fastest intended motion (name-mention attack ≈ 2.1)
+const TILT_JUMP_FLOOR = 0.002;    // rad — float slop
+const TILT_DT_MIN_MS = 16;
+const TILT_DT_MAX_MS = 34;
+
+function createTiltSmoother() {
+  return { raw: null, at: 0, carry0: 0, carryAt: 0 };
+}
+
+function tiltCarry(s, now) {
+  if (!s.carry0) return 0;
+  const p = (now - s.carryAt) / TILT_EASE_MS;
+  if (p >= 1) return 0;
+  return s.carry0 * (0.5 + 0.5 * Math.cos(Math.PI * clamp(p, 0, 1)));
+}
+
+// Per frame: the raw target angle in, the angle to draw out.
+function smoothTilt(s, target, now, maxRate = TILT_MAX_RATE) {
+  const t = Number.isFinite(target) ? target : 0;
+  if (s.raw === null) { s.raw = t; s.at = now; return t; }
+  const dt = clamp(now - s.at, TILT_DT_MIN_MS, TILT_DT_MAX_MS);
+  const carry = tiltCarry(s, now);
+  const step = t - s.raw;
+  if (Math.abs(step) > TILT_JUMP_FLOOR + maxRate * dt / 1000) {
+    // Keep the face exactly where it is drawn now, then ease the gap away.
+    // Folding the live carry in means a second jump mid-ease cannot snap either.
+    s.carry0 = carry - step;
+    s.carryAt = now;
+  } else if (!carry) {
+    s.carry0 = 0;
+  }
+  s.raw = t;
+  s.at = now;
+  return t + tiltCarry(s, now);
+}
+
 module.exports = {
   FACE_FRAC,
   REST_OFFSET_X, REST_OFFSET_Y, REST_SCALE_MIN, REST_SCALE_MAX,
@@ -211,4 +271,6 @@ module.exports = {
   hashSeed, makeRng, clampPosture, restingPosture, nearbyPosture,
   easeInOutCubic, lerpPosture,
   createPostureState, postureAt, isMoving, startShift, noteSpeakingEnded, stepPosture,
+  TILT_EASE_MS, TILT_MAX_RATE, TILT_JUMP_FLOOR,
+  createTiltSmoother, tiltCarry, smoothTilt,
 };

@@ -610,9 +610,10 @@
       const mentionPop = 1 + mentionPulse * 0.22; // ~22% peak lean-in grow
 
       // #326 — head rotation driven by agent log activity (proof-of-life). Each
-      // new activity line (pushed by main.js, overlay-independent) snaps the head
-      // INSTANTLY to a fresh hash-derived angle, and it HOLDS there until the next
-      // line — no ease, no return-to-neutral. Mirrors the instant emoji swaps: the
+      // new activity line (pushed by main.js, overlay-independent) moves the head
+      // to a fresh hash-derived angle, and it HOLDS there until the next line —
+      // no return-to-neutral. (It used to snap there in one frame; the combined
+      // tilt smoother now eases the move over TILT_EASE_MS, ~½ s.) Mirrors the instant emoji swaps: the
       // head just ticks to a new lean as the agent works, and rests wherever the
       // last line left it when the agent goes quiet. Peak ≈ ±30°.
       const AGENT_JOSTLE_MAX = 0.52;      // rad, ~30°
@@ -743,6 +744,7 @@
       // Suppressed while anyone is still speaking — the window only means
       // anything once the floor is quiet — and while the bot is speaking or
       // yielding, where other motion already owns the face.
+      const GATE_TILT_MAX_RATE = 0.8; // rad/s — see the smoothing note after the sweep
       let gateTilt = 0;
       const gate = this.silenceGate;
       if (gate && !this.anyoneSpeaking && !this.speaking
@@ -757,6 +759,20 @@
           }
         }
       }
+      // ...but every one of those guards cuts the sweep mid-swing when it flips:
+      // the human carries on talking (anyoneSpeaking), the gate is cleared or
+      // re-armed, the bot starts speaking. The pendulum then dropped from up to
+      // ~8° to level in ONE frame — the jolt Stan saw in
+      // teams-9361264884308-20261016T151416Z, ~2 min in. The pendulum never
+      // legitimately moves faster than ~0.55 rad/s (8° over the shortest real
+      // window), so its own smoother can afford a low rate limit and catch even
+      // small cuts; the combined smoother below catches the big jumps of the rest.
+      const tiltApi = globalThis.__vibeAvatarPosture;
+      const canSmoothTilt = !!(tiltApi && typeof tiltApi.smoothTilt === 'function');
+      if (canSmoothTilt) {
+        if (!this._gateTiltSmooth) this._gateTiltSmooth = tiltApi.createTiltSmoother();
+        gateTilt = tiltApi.smoothTilt(this._gateTiltSmooth, gateTilt, Date.now(), GATE_TILT_MAX_RATE);
+      }
       const peeking = ghostRise > 0;
       const agentTiltNow = peeking ? agentTilt * PEEK_TILT_SCALE : agentTilt;
       const peekShift = peeking ? (this._agentJostleDir || 0) * PEEK_SHIFT_PX : 0;
@@ -769,14 +785,23 @@
       const postY = post ? post.dy * h : 0;
       const postScale = post ? post.scale : 1;
       ctx.translate(cx + postX + thinkSway + peekShift, cy + postY + bob - speakBounce + ghostRise);
-      if (speakTilt || tickTilt || agentTiltNow || deadFlip || mentionTilt || gateTilt) {
+      // One smoothing for the whole rotation (avatar-posture.js smoothTilt):
+      // continuous motion passes through unchanged, and any term that jumps —
+      // the agent jostle, the dead flip and its revival, peeking ending, a cut
+      // pendulum — eases to its new angle instead of snapping there.
+      let tilt = speakTilt + tickTilt + agentTiltNow + deadFlip + mentionTilt + gateTilt;
+      if (canSmoothTilt) {
+        if (!this._tiltSmooth) this._tiltSmooth = tiltApi.createTiltSmoother();
+        tilt = tiltApi.smoothTilt(this._tiltSmooth, tilt, Date.now());
+      }
+      if (Math.abs(tilt) > 1e-5) {
         // Tilt around a "neck", not the face's centre. Rotating about the middle
         // spun the face like a wheel; a pivot two-thirds of the way down reads
         // as a head tilting (Stan, 2026-10-15). Not at the very bottom — that
         // swings the top too far for the same angle.
         const neckY = emojiSize * NECK_PIVOT_FROM_CENTRE;
         ctx.translate(0, neckY);
-        ctx.rotate(speakTilt + tickTilt + agentTiltNow + deadFlip + mentionTilt + gateTilt);
+        ctx.rotate(tilt);
         ctx.translate(0, -neckY);
       }
       if (this.speaking) {
@@ -2214,11 +2239,28 @@
       // The countdown to the bot taking its turn (absolute deadline, or null).
       // Absolute rather than a duration because the server re-arms: a duration
       // captured at arm time would be stale the moment the gate is corrected.
-      case 'set-silence-gate':
+      //
+      // `from` is the server's silenceStart, which is usually in the PAST — the
+      // last caption update, or the speaker's stop edge. Sweeping from there
+      // means the pendulum's first frame lands mid-swing: up to ~8° in one
+      // frame. On Teams (no speaking meter, so the gate is caption-driven) the
+      // gate fires, the caption that arrived meanwhile re-arms it with a fresh
+      // past `from`, and the head jumps out and drifts back every 1–2s while a
+      // human talks (teams-9361264884308-20261016T151416Z, ~2 min in). So a
+      // NEW sweep starts at arrival, at level, and still lands on the deadline.
+      // A re-arm of a sweep already in flight keeps its start, so it bends
+      // rather than restarting.
+      case 'set-silence-gate': {
+        const gateNow = Date.now();
         for (const cam of cameras.values()) {
-          cam.silenceGate = payload && payload.deadline ? payload : null;
+          if (!payload || !payload.deadline) { cam.silenceGate = null; continue; }
+          const prev = cam.silenceGate;
+          const live = prev && prev.deadline > gateNow;
+          const from = live ? prev.from : Math.max(payload.from || gateNow, gateNow);
+          cam.silenceGate = { deadline: payload.deadline, from: Math.min(from, payload.deadline) };
         }
         break;
+      }
 
       case 'set-anyone-speaking':
         if (typeof payload?.anyoneSpeaking === 'boolean') {

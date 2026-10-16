@@ -27,6 +27,13 @@ const APP_LEVEL_KEYS = new Set([
   // NOT in MIGRATE_KEYS: nothing predates this pref, so there is no per-profile
   // copy to promote.
   'realtimeApiKey',
+  // #829: the user's calendar as an iCal feed. It is the PERSON's calendar, not a
+  // bot's: one feed lists every bot's meetings, and each bot picks out its own by
+  // its invite email or #vibeconf: tag, exactly as with the one shared Google
+  // login. A secret (it reads the whole calendar), so like the keys above it stays
+  // out of the preferences schema: never in the prefs log, never in
+  // list_preferences. NOT in MIGRATE_KEYS: new, no per-profile copies to promote.
+  'calendarFeedSecretUrl',
   'vcSessionToken', // vibeconferencing.com login (mirror of the vc_session cookie)
   'vcSessionLoggedOutToken', // logout tombstone — profiles must not re-donate this token
   'syncBaseUrl', // legacy website/sync host override

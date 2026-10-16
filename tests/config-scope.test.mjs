@@ -216,7 +216,11 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // cropCallRecording: same invisibility trap as keepCallRecordingTracks right
     // above — whether recordings get cropped is a machine-level output
     // preference, not bot personality. New pref, nothing to promote.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'cropCallRecording', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'meetViewSize', 'realtimeApiKey', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // calendarFeedSecretUrl (#829): the person's calendar as an iCal feed. One
+    // feed lists every bot's meetings and each bot picks out its own by invite
+    // email or #vibeconf: tag, exactly like the one shared Google login. A secret,
+    // like ttsApiKey: kept out of the schema. New pref, nothing to promote.
+    ['agentBackend', 'agentHosting', 'automationProbed', 'calendarFeedSecretUrl', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'cropCallRecording', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'meetViewSize', 'realtimeApiKey', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

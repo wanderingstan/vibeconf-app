@@ -71,6 +71,16 @@
       <span>Also let bots read my calendar, so they can join scheduled meetings on their own</span>
     </label>
     <div class="desc">Your login for the shared whiteboard rooms. One sign-in covers every profile on this machine.</div>
+
+    <!-- #829: the user's calendar as an iCal feed — any calendar app, no Google
+         sign-in. App-wide (config-scope.js): it is YOUR calendar, and each bot
+         picks out its own meetings from it by its invite email or #vibeconf:
+         tag. The link is a secret, so: password field (this window gets
+         screen-shared), and main.js never logs it. -->
+    <label for="calendarFeedSecretUrl" style="display:block;margin-top:14px">Calendar feed (iCal link)</label>
+    <input type="password" id="calendarFeedSecretUrl" placeholder="https://… or webcal://… ending in .ics" autocomplete="off" spellcheck="false">
+    <div class="desc">Lets bots join meetings from <strong>any</strong> calendar app, with no Google sign-in. Paste your calendar's secret iCal address. In <strong>Outlook</strong>: Settings → Calendar → Shared calendars → Publish a calendar, choose "Can view all details", copy the ICS link. In <strong>Google Calendar</strong>: the calendar's Settings → "Secret address in iCal format". Each bot joins the meetings it's invited to (its own calendar invite email) or tagged in (<code>#vibeconf:&lt;bot name&gt;</code>). Keep this link private: anyone with it can read your calendar.</div>
+    <div class="desc" id="calendarFeedStatus"></div>
   </div>
 
   <!-- #273: shown whenever the current key differs from a standing grant

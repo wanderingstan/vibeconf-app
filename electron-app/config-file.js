@@ -32,6 +32,9 @@ const { isAppLevel } = require('./config-scope.js');
 const OPERATOR_KEYS = new Set([
   'ttsApiKey',      // ElevenLabs — without this a headless box is stuck on espeak
   'realtimeApiKey', // OpenAI realtime-voice experiment
+  // #829: a headless box (the cloud TA bot) can't click through Google's OAuth,
+  // and an iCal feed is the calendar auto-join that needs none.
+  'calendarFeedSecretUrl',
 ]);
 
 // Values that are never echoed to a log or a console, here or anywhere else.

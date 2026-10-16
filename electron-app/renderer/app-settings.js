@@ -233,6 +233,41 @@ document.getElementById('ttsKeyLink').addEventListener('click', (e) => {
   api.send('open-external-url', e.currentTarget.href);
 });
 
+// --- Calendar feed (#829): your calendar as an iCal link, app-wide. ---
+// Saved on change; main re-polls right away and answers with
+// 'calendar-feed-status', so the line under the field says whether it works.
+const calendarFeedInput = document.getElementById('calendarFeedSecretUrl');
+const calendarFeedStatusEl = document.getElementById('calendarFeedStatus');
+function paintCalendarFeedStatus(status) {
+  if (!calendarFeedStatusEl) return;
+  const st = status || { state: 'off' };
+  if (st.state === 'ok') {
+    calendarFeedStatusEl.style.color = '#2E7D4F';
+    calendarFeedStatusEl.textContent = `✓ Reading your calendar: ${st.count} event${st.count === 1 ? '' : 's'} in the next day.`;
+  } else if (st.state === 'error') {
+    calendarFeedStatusEl.style.color = '#B3261E';
+    calendarFeedStatusEl.textContent = `⚠️ Can't read this calendar link: ${st.error}.`;
+  } else {
+    calendarFeedStatusEl.textContent = '';
+  }
+}
+if (calendarFeedInput) {
+  api.invoke('get-config', ['calendarFeedSecretUrl']).then((c) => {
+    if (c && c.calendarFeedSecretUrl) calendarFeedInput.value = c.calendarFeedSecretUrl;
+  });
+  calendarFeedInput.addEventListener('change', () => {
+    const v = calendarFeedInput.value.trim();
+    calendarFeedInput.value = v;
+    if (calendarFeedStatusEl) {
+      calendarFeedStatusEl.style.color = '';
+      calendarFeedStatusEl.textContent = v ? 'Checking…' : '';
+    }
+    api.invoke('set-config', 'calendarFeedSecretUrl', v);
+  });
+  api.on('calendar-feed-status', paintCalendarFeedStatus);
+  api.invoke('get-calendar-feed-status').then(paintCalendarFeedStatus).catch(() => {});
+}
+
 // --- Schema-driven app-level prefs (scope:'app'). ---
 api.invoke('get-app-settings-schema').then(async (fields) => {
   const section = document.getElementById('schemaSection');

@@ -33,6 +33,7 @@ const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWin
 const recordRegion = require('./record-region.js');
 const { mergeCallMedia } = require('./call-media-merge.js');
 const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveEventCallLink, shouldSkipCalendarJoin } = require('./calendar-auto-join.js');
+const { loadIcsEvents, mergeCalendarSources } = require('./ics-feed.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
 const { initSessionLog, logSessionHeaderUpdate, getRecentSessionLog, getSessionLogPath, configureRemoteLog, setRemoteLoggingEnabled } = require('./session-log.js');
 const {
@@ -3928,6 +3929,13 @@ let latestUpcomingCalendarEvents = [];
 // the invalid_grant case, where calendar WAS working and silently stopped
 // (vibeconferencing#512). Same cross-closure split as the events above.
 let latestCalendarPollError = null;
+// iCal feed (#829) health, for the panel's caption under the feed URL field:
+// { state: 'off' } with no feed set, { state: 'ok', count } after a good read,
+// { state: 'error', error } when it can't be read. Never holds the URL itself.
+let latestCalendarFeedStatus = { state: 'off' };
+// Set by startCalendarPolling (whenReady closure) so setupIPC can trigger an
+// immediate poll when the feed URL is saved, instead of waiting up to 60s.
+let calendarPollNow = null;
 // launchOrFocusProfile is a local of setupIPC() (it needs isDefaultName/
 // scanRunningInstances, also locals there) — checkOtherProfilesForCalendarMatch
 // runs in the whenReady closure and can't see it directly. setupIPC() runs
@@ -10602,76 +10610,88 @@ app.whenReady().then(async () => {
   function startCalendarPolling() {
     if (calendarPollInterval) return;
 
+    // The bot's iCal feed (#829), read alongside the Google poll. Status changes
+    // are logged once each, and never with the URL: it is the secret.
+    async function pollCalendarFeed() {
+      const feedUrl = String(store.get('calendarFeedSecretUrl') || '').trim();
+      let status;
+      let events = null;
+      if (!feedUrl) {
+        status = { state: 'off' };
+      } else {
+        const r = await loadIcsEvents(feedUrl);
+        if (r.ok) {
+          events = r.events;
+          status = { state: 'ok', count: events.length };
+        } else {
+          status = { state: 'error', error: r.error };
+        }
+      }
+      const changed = status.state !== latestCalendarFeedStatus.state
+        || status.error !== latestCalendarFeedStatus.error;
+      if (changed) {
+        if (status.state === 'ok') console.log(`[calendar] iCal feed: read OK (${status.count} event(s) in the window)`);
+        else if (status.state === 'error') console.warn(`[calendar] iCal feed: can't read it (${status.error})`);
+        else if (latestCalendarFeedStatus.state !== 'off') console.log('[calendar] iCal feed: removed');
+      }
+      latestCalendarFeedStatus = status;
+      // Every window, not just the panel: the field lives in App Settings.
+      broadcastToRenderers('calendar-feed-status', status);
+      return events;
+    }
+
     async function pollCalendar() {
       if (calendarPollInFlight) return;
-      // NOT gated on being in a call any more (#550). This used to
-      // `return` outright whenever callStatus was 'in-call', borrowed from
-      // startMeetDetection's guard — "no reason to poll or auto-join while
-      // already in a call". The auto-JOIN half of that is right and still
-      // applies (see handleCalendarEvents); the "don't even look" half was too
-      // broad, and cost three things:
-      //
-      //   1. Back-to-backs never fire. A bot in a 2:00 call cannot join the
-      //      3:00, because it never sees it. That is exactly the shape of the
-      //      per-student studio sessions — one bot, consecutive 1:1s.
-      //   2. Sibling profiles are stranded: checkOtherProfilesForCalendarMatch
-      //      lives inside handleCalendarEvents, so an app sitting in a call
-      //      also could not launch OTHER bots for THEIR meetings.
-      //   3. Nobody could be told a meeting was coming — not the panel, not
-      //      the agent, so a bot could never excuse itself before dropping.
-      //
-      // Found 2026-08-26: a laptop in a call was 25 minutes stale on a meeting
-      // whose time had changed. Its last [calendar] line was 10:57:03; the call
-      // it was in started at 10:57:32. A cloud box looked healthy purely
-      // because it happened to be idle.
       calendarPollInFlight = true;
       try {
-        const r = await websiteRequest('/api/calendar/upcoming');
+        // Both sources in parallel. Either one alone is enough to drive
+        // auto-join: a feed works with no Google sign-in at all (#829).
+        const [r, feedEvents] = await Promise.all([
+          websiteRequest('/api/calendar/upcoming').catch((err) => ({ status: -1, error: err && err.message })),
+          pollCalendarFeed().catch(() => null),
+        ]);
 
+        let googleEvents = null;
         if (r.status === 200 && r.json && r.json.ok) {
           if (lastCalendarPollState !== 'ok') {
             console.log('[calendar] Connected — polling for auto-join events');
             lastCalendarPollState = 'ok';
           }
-          handleCalendarEvents(r.json.events || []);
-          return;
+          googleEvents = r.json.events || [];
+        } else {
+          let state = 'unknown';
+          let message = `unexpected response (status ${r.status})`;
+          if (r.status === -1) {
+            state = 'error';
+            message = `request failed: ${r.error || 'unknown'}`;
+          } else if (r.status === 401) {
+            state = 'signed-out';
+            message = 'not signed in';
+          } else if (r.json && r.json.code === 'calendar-not-connected') {
+            state = 'not-connected';
+            message = 'signed in, but Calendar access not yet connected';
+          } else if (r.json && r.json.code === 'google-api-error') {
+            state = 'google-api-error';
+            message = `Google API error: ${r.json.detail || 'unknown'}`;
+          } else if (r.status === 0) {
+            state = 'offline';
+            message = `offline/network error: ${r.error || 'unknown'}`;
+          }
+          if (state !== lastCalendarPollState) {
+            console.log(`[calendar] Poll skipped (${message})`);
+            lastCalendarPollState = state;
+            if (state === 'google-api-error') {
+              pushCalendarPollError({ code: state, message });
+            } else if (latestCalendarPollError) {
+              pushCalendarPollError(null);
+            }
+          }
         }
 
-        // Every path below is expected/transient (not signed in, Calendar not
-        // connected yet, offline, upstream hiccup) — skip this poll quietly,
-        // and log only on a STATE CHANGE so an idle app isn't shipping a log
-        // line every ~60s tick.
-        let state = 'unknown';
-        let message = `unexpected response (status ${r.status})`;
-        if (r.status === 401) {
-          state = 'signed-out';
-          message = 'not signed in';
-        } else if (r.json && r.json.code === 'calendar-not-connected') {
-          state = 'not-connected';
-          message = 'signed in, but Calendar access not yet connected';
-        } else if (r.json && r.json.code === 'google-api-error') {
-          state = 'google-api-error';
-          message = `Google API error: ${r.json.detail || 'unknown'}`;
-        } else if (r.status === 0) {
-          state = 'offline';
-          message = `offline/network error: ${r.error || 'unknown'}`;
-        }
-        if (state !== lastCalendarPollState) {
-          console.log(`[calendar] Poll skipped (${message})`);
-          lastCalendarPollState = state;
-          // google-api-error means the user HAD calendar working and the
-          // backend can no longer reach Google for them (dead refresh token,
-          // revoked access, ...) — the one failure worth a panel warning,
-          // because nothing else in the UI distinguishes it from "no
-          // meetings today" (vibeconferencing#512: a 7-day token expiry
-          // silently killed auto-join for everyone). The other states clear
-          // the warning: they describe a different situation (signed out,
-          // never connected, offline), and their guidance would be wrong.
-          if (state === 'google-api-error') {
-            pushCalendarPollError({ code: state, message });
-          } else if (latestCalendarPollError) {
-            pushCalendarPollError(null);
-          }
+        // Nothing from either source: same as before #829 — no handling, so a
+        // signed-out bot with no feed doesn't clear the panel's list.
+        if (googleEvents || feedEvents) {
+          handleCalendarEvents(mergeCalendarSources(googleEvents, feedEvents));
         }
       } catch (err) {
         if (lastCalendarPollState !== 'error') {
@@ -10682,6 +10702,7 @@ app.whenReady().then(async () => {
         calendarPollInFlight = false;
       }
     }
+    calendarPollNow = () => { pollCalendar(); };
 
     console.log('[electron] Calendar auto-join polling started');
     pollCalendar();
@@ -13117,6 +13138,7 @@ function setupIPC() {
   ipcMain.handle('get-upcoming-calendar-events', () => (
     { events: latestUpcomingCalendarEvents, error: latestCalendarPollError }
   ));
+  ipcMain.handle('get-calendar-feed-status', () => latestCalendarFeedStatus);
 
   // (The switcher thumbnail used to be stolen from the live camera feed here —
   // an edge-triggered capture plus a poll ladder plus 4h staleness gating, all to
@@ -13178,6 +13200,8 @@ function setupIPC() {
     // Live-apply the visual prefs the panel can set here (the agent path goes
     // through applyPref, which already pushes these). #316.
     if (key === 'emojiSet') pushEmojiSet(value);
+    // #829: read the new feed now, so the panel can say whether it works.
+    if (key === 'calendarFeedSecretUrl' && calendarPollNow) calendarPollNow();
     if (key === 'avatarPostureShifts' || key === 'botName') pushAvatarPosture();
     if (key === 'meetViewSize') applyMeetViewSize();
     if (key === 'botName') applyAllWindowTitles();

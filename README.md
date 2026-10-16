@@ -1,8 +1,8 @@
 # Vibeconferencing — bring your agent into a video call
 
-[Vibeconferencing](https://vibeconferencing.com/) is a desktop app that lets an AI agent (the one you already use: **Claude Code, Codex, Grokbot, Meta's Muse**, or any agent that speaks MCP) **join your Google Meet calls as a real participant**. It hears the conversation and talks back out loud. And because it's your *actual* agent, not a notetaker, it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
+[Vibeconferencing](https://vibeconferencing.com/) is a desktop app that lets an AI agent (the one you already use: **Claude Code, Codex, Grokbot, Meta's Muse**, or any agent that speaks MCP) **join your Google Meet, Zoom, Microsoft Teams and Slack calls as a real participant**. It hears the conversation and talks back out loud. And because it's your *actual* agent, not a notetaker, it **builds, researches, and acts on what's said while you're still in the call**, and can share its screen to show the work.
 
-> **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS** (the steps below), **Linux**, including an always-on cloud box ([docs/cloud-box.md](docs/cloud-box.md)), and **Windows**. Builds for all three are in every release. It joins **Google Meet** and Slack huddles; Zoom support is in progress ([want to help?](https://github.com/wanderingstan/vibeconf-app/issues/318)). See [Known rough edges](#known-rough-edges) before your first call.
+> **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS** (the steps below), **Linux**, including an always-on cloud box ([docs/cloud-box.md](docs/cloud-box.md)), and **Windows**. Builds for all three are in every release. It joins **Google Meet**, **Zoom**, **Microsoft Teams** and **Slack huddles**. Zoom and Teams are new in v0.8.57: on Zoom the bot signs in to its own Zoom account and joins through the web client; on Teams it joins as a guest, tested so far on personal-account meetings (work-tenant meetings are next). See [Known rough edges](#known-rough-edges) before your first call.
 
 <p align="center"><a href="https://vibeconferencing.com"><img alt="Download Vibeconferencing" src="https://img.shields.io/badge/Download-vibeconferencing.com-9b2c9e?style=for-the-badge" height="44"></a></p>
 
@@ -132,7 +132,7 @@ Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issue
 
 | Dir | What it is |
 |-----|------------|
-| `electron-app/` | The Electron app: audio pipeline, virtual camera, Meet/Slack automation, turn-taking, the local control server, and the settings UI. |
+| `electron-app/` | The Electron app: audio pipeline, virtual camera, Meet/Zoom/Teams/Slack automation, turn-taking, the local control server, and the settings UI. |
 | `mcp-server/` | The MCP server the agent talks to (tools like `join_call`, `wait_for_speech`, `speak`, `update_whiteboard`, `set_voice`). Bundled into the app. |
 | `extension/` | Injected page scripts (Runway avatar bridge, LiveKit client). Bundled into the app. |
 | `scripts/`, `tests/`, `docs/` | Test harness (fleet + nightly), unit/e2e tests, and user docs. |
@@ -140,12 +140,12 @@ Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issue
 **How it works**
 
 ```
- AI agent (Claude Code)  ──MCP──▶  mcp-server  ──HTTP──▶  Electron app  ──▶  Google Meet / Slack
+ AI agent (Claude Code)  ──MCP──▶  mcp-server  ──HTTP──▶  Electron app  ──▶  Meet / Zoom / Teams / Slack
    (speak, listen,                 (bundled)              (audio in/out,        (as a real
     whiteboard, …)                                        virtual camera)        participant)
 ```
 
-The agent never touches WebRTC. It calls MCP tools; the app does the real-time media work (plays synthesized speech into a virtual mic, renders the avatar/whiteboard into a virtual camera) and drives the Meet/Slack UI.
+The agent never touches WebRTC. It calls MCP tools; the app does the real-time media work (plays synthesized speech into a virtual mic, renders the avatar/whiteboard into a virtual camera) and drives the call's web UI (Meet, Zoom, Teams or Slack).
 
 **Build** (Node ≥ 18 and [pnpm](https://pnpm.io)):
 

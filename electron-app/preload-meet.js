@@ -95,16 +95,7 @@ try {
 // (SVG text or base64 PNG by extension) or null → renderer falls back to native.
 // The path/format handling lives in emoji-assets.js, shared with preload-panel.
 try {
-  const emojiAssets = require('./emoji-assets.js');
-  globalThis.__vibeEmojiDataUri = (relPath) => emojiAssets.dataUriForRelPath(relPath, __dirname);
-  // The three big sets ship as colour FONTS now, not thousands of files. Hand
-  // page-inject the raw bytes; it builds a FontFace and draws glyphs. Bytes, not
-  // a URL, is also what keeps Meet's CSP out of it — verified in a live call.
-  globalThis.__vibeEmojiFontBytes = (setName) => emojiAssets.fontBytesFor(setName, __dirname);
-  // `dir:<path>` sets — a folder of images the user or an agent made. Resolved
-  // here for the same reason the bundled art is: the page has no fs.
-  globalThis.__vibeEmojiDirUri = (dir, emoji) => emojiAssets.externalDataUri(dir, emoji);
-  globalThis.__vibeEmojiDirCount = (dir) => emojiAssets.describeExternalDir(dir).count;
+  require('./emoji-assets.js').installPageResolvers(globalThis, __dirname);
 } catch {
   globalThis.__vibeEmojiDataUri = () => null;
   globalThis.__vibeEmojiFontBytes = () => null;

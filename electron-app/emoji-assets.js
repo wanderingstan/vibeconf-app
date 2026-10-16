@@ -164,9 +164,17 @@ function isImageSet(setName) {
 
 // Packaged builds ship the emoji dir via extraResources; from source it sits
 // next to this file.
+//
+// resourcesPath is read ONCE, at load, not on every lookup. preload-teams.js
+// deletes window.process after setup (Teams v2 treats a `process` global as the
+// retired Classic desktop client and redirects to /error/eoa), and in a
+// non-sandboxed preload that global IS the `process` this module sees. A lazy
+// read then throws on every face, the resolver swallows it as "not in the set",
+// and the tile silently draws native emoji (#828).
+const RESOURCES_PATH = (typeof process !== 'undefined' && process.resourcesPath) || '';
 function baseDir(dirname = __dirname) {
   return dirname.includes('.asar')
-    ? path.join(process.resourcesPath, 'emoji')
+    ? path.join(RESOURCES_PATH, 'emoji')
     : path.join(dirname, 'emoji');
 }
 
@@ -211,7 +219,25 @@ function dataUriFor(setName, emoji, dirname = __dirname) {
   return dataUriForRelPath(relPathFor(setName, emoji), dirname);
 }
 
+// The page-side hooks page-inject.js reads to draw a non-native emoji set.
+// page-inject is eval'd into the page world with no fs, so whichever preload
+// hosts it must install these, or every image/font set falls back to the
+// native glyph with no error anywhere. One installer for every host (Meet,
+// Teams, Zoom, Slack) so a new provider cannot get the camera without the art,
+// which is exactly what happened to Teams/Zoom/Slack before #828.
+function installPageResolvers(target = globalThis, dirname = __dirname) {
+  target.__vibeEmojiDataUri = (relPath) => dataUriForRelPath(relPath, dirname);
+  // The colour-font sets ship as FONTS: hand page-inject the raw bytes; it builds
+  // a FontFace. Bytes, not a URL, keeps the host page's CSP out of it.
+  target.__vibeEmojiFontBytes = (setName) => fontBytesFor(setName, dirname);
+  // `dir:<path>` sets: a folder of images the user or an agent made.
+  target.__vibeEmojiDirUri = (dir, emoji) => externalDataUri(dir, emoji);
+  target.__vibeEmojiDirCount = (dir) => describeExternalDir(dir).count;
+  return target;
+}
+
 module.exports = {
+  installPageResolvers,
   IMAGE_EXTS,
   emojiKeyFromBasename,
   indexExternalDir,

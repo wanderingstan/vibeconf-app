@@ -53,6 +53,14 @@ if (process.env.VIBECONF_AUDIO_PROBE === '1') require('./audio-probe').installAu
 // Same call Slack made for Chime. Must be set before the eval below.
 window.__vibeconf_disableAudioCapture = true;
 
+// Emoji sets (#828): page-inject draws the camera face, but it has no fs, so
+// the bundled art (fluent3d, redpanda, the colour fonts, dir: sets) reaches it
+// only through resolvers this preload installs. Without them the profile's
+// emojiSet arrives, is logged, and every face still draws as native emoji.
+try { require('./emoji-assets.js').installPageResolvers(globalThis, __dirname); } catch (err) {
+  console.error('[zoom] emoji resolvers failed (faces stay native):', err.message);
+}
+
 try {
   const code = fs.readFileSync(path.join(__dirname, 'page-inject.js'), 'utf-8');
   (0, eval)(code);

@@ -11695,6 +11695,7 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
     autojoin,
   });
   meetView = surface.view;
+  pushInitialAvatarStateOnLoad(meetView); // #828
   slackProviderMode = true;
   zoomProviderMode = false;
   slackSurface = surface;
@@ -11780,6 +11781,7 @@ function activateTeamsProvider(teamsUrl) {
   teamsProviderMode = true;
   ensureMeetSessionConfigured(SESSION_PARTITION);
   meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-teams.js' });
+  pushInitialAvatarStateOnLoad(meetView); // #828
   // Present as current Chrome in the string AND the Sec-CH-UA* headers: Teams'
   // server redirects what it takes for the Classic Teams Electron client to
   // /error/eoa on the FIRST request, before any page script runs (live,
@@ -11851,6 +11853,7 @@ function activateZoomProvider(zoomUrl) {
   zoomProviderMode = true;
   ensureMeetSessionConfigured(SESSION_PARTITION);
   meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-zoom.js' });
+  pushInitialAvatarStateOnLoad(meetView); // #828
   // The web client checks the browser; present as current Chrome (the same
   // spoof the Slack surface uses; preload-zoom shims userAgentData to match).
   meetView.webContents.setUserAgent(require('./slack-ua').UA);
@@ -12946,41 +12949,56 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
       if (_runway[String(process.env.VIBECONF_PROFILE || '').toLowerCase()]?.enabled) {
         setTimeout(() => runwayReestablish('meet page (re)load'), 4000);
       }
-      // Push current state to page-inject — first-call timing race fix.
-      // Without this, the initial 'joining' callStatus may have fired before
-      // the avatar was alive to receive it, leaving 🙂‍↕️ stuck on screen.
-      meetView.webContents.send('extension-message', {
-        action: 'set-call-status',
-        payload: { status: localServer.callStatus },
-      });
-      meetView.webContents.send('extension-message', {
-        action: 'set-mode',
-        payload: { mode: localServer.mode },
-      });
-      meetView.webContents.send('extension-message', {
-        action: 'set-bot-state',
-        payload: { state: localServer.botState },
-      });
-      // Push the stored avatar background (if any) so it persists across
-      // app restarts and survives a Meet reload.
-      const savedSvg = store?.get('avatarBackgroundSvg');
-      if (savedSvg) pushAvatarBackground(savedSvg);
-      // Push the emoji set across Meet reloads (#316) — the stored value, or the
-      // schema default (fluent3d) when the user hasn't chosen one.
-      const emojiSetDefault = require('./preferences-schema').PREFERENCES.emojiSet?.default;
-      const effEmojiSet = store?.get('emojiSet') ?? emojiSetDefault;
-      if (effEmojiSet && effEmojiSet !== 'native') pushEmojiSet(effEmojiSet);
-      // Restore debug overlay state across Meet reloads (per-category #overlay).
-      if (overlayAnyOn()) {
-        meetView.webContents.send('extension-message', {
-          action: 'set-debug-overlay',
-          payload: { enabled: true, flags: overlayPayloadFlags() },
-        });
-        updateDebugOverlayPushInterval(true);
-      }
-      // Avatar posture seed + on/off, across Meet reloads.
-      pushAvatarPosture();
+      // The avatar's look and state (#828: shared with Zoom, Teams and Slack).
+      pushInitialAvatarState();
     }
+  });
+}
+
+// The camera avatar's starting look and state, pushed to page-inject whenever a
+// call page (re)loads: call status, mode, bot state, the profile's background and
+// emoji set, the debug overlay and posture. Without it the avatar draws its
+// built-in defaults (blue gradient, native emoji) until something changes.
+//
+// #828: this used to live inside the Meet view's did-finish-load handler
+// (loadMeetURL → _openMeetInFreshView), so only Meet ever got it. Zoom, Teams and Slack build their own view and never called
+// loadMeetURL, so their tiles showed the defaults for the whole call. Every
+// provider now wires it through pushInitialAvatarStateOnLoad.
+function pushInitialAvatarState() {
+  const wc = liveMeetWc();
+  if (!wc) return;
+  // First-call timing race fix: the initial 'joining' callStatus may have fired
+  // before the avatar was alive to receive it, leaving 🙂‍↕️ stuck on screen.
+  wc.send('extension-message', { action: 'set-call-status', payload: { status: localServer.callStatus } });
+  wc.send('extension-message', { action: 'set-mode', payload: { mode: localServer.mode } });
+  wc.send('extension-message', { action: 'set-bot-state', payload: { state: localServer.botState } });
+  // The stored avatar background, so it persists across restarts and reloads.
+  const savedSvg = store?.get('avatarBackgroundSvg');
+  if (savedSvg) pushAvatarBackground(savedSvg);
+  // The emoji set (#316): the stored value, or the schema default (fluent3d)
+  // when the user hasn't chosen one.
+  const emojiSetDefault = require('./preferences-schema').PREFERENCES.emojiSet?.default;
+  const effEmojiSet = store?.get('emojiSet') ?? emojiSetDefault;
+  if (effEmojiSet && effEmojiSet !== 'native') pushEmojiSet(effEmojiSet);
+  // Debug overlay state (per-category #overlay).
+  if (overlayAnyOn()) {
+    wc.send('extension-message', {
+      action: 'set-debug-overlay',
+      payload: { enabled: true, flags: overlayPayloadFlags() },
+    });
+    updateDebugOverlayPushInterval(true);
+  }
+  // Avatar posture seed + on/off.
+  pushAvatarPosture();
+}
+
+// For the non-Meet providers (#828): push the avatar state on every page load
+// of their call view, as _openMeetInFreshView does for Meet. A listener on the view also
+// covers their reloads (Teams' /error/eoa retry, Zoom's own redirects).
+function pushInitialAvatarStateOnLoad(view) {
+  if (!view || view.webContents.isDestroyed()) return;
+  view.webContents.on('did-finish-load', () => {
+    if (view === meetView) pushInitialAvatarState();
   });
 }
 

@@ -1267,6 +1267,9 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 /* Leading a label: small, and tied to the label's size. */
 .share-window-btn .ui-icon { width: 16px; height: 16px; }
 .hero-notice .ui-icon { width: 16px; height: 16px; }
+/* The upcoming-meeting name, linking to the meeting itself. */
+.hero-notice a.meeting-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.hero-notice a.meeting-link:hover { color: #fff; }
 .profile-menu .ui-icon { width: 16px; height: 16px; }
 
 /* Profile switcher dropdown (anchored under the name row) */

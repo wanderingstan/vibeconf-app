@@ -2103,6 +2103,16 @@ refreshClaudeAuthBanner();
 const calendarUpcomingBanner = document.getElementById('calendarUpcomingBanner');
 const calendarUpcomingText = document.getElementById('calendarUpcomingText');
 const calendarReconnectBtn = document.getElementById('calendarReconnectBtn');
+// The video-call link of a Google Calendar event: Meet's hangoutLink, else the
+// first video entry point in conferenceData (where Zoom and other add-ons put
+// theirs). https only; null when the event has no usable link.
+function calendarMeetingUrl(event) {
+  const entry = event && event.conferenceData && Array.isArray(event.conferenceData.entryPoints)
+    ? event.conferenceData.entryPoints.find((p) => p && p.entryPointType === 'video')
+    : null;
+  const url = String((event && event.hangoutLink) || (entry && entry.uri) || '').trim();
+  return /^https:\/\//i.test(url) ? url : null;
+}
 function paintCalendarUpcoming(events, error) {
   if (!calendarUpcomingBanner || !calendarUpcomingText) return;
   // Poll error (main.js pushCalendarPollError): the backend can no longer
@@ -2145,10 +2155,28 @@ function paintCalendarUpcoming(events, error) {
   // is worse than none: it still reads as live. "4:30 PM" is right whenever it
   // is read. (Observed 2026-08-19: banner said "in 54m" for a meeting 10
   // minutes away, the difference being how long the call had been running.)
-  const line = `${localTime} meeting: "${title}"`;
   calendarUpcomingText.textContent = '';
   const lineSpan = document.createElement('span');
-  lineSpan.textContent = line;
+  // The meeting's name links to the meeting itself, so you can open it early in
+  // your browser; the bot then finds it there like any other open Meet. Only an
+  // https URL becomes a link: main's open-external-url drops anything else.
+  const meetingUrl = calendarMeetingUrl(next);
+  lineSpan.appendChild(document.createTextNode(`${localTime} meeting: "`));
+  if (meetingUrl) {
+    const link = document.createElement('a');
+    link.className = 'meeting-link';
+    link.href = meetingUrl;
+    link.textContent = title;
+    link.title = 'Open this meeting in your browser';
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      api.send('open-external-url', meetingUrl);
+    });
+    lineSpan.appendChild(link);
+  } else {
+    lineSpan.appendChild(document.createTextNode(title));
+  }
+  lineSpan.appendChild(document.createTextNode('"'));
   calendarUpcomingText.appendChild(lineSpan);
   if (next.ownerConfirmed === false) {
     lineSpan.style.textDecoration = 'line-through';

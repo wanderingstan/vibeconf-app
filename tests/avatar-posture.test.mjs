@@ -186,7 +186,7 @@ test('wiring: preload exposes the module, page-inject composes it, main pushes t
   // Added to the translate and multiplied into the scale, alongside (not
   // replacing) the existing tilts.
   assert.match(inject, /ctx\.translate\(cx \+ postX \+ thinkSway/);
-  assert.match(inject, /ctx\.rotate\(speakTilt \+ tickTilt/);
+  assert.match(inject, /let tilt = speakTilt \+ tickTilt/);
   assert.match(inject, /mentionPop \* postScale/);
   assert.match(inject, /case 'set-avatar-posture':/);
   assert.match(inject, /noteNameMentioned\(.*VirtualCamera\.MENTION_PULSE_MS\)/);

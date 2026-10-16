@@ -75,7 +75,8 @@ test('it stays out of the way of the states that own the face', () => {
   assert.match(block, /this\.state !== 'speaking'/);
   assert.match(block, /this\.state !== 'yielding'/);
   // And it composes with the existing rotations rather than replacing them.
-  assert.match(inject, /ctx\.rotate\(speakTilt \+ tickTilt \+ agentTiltNow \+ deadFlip \+ mentionTilt \+ gateTilt\)/);
+  assert.match(inject, /let tilt = speakTilt \+ tickTilt \+ agentTiltNow \+ deadFlip \+ mentionTilt \+ gateTilt;/);
+  assert.match(inject, /ctx\.rotate\(tilt\)/);
 });
 
 test('a stale or out-of-range gate produces no tilt', () => {

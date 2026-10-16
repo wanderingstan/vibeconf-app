@@ -22,7 +22,7 @@ questions about the work, because it *is* the thing that did the work.
 2. Creates a new profile (a real, separate bot — its own name, voice, logins
    and port). Never an existing one: it does not rename or move a bot that is
    already running, so nothing is pulled out of the call it is in.
-3. Seeds that profile with **this session's working directory and session name**,
+3. Seeds that profile with **this session's working directory and session id**,
    so its first act is resuming this session rather than starting a new one.
 4. Launches it straight into that call, with its agent behind it.
 
@@ -52,8 +52,8 @@ it stays flagged for setup and gets it on a call of its own.
 
 ## Step 1: Work out what session you are
 
-Two things are needed, and they only mean something together — Claude sessions are
-stored **per working directory**, so a session name without its directory does not
+Two things are needed, and they only mean something together: Claude sessions are
+stored **per working directory**, so a session without its directory does not
 identify anything.
 
 **The working directory** is this session's `cwd`:
@@ -62,16 +62,29 @@ identify anything.
 pwd
 ```
 
-**The session name** is recorded at the head of this session's own transcript.
-`claude --resume` accepts it:
+**The session** is identified by its **id**, `$CLAUDE_CODE_SESSION_ID`. Always
+pass the id, never the title:
+
+- A title is not unique and not stable. A resumed or forked session's transcript
+  STARTS with the title it inherited, and the user may have renamed it since, so
+  "the name at the top of the transcript" can be a different session entirely.
+- An id pins the bot to exactly this session, under whatever name the bot ends
+  up with. A title would be overwritten by the bot's own name on launch (the
+  session field follows the bot's name unless pinned), and the bot would start
+  fresh.
 
 ```
-head -2 ~/.claude/projects/"$(pwd | sed 's/[^A-Za-z0-9]/-/g')"/"$CLAUDE_CODE_SESSION_ID".jsonl
+echo "$CLAUDE_CODE_SESSION_ID"
 ```
 
-The first lines carry `custom-title` and `agent-name`. Use that name. If the file
-has neither — a session that was never named — say so and ask the user what to
-call the bot; do not guess from the directory.
+If it is empty, say so and stop; do not guess a session.
+
+The session's **current title** is still useful, but only as a source for a
+name to propose (Step 2). It is the LAST `custom-title` line for this id:
+
+```
+grep '"type":"custom-title"' ~/.claude/projects/"$(pwd | sed 's/[^A-Za-z0-9]/-/g')"/"$CLAUDE_CODE_SESSION_ID".jsonl | grep "$CLAUDE_CODE_SESSION_ID" | tail -1
+```
 
 ## Step 2: Parse the arguments, and decide the name
 
@@ -102,7 +115,7 @@ that never answers to itself, but propose something sayable in the first place.
 ```
 curl -s -X POST "http://127.0.0.1:${VIBECONF_LOCAL_PORT:-7865}/api/adopt-session-as-bot" \
   -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg w "$(pwd)" --arg s "<session name>" --arg b "<bot name>" --arg t "<call, or empty>" \
+  -d "$(jq -nc --arg w "$(pwd)" --arg s "$CLAUDE_CODE_SESSION_ID" --arg b "<bot name>" --arg t "<call, or empty>" \
         '{workdir:$w, session:$s, botName:$b} + (if $t == "" then {} else {target:$t} end)')"
 ```
 

@@ -40,6 +40,20 @@ test('the seed carries BOTH the workdir and the session', () => {
   assert.match(main, /seeded\.agentSession = adopt\.session/);
 });
 
+test('an adopted session is pinned, not left to follow the bot name', () => {
+  // On auto, planAgentSession rewrites a name ref to the bot's own name at first
+  // launch, so the bot starts a fresh session instead of resuming.
+  assert.match(main, /seeded\.agentSessionAuto = false/);
+});
+
+test('the skill pins the session by id, not by its title', () => {
+  // A resumed session's transcript starts with an INHERITED title, so reading
+  // the title picked a different session. The id is unambiguous.
+  const skill = readFileSync(join(root, 'mcp-server/call-new-bot-skill.md'), 'utf8');
+  assert.match(skill, /--arg s "\$CLAUDE_CODE_SESSION_ID"/);
+  assert.doesNotMatch(skill, /head -2/);
+});
+
 test('seeding happens in seedNewBotName, i.e. BEFORE launchOrFocusProfile', () => {
   const handler = impl();
   const seedAt = handler.indexOf('seedNewBotName(name,');

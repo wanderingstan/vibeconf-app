@@ -9322,7 +9322,7 @@ function ensureClaudeIntegration() {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '69';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '70';  // Bump this when updating the skill content below
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
@@ -13922,7 +13922,15 @@ function setupIPC() {
       // new-bot-background.js).
       seeded[require('./new-bot-background.js').SEED_BACKGROUND_MARKER] = true;
       if (adopt && adopt.workdir) seeded.claudeWorkDir = adopt.workdir;
-      if (adopt && adopt.session) seeded.agentSession = adopt.session;
+      if (adopt && adopt.session) {
+        seeded.agentSession = adopt.session;
+        // Adopting IS taking the session field over. Left on auto, the first
+        // launch rewrites a name ref to the bot's own name (planAgentSession)
+        // and starts a fresh session: Ravi came up blank that way. An id ref is
+        // already safe, but a name ref from an older skill or a direct API
+        // call is not.
+        seeded.agentSessionAuto = false;
+      }
       fs.writeFileSync(file, JSON.stringify(seeded, null, 2));
       console.log('[electron] New bot', profileName, 'named', botName,
         adopt ? `(adopting session ${JSON.stringify(adopt.session)} in ${adopt.workdir})` : '');

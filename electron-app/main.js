@@ -49,6 +49,26 @@ const {
 // sides of the IPC wire (provider impl in google-meet-provider.js). Values are
 // byte-identical to the prior literals — same wire.
 const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider.js');
+const { PlatformCaptions, SOURCE_EVENTS, resolveListenSource } = require('./caption-source.js');
+
+// Where the bot hears the call from (#850). Today always the platform's own
+// captions, so this is a straight re-emit of the provider's caption events;
+// the point is that the handlers below listen to a SOURCE, not to a provider,
+// so a source that transcribes call audio can stand in for calls without
+// captions. Built on first use: sendCallCmd and callViewRequest are below.
+let _captionSource = null;
+// The live call platform, by the short names the panel uses.
+function activeProviderName() {
+  return slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : teamsProviderMode ? 'teams' : 'meet';
+}
+
+function captionSource() {
+  if (!_captionSource) {
+    _captionSource = new PlatformCaptions({ ipcMain, sendCallCmd, callViewRequest });
+    _captionSource.start();
+  }
+  return _captionSource;
+}
 
 // How Claude Code should launch our stdio MCP server.
 //
@@ -2420,12 +2440,7 @@ const localServer = new globalThis.LocalServer({
     // tag Meet actually selected, which can differ from what was asked ("es" →
     // "es-ES"). Same requestId pattern as chatRequest; 30s because this clicks
     // through a menu, a tab and a listbox with verification at each step.
-    const result = await callViewRequest(
-      CALL_COMMANDS.setCaptionLanguage,
-      { language: want },
-      CALL_EVENTS.captionLanguageResult,
-      30000,
-    );
+    const result = await captionSource().setLanguage(want);
     if (result && result.ok) {
       console.log('[local-server] Caption language →', result.language);
       // Record what's now live, so the other paths into here (the join-time
@@ -2982,6 +2997,12 @@ const localServer = new globalThis.LocalServer({
       // Say it early: the room should learn the bot is typing-only before they
       // spend the call waiting for it to answer out loud.
       announceNoVoiceOnce();
+      // #850: which source the bot hears through. Every provider has captions
+      // today, so this only ever says "platform"; a provider without them says
+      // loudly that nothing can hear the call, rather than sitting deaf.
+      const listen = resolveListenSource({ pref: store.get('listenSource'), providerId: activeProviderName() });
+      if (listen.source) console.log(`[electron] Hearing this call through ${listen.source} captions (${listen.reason})`);
+      else console.warn(`[electron] Nothing can hear this call: ${listen.reason}`);
     }
     // Kick off ack-cache prewarming (tts.js) as early in the call lifecycle as
     // possible — 'navigating' fires well before the agent is ready to speak,
@@ -3007,7 +3028,7 @@ const localServer = new globalThis.LocalServer({
     // "URL navigated" and "actually admitted" is misleading — especially when
     // entry is denied, since that 15s grace window leaves the button visible
     // while we wait for the denial page to be detected.
-    broadcastToRenderers('call-status-changed', { status, provider: slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : teamsProviderMode ? 'teams' : 'meet' });
+    broadcastToRenderers('call-status-changed', { status, provider: activeProviderName() });
     // Rebuild the menu bar for the same reason: Call Now and Hang Up are a
     // pair, and exactly one of them should be available. A handful of rebuilds
     // per call (idle → joining → in-call → idle), not a poll.
@@ -15072,7 +15093,7 @@ function setupIPC() {
   // showed a face before any agent backend was actually connected. Engagement
   // now gates on real agent activity (wait_for_speech / speak) in page-inject's
   // set-bot-state handler, so 🫥 means "in the call but no agent driving yet."
-  ipcMain.on(CALL_EVENTS.captionsReady, () => {
+  captionSource().on(SOURCE_EVENTS.ready, () => {
     console.log('[electron] Captions ready — flushing pending bot speech');
     localServer._flushPendingBotSpeech();
     applyCaptionLanguagePref();
@@ -15195,7 +15216,7 @@ function setupIPC() {
   // scraper sends the full current state of visible caption children each
   // tick (deduped if unchanged). updateTurns upserts and marks settled any
   // turn that's no longer bottommost.
-  ipcMain.on(CALL_EVENTS.captionTurns, (_event, payload) => {
+  captionSource().on(SOURCE_EVENTS.turns, (payload) => {
     const turns = payload?.turns;
     if (!Array.isArray(turns)) return;
     // #424: real caption text is proof we're hearing again — drop the 🥴.
@@ -15214,7 +15235,7 @@ function setupIPC() {
   // self-heals by re-clicking the CC button; this keeps the server state in
   // sync so the avatar can flip to 🙉 and wait_for_speech timeouts can
   // tell the agent the room isn't silent — the bot is deaf.
-  ipcMain.on(CALL_EVENTS.captionsState, (_event, { on }) => {
+  captionSource().on(SOURCE_EVENTS.state, ({ on } = {}) => {
     localServer.setCaptionsOn(!!on);
     broadcastToRenderers('caption-state', { on: !!on });
   });
@@ -15224,7 +15245,7 @@ function setupIPC() {
   // path as captions-off so the 🙉 emoji flips and the wait_for_speech timeout
   // warns the agent. Auto-clears: the next real caption flips captionsOn back
   // ON (local-server self-corrects on incoming text).
-  ipcMain.on(CALL_EVENTS.captionStall, (_event, info) => {
+  captionSource().on(SOURCE_EVENTS.stall, (info) => {
     const secs = Math.round((info?.ageMs || 0) / 1000);
 
     // #368 / #424: a long bot MONOLOGUE also produces a 0-remote-caption gap
@@ -15279,7 +15300,7 @@ function setupIPC() {
     broadcastToRenderers('caption-state', { on: false });
     // D (#259): self-heal — only on CONFIRMED deafness, never during quiet rooms.
     if (meetView && !meetView.webContents.isDestroyed()) {
-      sendCallCmd(CALL_COMMANDS.recoverCaptions);
+      captionSource().recover();
     }
   });
 

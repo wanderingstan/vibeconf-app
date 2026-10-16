@@ -173,6 +173,23 @@ const PREFERENCES = {
       'a call. Empty leaves whatever Meet is already set to. Meet has no ' +
       'host-level control for this, so each bot sets its own.',
   },
+  listenSource: {
+    type: 'string',
+    default: 'auto',
+    // 'audio' (transcribing the call audio itself) joins this list with #850
+    // phase 2. Offering it before it exists would be a setting that does nothing.
+    enum: ['auto', 'platform'],
+    enumLabels: {
+      auto: 'Automatic (the call platform\'s own captions when it has them)',
+      platform: 'The call platform\'s own captions',
+    },
+    label: 'How the bot hears the call',
+    description:
+      'Where the bot gets the words said in a call. Meet, Zoom, Teams and Slack all ' +
+      'caption calls themselves, and the bot reads those captions. Automatic is the ' +
+      'right choice today; transcribing the call audio directly, for calls without ' +
+      'captions, is coming (#850).',
+  },
   botName: {
     type: 'string',
     // Deliberately NOT a plausible name. "Jimmy" was the default for a long

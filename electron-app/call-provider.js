@@ -91,6 +91,28 @@ const CALL_BOOTSTRAP = {
 };
 
 // ---------------------------------------------------------------------------
+// Capabilities — what a platform can do, as opposed to how. Today only
+// `captions`: whether the platform transcribes the call itself, i.e. whether
+// PlatformCaptions can hear it (caption-source.js, #850). A calling app with no
+// captions is a provider with `captions: false`, heard some other way.
+//
+// Keyed by provider id (each class's static id). 'meet' is the short name
+// main.js uses for Google Meet in status broadcasts.
+// ---------------------------------------------------------------------------
+const PROVIDER_CAPABILITIES = {
+  'google-meet': { captions: true },
+  meet: { captions: true },
+  slack: { captions: true },
+  zoom: { captions: true },
+  teams: { captions: true },
+};
+const NO_CAPABILITIES = Object.freeze({ captions: false });
+
+function providerCapabilities(providerId) {
+  return PROVIDER_CAPABILITIES[providerId] || NO_CAPABILITIES;
+}
+
+// ---------------------------------------------------------------------------
 // CallProvider — abstract base. A concrete provider (GoogleMeetProvider) owns
 // the platform-specific automation (DOM for Meet; an API/socket for Slack) and
 // implements every method below. Commands are async and resolve when the action
@@ -105,6 +127,8 @@ const CALL_BOOTSTRAP = {
 class CallProvider {
   /** Human-readable provider id, e.g. 'google-meet'. */
   static get id() { return 'abstract'; }
+  /** What this platform can do; see PROVIDER_CAPABILITIES. */
+  static get capabilities() { return providerCapabilities(this.id); }
 
   notImplemented(method) {
     throw new Error(`${this.constructor.name}.${method}() not implemented`);
@@ -162,4 +186,7 @@ class CallProvider {
   off(/* channel, handler */) { this.notImplemented('off'); }
 }
 
-module.exports = { CallProvider, CALL_COMMANDS, CALL_EVENTS, CALL_BOOTSTRAP };
+module.exports = {
+  CallProvider, CALL_COMMANDS, CALL_EVENTS, CALL_BOOTSTRAP,
+  PROVIDER_CAPABILITIES, providerCapabilities,
+};

@@ -833,3 +833,85 @@ test('aborting mid-flight on the copy path leaves no output file', { skip: !HAVE
   assert.equal(r.reason, 'cancelled');
   assert.ok(!fs.existsSync(path.join(dir, 'call-recording.mp4')));
 });
+
+// ── #830: audio aligned to the video's start ────────────────────────────────
+// On Teams and Zoom the video track starts ~1.6–2s after the audio tracks, and
+// muxing every track at t=0 made audio lag video by exactly that gap.
+
+const { audioAlignmentMs, audioFilter } = require('../electron-app/call-media-merge.js');
+
+test('audioAlignmentMs: each audio track\'s start minus the video\'s; tiny or unknown gaps are 0', () => {
+  const video = { startWallClock: 10_000 };
+  assert.deepEqual(
+    audioAlignmentMs(video, [
+      { startWallClock: 8_346 },   // started 1654ms before the video (the measured Zoom call)
+      { startWallClock: 10_400 },  // joined 400ms after it
+      { startWallClock: 10_004 },  // within tolerance
+      {},                          // an older manifest without stamps
+    ]),
+    [-1654, 400, 0, 0],
+  );
+  assert.deepEqual(audioAlignmentMs({}, [{ startWallClock: 1 }]), [0]);
+});
+
+test('audioFilter: no graph when nothing needs moving or mixing; trim / delay / amix otherwise', () => {
+  assert.equal(audioFilter([{}], [0]), null);
+  assert.deepEqual(audioFilter([{}, {}], [0, 0]), { graph: '[1:a][2:a]amix=inputs=2:normalize=0[aout]', out: '[aout]' });
+  assert.deepEqual(audioFilter([{}], [-1654]), { graph: '[1:a]atrim=start=1.654,asetpts=PTS-STARTPTS[al0]', out: '[al0]' });
+  assert.deepEqual(audioFilter([{}, {}], [-1654, 400]), {
+    graph: '[1:a]atrim=start=1.654,asetpts=PTS-STARTPTS[al0];[2:a]adelay=400:all=1[al1];[al0][al1]amix=inputs=2:normalize=0[aout]',
+    out: '[aout]',
+  });
+});
+
+// An audio track that is silent for `silentSec`, then a tone: its onset is the
+// marker the sync test looks for in the merged file.
+function writeToneAudio(file, { silentSec = 0.5, seconds = 1.5 } = {}) {
+  execSync(
+    `"${FFMPEG_BIN}" -y -f lavfi -i "sine=f=440:r=48000:d=${seconds}" -af "volume='if(lt(t,${silentSec}),0,1)':eval=frame" -c:a libopus "${file}"`,
+    { stdio: 'ignore' },
+  );
+}
+// Where the first sound starts in a file's audio, in seconds.
+function audioOnsetSec(file) {
+  const out = execSync(`"${FFMPEG_BIN}" -i "${file}" -hide_banner -af silencedetect=n=-40dB:d=0.1 -f null - 2>&1`, { encoding: 'utf8' });
+  const m = out.match(/silence_end:\s*([\d.]+)/);
+  return m ? Number(m[1]) : 0;
+}
+
+test('the merged audio lands where the wall clocks say, against the video — earlier audio trimmed, later audio delayed (copy path kept)', { skip: !HAVE_FFMPEG }, async () => {
+  for (const [audioStartsMs, expectOnset] of [[-300, 0.2], [400, 0.9], [0, 0.5]]) {
+    const dir = tmpDir();
+    writeFakeH264Video(path.join(dir, 'video.webm'), { seconds: 2 });
+    writeToneAudio(path.join(dir, 'bot.webm'));   // tone at 0.5s of its OWN timeline
+    const r = await mergeCallMedia(dir, {
+      tracksDir: dir,
+      tracks: [
+        { track: 'video', file: 'video.webm', kind: 'video', startWallClock: 50_000 },
+        { track: 'bot', file: 'bot.webm', kind: 'audio', startWallClock: 50_000 + audioStartsMs },
+      ],
+    });
+    assert.equal(r.ok, true, r.reason);
+    assert.equal(r.videoCopied, true, 'alignment must not cost the stream copy');
+    const onset = audioOnsetSec(r.file);
+    assert.ok(Math.abs(onset - expectOnset) < 0.06, `audio ${audioStartsMs}ms vs video: tone at ${onset}s, expected ${expectOnset}s`);
+  }
+});
+
+test('padStartMs (the share merge) is never also audio-aligned — it lines up by padding the video instead', { skip: !HAVE_FFMPEG }, async () => {
+  const dir = tmpDir();
+  writeFakeVideo(path.join(dir, 'share.webm'));
+  writeFakeAudio(path.join(dir, 'bot.webm'));
+  const r = await mergeCallMedia(dir, {
+    tracksDir: dir,
+    videoTrackName: 'share',
+    outputName: 'call-recording-share.mp4',
+    padStartMs: 500,
+    tracks: [
+      { track: 'share', file: 'share.webm', kind: 'share', startWallClock: 50_500 },
+      { track: 'bot', file: 'bot.webm', kind: 'audio', startWallClock: 50_000 },
+    ],
+  });
+  assert.equal(r.ok, true, r.reason);
+  assert.deepEqual(r.audioOffsetsMs, [0]);
+});

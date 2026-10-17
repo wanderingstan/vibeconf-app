@@ -359,6 +359,53 @@ function _resetFfmpegAvailabilityCache() {
 // On every failure — stall, cancel, or a non-zero exit — any partial output
 // file is deleted rather than left behind masquerading as a finished
 // recording.
+// #830: put every audio track on the VIDEO's timeline. Each track's t=0 is its
+// own startWallClock, and they don't start together: on Teams and Zoom the
+// video track starts 1.6–2s after the audio (the page's capture comes up
+// later), and muxing both at 0 made audio LAG video by exactly that gap —
+// measured on zoom-85304037481: face change at 18.35s, voice at 19.98s,
+// tracks 1.654s apart. Meet's gap is 0.1–0.3s, the same bug in miniature.
+//
+// The video is the anchor (never shifted, so the stream-copy path survives);
+// audio that started earlier is trimmed by the difference, audio that started
+// later is delayed. Returns ms per audio track (positive = delay), 0 where the
+// stamps are missing (older manifests) or within ALIGN_TOLERANCE_MS — so a
+// recording whose tracks already agree builds exactly the args it always did.
+const ALIGN_TOLERANCE_MS = 10;
+function audioAlignmentMs(videoTrack, audioTracks) {
+  const v = videoTrack && Number(videoTrack.startWallClock);
+  return audioTracks.map((t) => {
+    const a = Number(t.startWallClock);
+    if (!Number.isFinite(v) || !Number.isFinite(a)) return 0;
+    const d = Math.round(a - v);
+    return Math.abs(d) < ALIGN_TOLERANCE_MS ? 0 : d;
+  });
+}
+
+// The audio half of the filter graph: per-track alignment, then amix when
+// there's more than one. Returns null when no filtering is needed at all (one
+// track, no offset), so the caller can map the input directly as before.
+function audioFilter(audioTracks, offsetsMs, firstInputIndex = 1) {
+  const n = audioTracks.length;
+  if (n === 0) return null;
+  const aligned = offsetsMs.some((d) => d !== 0);
+  if (n === 1 && !aligned) return null;
+  const parts = [];
+  const labels = audioTracks.map((_, i) => {
+    const d = offsetsMs[i] || 0;
+    const input = `[${i + firstInputIndex}:a]`;
+    if (d === 0) return input;
+    const step = d > 0
+      ? `adelay=${d}:all=1`
+      : `atrim=start=${(-d / 1000).toFixed(3)},asetpts=PTS-STARTPTS`;
+    parts.push(`${input}${step}[al${i}]`);
+    return `[al${i}]`;
+  });
+  if (n === 1) return { graph: parts.join(';'), out: labels[0] };
+  parts.push(`${labels.join('')}amix=inputs=${n}:normalize=0[aout]`);
+  return { graph: parts.join(';'), out: '[aout]' };
+}
+
 async function mergeCallMedia(callDir, {
   tracksDir = path.join(callDir, 'call-recording-tracks'),
   tracks = [],
@@ -399,6 +446,10 @@ async function mergeCallMedia(callDir, {
   const outPath = path.join(callDir, outputName);
 
   const padSec = padStartMs > 0 ? (padStartMs / 1000).toFixed(3) : null;
+  // #830. Not with padStartMs: that caller (the share merge) has already
+  // lined the video up with the audio by padding, and offsetting the audio
+  // as well would undo it.
+  const offsetsMs = padSec ? audioTracks.map(() => 0) : audioAlignmentMs(videoTrack, audioTracks);
   const cropMargins = crop ? { ...DEFAULT_CROP_MARGINS, ...(typeof crop === 'object' ? crop : null) } : null;
 
   // Stream-copy is possible when the input is already H.264 and nothing
@@ -421,17 +472,16 @@ async function mergeCallMedia(callDir, {
   if (copyVideo) {
     const args = [...baseArgs(), '-i', videoTrack.absPath];
     for (const t of audioTracks) args.push('-i', t.absPath);
+    const af = audioFilter(audioTracks, offsetsMs);
     if (audioTracks.length === 0) {
       args.push('-map', '0:v', '-c:v', 'copy', outPath);
-    } else if (audioTracks.length === 1) {
+    } else if (!af) {
       args.push('-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', outPath);
     } else {
-      const inputs = audioTracks.map((_, i) => `[${i + 1}:a]`).join('');
-      const filter = `${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
-      args.push('-filter_complex', filter, '-map', '0:v', '-map', '[aout]', '-c:v', 'copy', '-c:a', 'aac', outPath);
+      args.push('-filter_complex', af.graph, '-map', '0:v', '-map', af.out, '-c:v', 'copy', '-c:a', 'aac', outPath);
     }
     const r = await run(args, outPath);
-    return r.ok ? { ok: true, file: outPath, videoCopied: true, cropped: false } : r;
+    return r.ok ? { ok: true, file: outPath, videoCopied: true, cropped: false, audioOffsetsMs: offsetsMs } : r;
   }
 
   // Re-encode path.
@@ -452,33 +502,33 @@ async function mergeCallMedia(callDir, {
     // Cropping or padding needs the video stream FILTERED — that rules out
     // '-c:v copy' for this branch, unlike the plain case below.
     const chain = `[0:v]${videoFilter}[vout]`;
+    const af = audioFilter(audioTracks, offsetsMs);
     if (audioTracks.length === 0) {
       args.push('-filter_complex', chain, '-map', '[vout]', ...VIDEO_ENCODE_ARGS, outPath);
-    } else if (audioTracks.length === 1) {
+    } else if (!af) {
       args.push('-filter_complex', chain, '-map', '[vout]', '-map', '1:a',
         ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
     } else {
-      const inputs = audioTracks.map((_, i) => `[${i + 1}:a]`).join('');
-      const filter = `${chain};${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
-      args.push('-filter_complex', filter, '-map', '[vout]', '-map', '[aout]',
+      args.push('-filter_complex', `${chain};${af.graph}`, '-map', '[vout]', '-map', af.out,
         ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
     }
   } else if (audioTracks.length === 0) {
     // Nothing to mix, but still re-encode the video (see note above) rather
     // than '-c:v copy' it as-is.
     args.push(...VIDEO_ENCODE_ARGS, outPath);
-  } else if (audioTracks.length === 1) {
-    // No amix needed for a single track — map it straight through.
-    args.push('-map', '0:v', '-map', '1:a', ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
   } else {
-    // Build the filter_complex programmatically: [1:a][2:a]...[N:a]amix=inputs=N...
-    const inputs = audioTracks.map((_, i) => `[${i + 1}:a]`).join('');
-    const filter = `${inputs}amix=inputs=${audioTracks.length}:normalize=0[aout]`;
-    args.push('-filter_complex', filter, '-map', '0:v', '-map', '[aout]', ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
+    // Single track with no offset maps straight through; otherwise the audio
+    // graph aligns (#830) and/or mixes: [1:a][2:a]...[N:a]amix=inputs=N.
+    const af = audioFilter(audioTracks, offsetsMs);
+    if (!af) {
+      args.push('-map', '0:v', '-map', '1:a', ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
+    } else {
+      args.push('-filter_complex', af.graph, '-map', '0:v', '-map', af.out, ...VIDEO_ENCODE_ARGS, '-c:a', 'aac', outPath);
+    }
   }
 
   const r = await run(args, outPath);
-  return r.ok ? { ok: true, file: outPath, videoCopied: false, cropped: !!cropMargins } : r;
+  return r.ok ? { ok: true, file: outPath, videoCopied: false, cropped: !!cropMargins, audioOffsetsMs: offsetsMs } : r;
 }
 
 // Run one ffmpeg invocation that writes `outPath`, with the cancel signal and
@@ -556,6 +606,8 @@ function runFfmpeg(ffmpegPath, args, { outPath, signal, stallTimeoutMs }) {
 }
 
 module.exports = {
+  audioAlignmentMs,
+  audioFilter,
   mergeCallMedia,
   ffmpegAvailable,
   resolveFfmpegPath,

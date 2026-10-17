@@ -10,5 +10,10 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "latest",
     "zod": "^4.4.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "express>proxy-addr": "2.0.8"
+    }
   }
 }

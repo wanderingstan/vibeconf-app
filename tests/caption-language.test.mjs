@@ -162,7 +162,7 @@ test('captionLanguage is a preference, defaulting to "leave Meet alone"', () => 
 test('the preference is applied when captions go live, once per call', () => {
   // captions-ready, not join: before it, the caption region and the Settings
   // dialog that owns the language may not be there to drive.
-  assert.match(main, /captionsReady[\s\S]{0,200}applyCaptionLanguagePref\(\)/);
+  assert.match(main, /SOURCE_EVENTS\.ready[\s\S]{0,200}applyCaptionLanguagePref\(\)/);
   const fn = main.slice(main.indexOf('function applyCaptionLanguagePref'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   // Two distinct guards, because they stop two different things. The latch

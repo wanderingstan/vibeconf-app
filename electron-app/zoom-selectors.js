@@ -74,7 +74,7 @@ const ZOOM = {
   // row shows a canned ON/OFF speaking animation, not amplitude — see
   // people.rosterIconClassPrefix.) SELF ONLY: exactly one such element exists
   // (footer button); other participants' speaking is signalled elsewhere
-  // (see people.rosterIconClassPrefix / tiles.speakingIndicator, TBD).
+  // (people.speakingIcon, verified 2026-10-16).
   // DOM: .audio-level-indicator < .voip-icon-inner < .audio-voip-active-icon.
   // -------------------------------------------------------------------------
   mic: {
@@ -134,9 +134,16 @@ const ZOOM = {
     // video-off, audio-muted (prefix below). While a participant speaks, the
     // row's audio icon plays a canned ON/OFF animation (binary voice-activity,
     // NOT amplitude — unlike the footer mic button's VU meter; observed on the
-    // self row, Stan 2026-07-05). This is the per-participant speaking signal;
-    // the exact animated icon class/markup is TBD — harvest it multi-party.
+    // self row, Stan 2026-07-05). This is the per-participant speaking signal.
     rosterIconClassPrefix: 'lazy-icon-icons/participants-list/',
+    // The speaking signal, verified (#847 follow-up, 2026-10-16, dom-probe on a
+    // live call): while a participant talks, Zoom REPLACES their row's static
+    // mic <svg> with <span class="participants-icon__voip-speaking-icon"> (the
+    // fixed-speed animation people see), and puts the svg back when they stop.
+    // Its presence in a row = that person is speaking. Rises ~2.5s before the
+    // caption for the same words. Needs the participants pane open (the roster
+    // is read from it); it's binary, not a level.
+    speakingIcon: '.participants-icon__voip-speaking-icon',
   },
 
   // -------------------------------------------------------------------------

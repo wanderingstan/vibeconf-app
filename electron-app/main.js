@@ -6602,7 +6602,7 @@ function configureMeetSession(sess) {
 // ---------------------------------------------------------------------------
 
 // Flags that take a value; used to catch the silently-ignored space form below.
-const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'join-url', 'bot-name', 'bot-view', 'config']);
+const KNOWN_VALUE_FLAGS = new Set(['profile', 'local-port', 'website-url', 'meet-url', 'join-url', 'bot-name', 'bot-view', 'config', 'dom-probe']);
 
 function parseCLIArgs() {
   const args = process.argv.slice(1); // skip electron binary
@@ -6629,6 +6629,14 @@ function parseCLIArgs() {
 }
 
 const cliArgs = parseCLIArgs();
+// --dom-probe=1 | --dom-probe='<css selector>' (dom-probe.js): a research tool
+// for finding a calling app's hidden signals, e.g. Teams' speaking ring (#847).
+// Passed on as VIBECONF_DOM_PROBE, which each provider's preload reads at load;
+// the call views are created later, so they inherit it.
+if (cliArgs['dom-probe']) {
+  process.env.VIBECONF_DOM_PROBE = cliArgs['dom-probe'];
+  console.log('[electron] DOM probe ON for call views:', cliArgs['dom-probe']);
+}
 
 // --record-calls=true is the "record every call" launch switch (used by the
 // test fleet for nightly runs, scripts/spawn-test-fleet.sh). It plugs into the

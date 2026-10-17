@@ -47,6 +47,9 @@ require('./slack-ua').installClientHintsShim();
 // Recon (#814): log where Zoom's call audio lives. Off unless
 // VIBECONF_AUDIO_PROBE=1. Installed before page-inject and Zoom's scripts.
 if (process.env.VIBECONF_AUDIO_PROBE === '1') require('./audio-probe').installAudioProbe('[zoom]');
+// Research (dom-probe.js): --dom-probe=1 watches participant rows and video
+// tiles, where Zoom's speaking indicator is still unverified. Off by default.
+require('./dom-probe').installDomProbe({ tag: '[zoom]', defaultSelector: '.participants-li, .video-avatar__avatar, .speaker-active-container__wrap' });
 
 // The RTCPeerConnection audio-capture hook is Meet-shaped and unused here (we
 // don't read call audio); keep the getUserMedia virtual mic + play-tts path.
@@ -305,7 +308,60 @@ function tick() {
   } catch { /* DOM not ready yet */ }
 }
 
+// Who is speaking (#847 follow-up), from each participants-pane row's speaking
+// icon. Same shape as Teams' poll: faster than the 1s heartbeat, and it sends
+// the two events Meet's speaker tracker does — participantsUpdated with
+// speaking flags (the floor: anyoneSpeaking / peakSpeakers / barge-in) and
+// speakingChanged per edge (room presence). Shares lastRoster with tick().
+// The signal only exists while the pane is open, so reopen it if it closed.
+const lastSpeaking = new Map(); // name -> boolean (non-self only)
+let lastPaneReopenAt = 0;
+function pollSpeaking() {
+  if (!reportedInCall) return;
+  const d = provider.doc();
+  // Test for the ROWS, not the list container: live (2026-10-16) the rows were
+  // there and readable while #participants-ul was not, and a container check
+  // read the open pane as closed and skipped every poll.
+  if (!d.querySelector(ZOOM.people.item)) {
+    if (Date.now() - lastPaneReopenAt > 10000) {
+      lastPaneReopenAt = Date.now();
+      provider.openParticipants().then((ok) => console.log('[zoom] participants pane was closed; reopened for speaking detection →', ok)).catch(() => {});
+    }
+    return;
+  }
+  let parts;
+  try { parts = provider.getParticipants(); } catch { return; }
+  const seen = new Set();
+  let changed = false;
+  for (const p of parts) {
+    if (p.isSelf) continue;
+    seen.add(p.name);
+    if (lastSpeaking.get(p.name) !== p.speaking) {
+      if (lastSpeaking.has(p.name) || p.speaking) {
+        emit(CALL_EVENTS.speakingChanged, { name: p.name, speaking: p.speaking });
+        console.log('[zoom] speaking:', p.name, p.speaking ? 'started' : 'stopped');
+      }
+      lastSpeaking.set(p.name, p.speaking);
+      changed = true;
+    }
+  }
+  // Left (or scrolled out of the virtualized list) while speaking: close the edge.
+  for (const [name, was] of lastSpeaking) {
+    if (seen.has(name)) continue;
+    if (was) emit(CALL_EVENTS.speakingChanged, { name, speaking: false });
+    lastSpeaking.delete(name);
+    changed = true;
+  }
+  if (!changed) return;
+  const pk = JSON.stringify(parts);
+  if (parts.length && pk !== lastRoster) {
+    lastRoster = pk;
+    emit(CALL_EVENTS.participantsUpdated, parts);
+  }
+}
+
 window.addEventListener('DOMContentLoaded', () => {
-  console.log('[zoom] DOMContentLoaded — starting heartbeat (1s); window.zoomProvider ready');
+  console.log('[zoom] DOMContentLoaded — starting heartbeat (1s) and speaking poll (250ms); window.zoomProvider ready');
   setInterval(tick, 1000);
+  setInterval(pollSpeaking, 250);
 });

@@ -12,6 +12,15 @@ Or grab a build for macOS, Linux or Windows from the **[latest release](https://
 
 *A real call, Sept 24, 2026: two humans and six agents from four model families (Claude, Codex, Grok, Meta's Muse) in one Meet.*
 
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/architecture-dark.svg">
+  <img alt="Architecture diagram: swappable LLM backends (Claude, Codex, Grok, Meta's Muse, local models) talk to the Vibeconferencing desktop app over MCP or HTTP; the app handles etiquette, camera avatar, whiteboard and the audio/video pipeline, pulls speech from ElevenLabs, OpenAI Realtime or OS-native TTS and avatar video from the built-in renderer or Runway, and joins Google Meet, Zoom, Microsoft Teams, Slack huddles and Telegram as a participant" src="media/architecture-light.svg">
+</picture>
+
+Your agent is the brain; the app is the body. The agent calls MCP tools (or raw HTTP) to speak, listen and draw. The app does the real-time media work: it plays synthesized speech into a virtual mic, renders the avatar and whiteboard into a virtual camera, and drives the call's web UI so the bot shows up as a normal participant. Dashed boxes are planned or in progress.
+
 ## Not notes. The thing.
 
 Most bots send a summary after everyone leaves. This one works **in the call**. Because the bot **is** your Claude Code / Codex / Cursor session, it can do anything your agent can do in a normal session, live in the room: research a question, send the email, update the website, analyze the data, or build the thing you're discussing. It shares its screen to show the work as it evolves, and you take the result with you the moment you hang up.
@@ -97,15 +106,6 @@ Talk in plain language, no commands needed:
 - *"Change your voice"* · *"give yourself a beach background"*
 - *"Take a screenshot of the call"* · *"read the chat"*
 - *"Go quiet and just listen"* (it keeps up without speaking)
-
-## How it works
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="media/architecture-dark.svg">
-  <img alt="Architecture diagram: swappable LLM backends (Claude, Codex, Grok, Meta's Muse, local models) talk to the Vibeconferencing desktop app over MCP or HTTP; the app handles etiquette, camera avatar, whiteboard and the audio/video pipeline, pulls speech from ElevenLabs, OpenAI Realtime or OS-native TTS and avatar video from the built-in renderer or Runway, and joins Google Meet, Zoom, Microsoft Teams, Slack huddles and Telegram as a participant" src="media/architecture-light.svg">
-</picture>
-
-Your agent is the brain; the app is the body. The agent calls MCP tools (or raw HTTP) to speak, listen and draw. The app does the real-time media work: it plays synthesized speech into a virtual mic, renders the avatar and whiteboard into a virtual camera, and drives the call's web UI so the bot shows up as a normal participant. Dashed boxes are planned or in progress.
 
 ## Using Codex, Cursor, or another agent
 

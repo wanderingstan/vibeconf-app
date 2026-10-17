@@ -544,8 +544,9 @@ class ZoomProvider extends CallProvider {
 
   // --- Roster --------------------------------------------------------------
   // Read from the participants pane (open it if needed). Virtualized: a long
-  // roster only shows its visible rows. Per-participant speaking is TBD
-  // (checklist 4), so `speaking` is always false for now.
+  // roster only shows its visible rows. `speaking` comes from the row's
+  // speaking icon (ZOOM.people.speakingIcon), never for the bot's own row: we
+  // know when we speak, and its TTS lights its own row.
   async openParticipants() {
     const d = this.doc();
     if (d.querySelector(ZOOM.people.list)) return true;
@@ -558,7 +559,10 @@ class ZoomProvider extends CallProvider {
     const out = [];
     for (const li of this.doc().querySelectorAll(ZOOM.people.item)) {
       const p = ZOOM.parseParticipantAria(li.getAttribute('aria-label'));
-      if (p) out.push({ name: p.name, isSelf: p.isSelf, isHost: p.isHost, audioMuted: p.audioMuted, videoOn: p.videoOn, speaking: false });
+      if (p) {
+        const speaking = !p.isSelf && !!li.querySelector(ZOOM.people.speakingIcon);
+        out.push({ name: p.name, isSelf: p.isSelf, isHost: p.isHost, audioMuted: p.audioMuted, videoOn: p.videoOn, speaking });
+      }
     }
     return out;
   }

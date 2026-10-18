@@ -27,7 +27,7 @@ const { execFile } = require('child_process');
 
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
-const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, upcomingForFleet, decideReaping } = require('./supervisor.js');
+const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, upcomingForFleet, decideReaping, pickResumeBot } = require('./supervisor.js');
 const { spawnArgsForProfile, profileLaunchCommand } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
 const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
@@ -792,6 +792,8 @@ async function selectBot(name) {
   panelHost.setVisible(true);
   layoutShell();
   pushState({ selected: name });
+  // Where the app reopens next time (resumeLastBot).
+  try { store.set('lastSelectedBot', name); } catch { /* best-effort */ }
   return { ok: true, port: inst.port };
 }
 
@@ -921,6 +923,8 @@ function installMenu() {
 }
 
 function createWindow() {
+  // A window means a Dock icon, even for a supervisor that started in the background.
+  if (app.dock) app.dock.show();
   win = new BrowserWindow({
     width: SIDEBAR_W + 640,
     height: 760,
@@ -979,6 +983,24 @@ function createWindow() {
 
 // ── Entry ───────────────────────────────────────────────────────────────────
 
+// Reopen where you left off: the bot last on the stage, else the one most
+// recently in a call, else the default bot (which also covers a first run,
+// before any bot has been selected or used).
+function resumeLastBot() {
+  const target = pickResumeBot({
+    fleet: readFleet(paths.profilesRoot),
+    last: store.get('lastSelectedBot'),
+    defaultProfile: paths.defaultProfile,
+  });
+  if (!target) return;
+  openBot(target).catch((err) => console.warn('[supervisor] could not reopen the last bot:', err.message));
+}
+
+// --background: started by a bot someone launched by hand, so no window (and
+// no Dock icon) until it is asked for: a second launch, a "show me" from a bot,
+// a notification. A plain launch of the app is the opposite: the window, now.
+const BACKGROUND = process.argv.includes('--background');
+
 function start() {
   // One supervisor per machine, unconditionally — unlike the bots, where named
   // profiles bypass the lock on purpose because each is a separate seat. Two
@@ -1004,7 +1026,7 @@ function start() {
     stopAllBots().finally(() => { botsStopped = true; app.quit(); });
   });
   app.on('second-instance', () => {
-    if (!win || win.isDestroyed()) return createWindow();
+    if (!win || win.isDestroyed()) { createWindow(); resumeLastBot(); return; }
     if (win.isMinimized()) win.restore();
     win.focus();
   });
@@ -1051,7 +1073,12 @@ function start() {
     startBrowserScan();
     reapTimer = setInterval(() => { reapTick().catch((err) => console.warn('[supervisor] reaper failed:', err.message)); }, REAP_EVERY_MS);
     installMenu();
-    createWindow();
+    if (BACKGROUND) {
+      if (app.dock) app.dock.hide();
+    } else {
+      createWindow();
+      resumeLastBot();
+    }
     tick().catch((err) => console.warn('[supervisor] first tick failed:', err.message));
     pollTimer = setInterval(() => {
       tick().catch((err) => console.warn('[supervisor] tick failed:', err.message));

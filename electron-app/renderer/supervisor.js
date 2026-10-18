@@ -9,7 +9,6 @@ const api = window.electronAPI;
 
 const els = {
   bots: document.getElementById('bots'),
-  count: document.getElementById('count'),
   orphans: document.getElementById('orphans'),
   events: document.getElementById('events'),
   banner: document.getElementById('calendarBanner'),
@@ -134,7 +133,6 @@ function renderBots({ bots = [], orphans = [], selected = null }) {
   lastBots = bots;
   selectedBot = selected || [...starting][0] || null;
   els.bots.replaceChildren();
-  els.count.textContent = bots.length === 1 ? '1 bot' : bots.length ? `${bots.length} bots` : '';
   els.bots.classList.toggle('many', bots.length > 6);
   if (!bots.length) {
     els.bots.append(el('div', 'empty', 'No bots configured yet.'));

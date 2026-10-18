@@ -304,4 +304,12 @@ function decideReaping({ instances, selected = null, fleet = [], events = [], id
   return { quit, idleSince: nextIdleSince };
 }
 
-module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS, upcomingForFleet, decideReaping, REAP_IDLE_MS };
+// Which bot the app reopens on: the one last on the stage, if it still exists;
+// else the one most recently in a call; else the default bot (a first run).
+function pickResumeBot({ fleet = [], last = null, defaultProfile = null } = {}) {
+  if (last && fleet.some((p) => p.name === last)) return last;
+  const byCall = fleet.filter((p) => p.lastCallAt).sort((a, b) => b.lastCallAt - a.lastCallAt)[0];
+  return (byCall && byCall.name) || defaultProfile || null;
+}
+
+module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS, upcomingForFleet, decideReaping, REAP_IDLE_MS, pickResumeBot };

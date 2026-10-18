@@ -20,7 +20,14 @@ const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, d
 //
 // Top-level `return` is legal in CommonJS (modules are function-wrapped), and is
 // the smallest branch that can guarantee "none of the below ran".
-if (process.argv.includes('--supervisor')) {
+// #301 one window: a PLAIN launch of the app (the Dock, Finder, `open -a`) opens
+// the app's window, not a bot. A launch that names a bot or a call
+// (--profile, --meet-url, --join-url, ... from the test fleet, /join-call,
+// the supervisor itself) still starts that bot as before. VIBECONF_CLASSIC=1
+// keeps the old "plain launch = the default bot in its own window".
+const BOT_LAUNCH_FLAG = /^--(profile|local-port|meet-url|join-url|bot-name|bot-view|config|dom-probe|headless|open-settings|summoned|provider|window-x|window-y|website-url|devtools)(=|$)/;
+const plainLaunch = !process.argv.slice(1).some((a) => BOT_LAUNCH_FLAG.test(a)) && process.env.VIBECONF_CLASSIC !== '1';
+if (process.argv.includes('--supervisor') || plainLaunch) {
   require('./supervisor-app.js').start();
   return;
 }
@@ -9669,7 +9676,9 @@ async function ensureSupervisorRunning() {
       isPackaged: app.isPackaged,
       exePath: app.getPath('exe'),
       appPath: app.isPackaged ? null : app.getAppPath(),
-      args: ['--supervisor'],
+      // In the background: this bot was started by hand (its own window), so
+      // the app's window stays out of the way until someone asks for it.
+      args: ['--supervisor', '--background'],
     });
     const onError = (err) => { if (err) console.warn('[electron] could not start the supervisor:', err.message); };
     const child = detached

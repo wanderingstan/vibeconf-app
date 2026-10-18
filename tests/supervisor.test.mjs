@@ -323,3 +323,42 @@ test('a bot with its own meeting coming up is spared, even if idle for ages', ()
   const someoneElses = event({ start: soon(8 * 60_000), attendees: ['other@vibe.test'] });
   assert.deepEqual(decideReaping({ instances: [idle('bethany')], fleet, events: [someoneElses], idleSince: { bethany: NOW - 60 * REAP_IDLE_MS }, now: NOW }).quit, ['bethany']);
 });
+
+// ── Reopening where you left off ──
+
+const { pickResumeBot } = require('../electron-app/supervisor.js');
+
+test('the app reopens on the last bot on the stage, if it still exists', () => {
+  const fleet = [{ name: 'a', lastCallAt: 5 }, { name: 'b', lastCallAt: 9 }];
+  assert.equal(pickResumeBot({ fleet, last: 'a', defaultProfile: 'Default' }), 'a');
+});
+
+test('else the bot most recently in a call, else the default bot (a first run)', () => {
+  const fleet = [{ name: 'a', lastCallAt: 5 }, { name: 'b', lastCallAt: 9 }, { name: 'c' }];
+  assert.equal(pickResumeBot({ fleet, last: 'deleted-since', defaultProfile: 'Default' }), 'b');
+  assert.equal(pickResumeBot({ fleet: [{ name: 'c' }], defaultProfile: 'Default' }), 'Default');
+  assert.equal(pickResumeBot({ fleet: [], defaultProfile: 'Default' }), 'Default');
+});
+
+// ── What a plain launch opens ──
+
+const mainSrc = require('node:fs').readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
+const flagSrc = mainSrc.match(/const BOT_LAUNCH_FLAG = (\/.*\/);/)[1];
+// eslint-disable-next-line no-eval
+const BOT_LAUNCH_FLAG = eval(flagSrc);
+const opensApp = (argv) => !argv.some((a) => BOT_LAUNCH_FLAG.test(a));
+
+test('a plain launch opens the app window; a launch that names a bot or call starts that bot', () => {
+  assert.equal(opensApp([]), true, 'Dock / Finder / open -a');
+  assert.equal(opensApp(['.']), true, 'electron . in development');
+  assert.equal(opensApp(['--profile=test-slack-1', '--local-port=7901']), false, 'the test fleet');
+  assert.equal(opensApp(['--meet-url=https://meet.google.com/abc-defg-hij', '--bot-name=Jo']), false, '/join-call');
+  assert.equal(opensApp(['--join-url=https://meet.google.com/abc-defg-hij']), false, '/call-new-bot');
+  assert.equal(opensApp(['--headless=true']), false, 'a bot the app starts');
+  assert.equal(opensApp(['--profiles-dir=x']), true, 'only whole flag names count');
+});
+
+test('a bot started by hand starts the app in the background, without a window', () => {
+  assert.match(mainSrc, /args: \['--supervisor', '--background'\],/);
+  assert.match(mainSrc, /process\.env\.VIBECONF_CLASSIC !== '1'/, 'the escape hatch to the old behaviour');
+});

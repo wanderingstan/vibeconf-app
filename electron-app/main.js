@@ -11042,6 +11042,22 @@ function createMeetView(partition, { preload = 'preload-meet.js' } = {}) {
   // "Meet home". Redirects are logged separately from the final landing
   // because the interesting hop (meeting → accounts.google.com) is exactly the
   // one that is gone by the time anything else looks.
+  // #301: the Meet page going away mid-call used to be silent. On 2026-10-18 a
+  // headless bot's view was destroyed in a live call (its recorder flushed,
+  // then nothing) while the app kept reporting in-call for good. Say so,
+  // with where the view was, and stop claiming to be in a call that is gone.
+  // A view replaced on purpose (a fresh join, a provider swap) is no longer
+  // meetView by then, so it does not trip this.
+  view.webContents.once('destroyed', () => {
+    if (meetView !== view) return;
+    const status = localServer && localServer.callStatus;
+    console.error(`[electron] Meet view DESTROYED while ${status} (botViewState=${botViewState}, headless=${HEADLESS}, `
+      + `popout=${!!(meetPopoutWindow && !meetPopoutWindow.isDestroyed())}, hiddenHost=${!!(meetHiddenWindow && !meetHiddenWindow.isDestroyed())})`);
+    if (status && status !== 'idle') {
+      try { localServer.addError('The bot\'s call page closed unexpectedly, so it has left the call.'); } catch { /* best-effort */ }
+      try { localServer.setCallStatus('idle'); } catch { /* best-effort */ }
+    }
+  });
   view.webContents.on('did-redirect-navigation', (_e, url, _isInPlace, isMainFrame) => {
     if (isMainFrame) console.log('[electron] Meet view redirected →', url);
   });

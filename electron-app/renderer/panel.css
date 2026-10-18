@@ -1500,9 +1500,12 @@ button.hosted-tool {
   display: inline-flex; align-items: center; justify-content: center;
 }
 button.hosted-tool:hover:not(:disabled) { background: var(--paper-lo); color: var(--ink); }
-/* Only what can do something: Brain and Troubleshoot need a call (before one
-   there is no activity and no call state); Bot's view always works. */
+/* Only what can do something: Brain needs a call (before one there is no
+   activity), Troubleshoot a call or a join under way; Bot's view always works. */
 button.hosted-tool.tool-brain,
 button.hosted-tool.tool-info { display: none; }
 body[data-call-state="in-call"] button.hosted-tool.tool-brain,
 body[data-call-state="in-call"] button.hosted-tool.tool-info { display: inline-flex; }
+/* Troubleshoot from joining onwards: a join stuck in a lobby or on a sign-in
+   wall is when its live call state helps most. */
+html.joining button.hosted-tool.tool-info { display: inline-flex; }

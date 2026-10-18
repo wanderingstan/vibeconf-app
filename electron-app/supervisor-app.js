@@ -793,6 +793,13 @@ async function canHost(port) {
 async function selectBot(name, { startScreen = null } = {}) {
   const inst = (await scanRunning()).get(name);
   if (!inst) return { ok: false, error: 'not running' };
+  // Already on the stage and connected: leave the panel be. A headless bot
+  // asks to be shown during a join (its window "coming forward"), and
+  // reloading here threw away the panel's in-call view mid-call.
+  if (relay.name === name && relay.port === inst.port && relay.req && panelHost && !panelHost.webContents.isDestroyed()) {
+    panelHost.setVisible(true);
+    return { ok: true, port: inst.port, already: true };
+  }
   if (!(await canHost(inst.port))) {
     // Say so on the stage instead of hosting a panel that cannot reach its bot.
     closeRelayStream();

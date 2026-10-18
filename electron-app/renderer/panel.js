@@ -9,6 +9,8 @@ if (HOSTED) document.documentElement.classList.add('hosted');
 // The app window's separate "Call <bot> now" (setupHostedLayout, at the end).
 // Declared up here because updateJoinBtnState can run before the script gets there.
 let callNowBtn = null;
+// A join under way per the bot's call status (see syncJoiningFlag).
+let joiningStatus = false;
 
 // The user's hour-cycle preference, resolved by main (a renderer cannot read
 // macOS's AppleICUForce24HourTime itself). Null until it arrives; formatTime
@@ -4087,6 +4089,8 @@ api.on('meet-status', (status) => {
 });
 
 api.on('call-status-changed', ({ status, provider }) => {
+  joiningStatus = status === 'navigating' || status === 'joining' || status === 'waiting-to-be-admitted';
+  syncJoiningFlag();
   // Authoritative call-state signal from the local server. Only show Leave Call
   // once we're actually in the meeting; hide it once the bot has left.
   if (status === 'in-call') {
@@ -4128,7 +4132,18 @@ api.on('call-failed', (data) => {
 //     behaviour stays in one place.
 //   · The name's bot-picker menu and the footer line are gone (panel.css).
 
+// Joining (from pressing Call or Add until the bot is in): Troubleshoot shows
+// from here on, since a join stuck in a lobby or on a sign-in wall is exactly
+// when its live call state helps (panel.css, html.joining).
+function syncJoiningFlag() {
+  // joinPhase is declared mid-file; this can run during startup before it is.
+  let phase = null;
+  try { phase = joinPhase; } catch { return; }
+  document.documentElement.classList.toggle('joining', !inCall && (!!phase || joiningStatus));
+}
+
 function syncCallNowBtn() {
+  syncJoiningFlag();
   if (!callNowBtn) return;
   const name = currentBotName || 'your bot';
   callNowBtn.textContent = joinPhase === 'starting' ? 'Starting…' : `Call ${name} now`;
@@ -4176,4 +4191,23 @@ function setupHostedLayout() {
 }
 
 if (HOSTED) setupHostedLayout();
+
+// A panel can load while its bot is already in a call: in the app window,
+// selecting a bot that is in one loads its panel then (#301). Until now the
+// panel only ever learned the call state from changes, because a standalone
+// window loads with its bot, before any call. So ask once, and take the
+// in-call view straight away if the bot is in one. Main screen only: the
+// Brain and Troubleshooting windows are other screens of this same file.
+if (!IS_POPOUT_WINDOW) {
+  api.invoke('get-call-state').then((snap) => {
+    if (!snap || inCall) return;
+    if (snap.callStatus === 'in-call') {
+      if (snap.currentMeetUrl && !meetUrlInput.value) meetUrlInput.value = snap.currentMeetUrl;
+      enterCallState(snap.roomId || '');
+    } else if (['navigating', 'joining', 'waiting-to-be-admitted'].includes(snap.callStatus)) {
+      joiningStatus = true;
+      syncJoiningFlag();
+    }
+  }).catch(() => { /* older bot without get-call-state: changes still arrive */ });
+}
 

@@ -27,6 +27,36 @@
       width: 320px; flex: none; height: 100%; overflow-y: auto;
       border-right: 1px solid var(--line);
     }
+    /* Pinned top of the sidebar: the toggle, then the three lists. */
+    .topbar {
+      position: sticky; top: 0; z-index: 2; background: var(--bg);
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 12px 10px 11px; /* toggle at the same x as on the collapsed rail */
+    }
+    .icon-btn, .mode {
+      width: 34px; height: 34px; padding: 0; border-radius: 9px;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: none; color: var(--dim); flex: none;
+    }
+    .icon-btn:hover:not(:disabled), .mode:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+    .icon-btn svg, .mode svg {
+      width: 20px; height: 20px; fill: none; stroke: currentColor;
+      stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .icon-btn svg .dotfill, .mode svg .dotfill { fill: currentColor; }
+    .modes { display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: var(--surface); }
+    .modes .mode { width: 38px; height: 30px; border-radius: 9px; }
+    .modes .mode.active, .modes .mode.active:hover { background: var(--hover); color: var(--text); }
+    .pane { padding: 4px 12px 16px; }
+    .pane-head { display: flex; align-items: baseline; justify-content: space-between; padding: 6px 8px 8px; }
+    .pane-head h2 { margin: 0; padding: 0; }
+    .pane-head .count { color: var(--faint); font-size: 12px; margin: 0; }
+    .empty.stub { padding: 8px; line-height: 1.5; }
+    .pane footer { padding: 14px 8px 0; flex-direction: column; gap: 4px; }
+    /* Collapsed: a rail with only the toggle. Its width is RAIL_W in
+       supervisor-app.js, which lays the panel out beside it. */
+    .rail { width: 56px; flex: none; height: 100%; border-right: 1px solid var(--line); padding: 10px 11px; }
+    .rail[hidden], .sidebar[hidden], .pane[hidden] { display: none; }
     .stage {
       flex: 1; height: 100%; display: flex; align-items: center; justify-content: center;
       color: var(--faint); font-size: 13px; text-align: center; padding: 24px;
@@ -178,31 +208,50 @@
   </style>
 </head>
 <body>
-  <aside class="sidebar">
-  <header>
-    <div>
-      <h1>Bots on this machine</h1>
-      <div class="count" id="count"></div>
+  <!-- #301 one window: the sidebar, like the Claude app's. A pinned top bar
+       (hide/show, and which list the sidebar shows) over one pane per list.
+       Collapsed, it shrinks to a rail holding only the toggle. -->
+  <aside class="sidebar" id="sidebar">
+    <div class="topbar">
+      <button class="icon-btn" id="collapse" title="Hide sidebar" aria-label="Hide sidebar"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><line x1="9.5" y1="4.5" x2="9.5" y2="19.5"/></svg></button>
+      <div class="modes" role="tablist" aria-label="Sidebar shows">
+        <button class="mode" role="tab" data-mode="bots" title="Bots" aria-label="Bots">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="9.2" cy="10.2" r=".6" class="dotfill"/><circle cx="14.8" cy="10.2" r=".6" class="dotfill"/><path d="M8.6 14.2c.9 1.3 2 1.9 3.4 1.9s2.5-.6 3.4-1.9"/></svg>
+        </button>
+        <button class="mode" role="tab" data-mode="upcoming" title="Upcoming meetings" aria-label="Upcoming meetings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5.5" width="16" height="14.5" rx="2.5"/><line x1="4" y1="10" x2="20" y2="10"/><line x1="8.5" y1="3.5" x2="8.5" y2="7"/><line x1="15.5" y1="3.5" x2="15.5" y2="7"/></svg>
+        </button>
+        <button class="mode" role="tab" data-mode="history" title="Past calls" aria-label="Past calls">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+        </button>
+      </div>
     </div>
-    <button id="refresh" class="ghost">Refresh</button>
-  </header>
 
-  <div class="section">
-    <div id="orphans"></div>
-    <div id="bots"><div class="empty">Looking…</div></div>
-  </div>
+    <div class="pane" data-pane="bots">
+      <div class="pane-head"><h2>Bots</h2><span class="count" id="count"></span></div>
+      <div id="orphans"></div>
+      <div id="bots"><div class="empty">Looking…</div></div>
+    </div>
 
-  <div class="section">
-    <h2>Upcoming</h2>
-    <div id="calendarBanner"></div>
-    <div id="events"><div class="empty">No meetings for your bots in the next 24 hours.</div></div>
-  </div>
+    <div class="pane" data-pane="upcoming" hidden>
+      <div class="pane-head"><h2>Upcoming</h2></div>
+      <div id="calendarBanner"></div>
+      <div id="events"><div class="empty">No meetings for your bots in the next 24 hours.</div></div>
+      <footer>
+        <span>Watching the calendar for every bot, including closed ones</span>
+        <span id="tickStatus"></span>
+      </footer>
+    </div>
 
-  <footer>
-    <span>Watching the calendar for every bot, including closed ones</span>
-    <span id="tickStatus"></span>
-  </footer>
+    <div class="pane" data-pane="history" hidden>
+      <div class="pane-head"><h2>Past calls</h2></div>
+      <div class="empty stub">A record of your bots' past calls will appear here.</div>
+    </div>
   </aside>
+
+  <div class="rail" id="rail" hidden>
+    <button class="icon-btn" id="expand" title="Show sidebar" aria-label="Show sidebar"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><line x1="9.5" y1="4.5" x2="9.5" y2="19.5"/></svg></button>
+  </div>
 
   <main class="stage" id="stage">Select a bot to see it here.</main>
 

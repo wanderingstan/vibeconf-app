@@ -528,6 +528,15 @@ function startDirectory() {
         }
         return send(200, { ok: true, ...out });
       }
+      // Debug only, like capture: run a snippet in the window's own page (to
+      // click its controls in tests). Off unless asked for.
+      if (url.pathname === '/api/debug/eval' && req.method === 'POST' && process.env.VIBECONF_SUPERVISOR_DEBUG === '1') {
+        const chunks = [];
+        for await (const c of req) chunks.push(c);
+        const js = Buffer.concat(chunks).toString('utf8');
+        const value = await win.webContents.executeJavaScript(js);
+        return send(200, { ok: true, value: value === undefined ? null : value });
+      }
       // Put a running bot's panel on the window's stage (#301 one-window spike).
       if (url.pathname === '/api/select' && req.method === 'POST') {
         const name = url.searchParams.get('profile');
@@ -579,6 +588,10 @@ function startDirectory() {
 // crashes takes its panel with it, not the window.
 
 const SIDEBAR_W = 320;
+const RAIL_W = 56; // the collapsed sidebar
+// What the sidebar takes right now: SIDEBAR_W, or RAIL_W when collapsed. The
+// window's page reports it (supervisor:layout) whenever it changes.
+let sidebarWidth = SIDEBAR_W;
 const PANEL_W = 380; // the bot window's column width (WINDOW_WIDTH in main.js)
 
 let panelHost = null;           // WebContentsView showing the selected bot's panel
@@ -590,9 +603,9 @@ let stageOutdated = null;
 function layoutShell() {
   if (!win || win.isDestroyed() || !panelHost) return;
   const [w, h] = win.getContentSize();
-  const stageW = Math.max(0, w - SIDEBAR_W);
+  const stageW = Math.max(0, w - sidebarWidth);
   const pw = Math.min(PANEL_W, stageW);
-  panelHost.setBounds({ x: SIDEBAR_W + Math.floor((stageW - pw) / 2), y: 0, width: pw, height: h });
+  panelHost.setBounds({ x: sidebarWidth + Math.floor((stageW - pw) / 2), y: 0, width: pw, height: h });
 }
 
 function closeRelayStream() {
@@ -928,6 +941,11 @@ function start() {
     ipcMain.handle('supervisor:tick', () => tick());
     ipcMain.handle('supervisor:launch', (_e, name) => launchProfile(name));
     ipcMain.handle('supervisor:select', (_e, name) => selectBot(name));
+    ipcMain.handle('supervisor:layout', (_e, { sidebarWidth: w } = {}) => {
+      sidebarWidth = w === RAIL_W ? RAIL_W : SIDEBAR_W; // only the two widths the page has
+      layoutShell();
+      return { ok: true };
+    });
     // A sidebar click: show the bot, starting it first if it is closed.
     ipcMain.handle('supervisor:open', (_e, name) => openBot(name));
     installRelayIpc();

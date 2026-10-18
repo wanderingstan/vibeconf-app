@@ -14,7 +14,6 @@ const els = {
   events: document.getElementById('events'),
   banner: document.getElementById('calendarBanner'),
   tickStatus: document.getElementById('tickStatus'),
-  refresh: document.getElementById('refresh'),
 };
 
 // Everything from the main process is either read off disk or off the network,
@@ -252,12 +251,7 @@ function renderEvents(state) {
 }
 
 async function refresh() {
-  els.refresh.disabled = true;
-  try {
-    renderBots(await api.invoke('supervisor:fleet'));
-  } finally {
-    els.refresh.disabled = false;
-  }
+  renderBots(await api.invoke('supervisor:fleet'));
 }
 
 // The process pushes after every tick, so the window stays current without
@@ -296,9 +290,47 @@ api.on('supervisor-state', (state) => {
   refresh();
 });
 
-els.refresh.addEventListener('click', () => {
-  api.invoke('supervisor:tick').catch(() => {});
-  refresh();
-});
+// ── The sidebar's top bar: hide/show, and which list it shows ──
+//
+// Remembered per machine in localStorage (a convenience, so it may be empty:
+// every read is guarded and the defaults are the full sidebar on Bots).
+
+const SIDEBAR_W = 320; // keep in step with SIDEBAR_W / RAIL_W in supervisor-app.js
+const RAIL_W = 56;
+const MODES = ['bots', 'upcoming', 'history'];
+
+function remembered(key, fallback) {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+function remember(key, value) {
+  try { localStorage.setItem(key, value); } catch { /* not persisted; fine */ }
+}
+
+function showMode(mode) {
+  if (!MODES.includes(mode)) mode = 'bots';
+  for (const b of document.querySelectorAll('.mode')) {
+    const on = b.dataset.mode === mode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', String(on));
+  }
+  for (const p of document.querySelectorAll('.pane')) p.hidden = p.dataset.pane !== mode;
+  remember('sidebarMode', mode);
+}
+
+// Collapsing also tells the supervisor, which places the bot's panel (a
+// separate view) beside whatever width the sidebar now takes.
+function setCollapsed(collapsed) {
+  document.getElementById('sidebar').hidden = collapsed;
+  document.getElementById('rail').hidden = !collapsed;
+  remember('sidebarCollapsed', collapsed ? '1' : '0');
+  api.invoke('supervisor:layout', { sidebarWidth: collapsed ? RAIL_W : SIDEBAR_W }).catch(() => {});
+}
+
+for (const b of document.querySelectorAll('.mode')) b.addEventListener('click', () => showMode(b.dataset.mode));
+document.getElementById('collapse').addEventListener('click', () => setCollapsed(true));
+document.getElementById('expand').addEventListener('click', () => setCollapsed(false));
+
+showMode(remembered('sidebarMode', 'bots'));
+setCollapsed(remembered('sidebarCollapsed', '0') === '1');
 
 refresh();

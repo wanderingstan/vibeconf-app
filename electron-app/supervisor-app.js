@@ -679,6 +679,26 @@ const relay = { name: null, port: null, req: null, retry: null };
 // highlighted while the stage explains why.
 let stageOutdated = null;
 
+// The stage is exactly one bot panel wide (Stan, 2026-10-18): the panel was
+// designed as a 380px column, and at that width it fills the stage with no
+// gaps to paint. So the window's width is fixed at sidebar + panel, and only
+// its height is the user's. Collapsing the sidebar shrinks the window by the
+// sidebar's width (its left edge stays put), which leaves almost exactly the
+// old single-bot window: the beginner's view, one click away.
+function fitWindowWidth() {
+  if (!win || win.isDestroyed()) return;
+  const contentW = sidebarWidth + PANEL_W;
+  const [, contentH] = win.getContentSize();
+  const frameW = win.getSize()[0] - win.getContentSize()[0];
+  // Unlock, resize, then pin the width again: min = max is how Electron
+  // allows vertical resizing only.
+  win.setMinimumSize(0, 0);
+  win.setMaximumSize(10000, 10000);
+  win.setContentSize(contentW, contentH);
+  win.setMinimumSize(contentW + frameW, 520);
+  win.setMaximumSize(contentW + frameW, 10000);
+}
+
 function layoutShell() {
   if (!win || win.isDestroyed() || !panelHost) return;
   const [w, h] = win.getContentSize();
@@ -950,9 +970,10 @@ function createWindow() {
   // A window means a Dock icon, even for a supervisor that started in the background.
   if (app.dock) app.dock.show();
   win = new BrowserWindow({
-    width: SIDEBAR_W + 640,
+    // Sized by content, so the stage is exactly PANEL_W; see fitWindowWidth.
+    useContentSize: true,
+    width: SIDEBAR_W + PANEL_W,
     height: 760,
-    minWidth: SIDEBAR_W + PANEL_W,
     minHeight: 520,
     backgroundColor: '#FFF4DA', // --cream, so nothing flashes dark before the page paints
     title: 'Vibeconferencing',
@@ -983,6 +1004,7 @@ function createWindow() {
   panelHost.setVisible(false);
   win.contentView.addChildView(panelHost);
   win.on('resize', layoutShell);
+  fitWindowWidth();
   layoutShell();
 
   // The Granola model (Stan, 2026-08-31): this wants to be always-on, says so
@@ -1080,6 +1102,7 @@ function start() {
     });
     ipcMain.handle('supervisor:layout', (_e, { sidebarWidth: w } = {}) => {
       sidebarWidth = w === RAIL_W ? RAIL_W : SIDEBAR_W; // only the two widths the page has
+      fitWindowWidth();
       layoutShell();
       return { ok: true };
     });

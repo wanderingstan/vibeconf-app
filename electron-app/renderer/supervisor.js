@@ -38,7 +38,10 @@ function inCall(bot) {
   return !!bot.busy;
 }
 
-// The words behind the status dot: what a person would say the bot is doing.
+// What a person would say the bot is doing, which is only ever about calls.
+// "Running" is a fact about a process the user never started or stopped: any
+// bot is available, and selecting one starts it if need be. So an idle bot
+// says nothing here, and the row shows when it was last used instead.
 const PHASE_TEXT = {
   joining: 'Joining…',
   stuck: 'Stuck joining',
@@ -47,20 +50,16 @@ const PHASE_TEXT = {
   wrapping: 'Wrapping up the call',
 };
 function describeState(bot) {
-  if (bot.busy) {
-    const where = bot.roomId && bot.phase !== 'wrapping' ? ` · ${bot.roomId}` : '';
-    return { cls: bot.phase === 'stuck' ? 'stuck' : 'call', text: `${PHASE_TEXT[bot.phase] || 'Busy'}${where}` };
-  }
-  if (bot.running) return { cls: 'up', text: 'Running' };
-  return { cls: '', text: 'Not running' };
+  if (!bot.busy) return null;
+  const where = bot.roomId && bot.phase !== 'wrapping' ? ` · ${bot.roomId}` : '';
+  return { cls: bot.phase === 'stuck' ? 'stuck' : 'call', text: `${PHASE_TEXT[bot.phase] || 'Busy'}${where}` };
 }
 
-// Busy, then running, then the rest; within each, most recently used first.
-// Bots behave more like browser tabs than a fixed roster: whatever you used
-// lately is what you reach for, and a bot tried once last month sinks on its
-// own, so a long list needs no cleanup. Name breaks ties (and orders bots that
-// have never been used).
-function rank(bot) { return inCall(bot) ? 0 : bot.running ? 1 : 2; }
+// Busy first, then most recently used. Name breaks ties (and orders bots that
+// have never been used). Bots behave more like browser tabs than a fixed
+// roster: whatever you used lately is what you reach for, and a bot tried once
+// last month sinks on its own.
+function rank(bot) { return inCall(bot) ? 0 : 1; }
 function byRecency(a, b) {
   return rank(a) - rank(b)
     || (b.lastUsedAt || 0) - (a.lastUsedAt || 0)
@@ -95,7 +94,8 @@ function avatarFor(bot) {
     // existed) still gets a tile, so every row lines up.
     box.append(el('span', 'mono', (labelOf(bot).trim().charAt(0) || '?').toUpperCase()));
   }
-  box.append(el('span', `dot ${bot.phase === 'stuck' ? 'stuck' : inCall(bot) ? 'call' : bot.running ? 'up' : ''}`));
+  // Only a call earns a dot. Up or down is the app's business, not the user's.
+  if (inCall(bot)) box.append(el('span', `dot ${bot.phase === 'stuck' ? 'stuck' : 'call'}`));
   return box;
 }
 
@@ -105,21 +105,50 @@ let selectedBot = null;
 // says "Starting…" across refreshes instead of flickering back to closed.
 const starting = new Set();
 
+// The stage behind the panel view. While a bot wakes up it shows that bot's
+// face and name, straight from disk, so selecting a closed bot looks like a
+// tab loading rather than a separate "start the bot" step.
+function showStage(bot) {
+  const stage = document.getElementById('stage');
+  stage.replaceChildren();
+  if (!bot) { stage.append(el('div', null, 'Select a bot to see it here.')); return; }
+  const card = el('div', 'waking');
+  const face = el('div', 'waking-face');
+  if (bot.avatarThumb && bot.avatarThumb.startsWith('data:image/')) {
+    const img = document.createElement('img');
+    img.src = bot.avatarThumb;
+    img.alt = '';
+    face.append(img);
+  } else {
+    face.append(el('span', null, (labelOf(bot).trim().charAt(0) || '?').toUpperCase()));
+  }
+  card.append(face, el('div', 'waking-name', labelOf(bot)), el('div', 'waking-note', 'Waking up…'));
+  stage.append(card);
+}
+
 async function openBot(bot) {
   if (starting.has(bot.name)) return;
   rowErrors.delete(bot.name);
-  if (!bot.running) { starting.add(bot.name); refresh(); }
+  if (!bot.running) {
+    starting.add(bot.name);
+    selectedBot = bot.name; // highlight it now; the supervisor confirms on arrival
+    showStage(bot);
+    refresh();
+  }
   const r = await api.invoke('supervisor:open', bot.name).catch((e) => ({ ok: false, error: e.message }));
   starting.delete(bot.name);
-  if (!r?.ok) rowErrors.set(bot.name, `Could not open it: ${r?.error || 'unknown error'}`);
+  if (!r?.ok) { rowErrors.set(bot.name, `Could not open it: ${r?.error || 'unknown error'}`); showStage(null); }
   refresh();
 }
 
+// The last fleet drawn, so a 'waking' push can find the bot's face and name.
+let lastBots = [];
+
 function renderBots({ bots = [], orphans = [], selected = null }) {
-  selectedBot = selected;
+  lastBots = bots;
+  selectedBot = selected || [...starting][0] || null;
   els.bots.replaceChildren();
-  const up = bots.filter((b) => b.running).length;
-  els.count.textContent = bots.length ? `${up} of ${bots.length} running` : '';
+  els.count.textContent = bots.length === 1 ? '1 bot' : bots.length ? `${bots.length} bots` : '';
   els.bots.classList.toggle('many', bots.length > 6);
   if (!bots.length) {
     els.bots.append(el('div', 'empty', 'No bots configured yet.'));
@@ -128,7 +157,10 @@ function renderBots({ bots = [], orphans = [], selected = null }) {
   const sorted = [...bots].sort(byRecency);
   for (const bot of sorted) {
     const isStarting = starting.has(bot.name) && !bot.running;
-    const row = el('div', `bot selectable${bot.running ? '' : ' off'}${bot.name === selectedBot ? ' selected' : ''}`);
+    const row = el('div', `bot selectable${bot.name === selectedBot ? ' selected' : ''}`);
+    // The profile (what folders, logs and ports are named after) is developer
+    // detail: on hover, not on the row.
+    row.title = `Profile: ${bot.name}${bot.running && bot.port ? ` · port ${bot.port}` : ''}`;
     // The row is the whole control: click a bot and its panel is on the stage,
     // where Call, Join and everything else already live. A closed bot is
     // started first (the supervisor waits for it to answer, then shows it).
@@ -142,16 +174,10 @@ function renderBots({ bots = [], orphans = [], selected = null }) {
     const name = el('div', 'name', labelOf(bot));
     if (bot.isDefault) name.append(el('span', 'tag', 'default'));
     who.append(name);
-    const state = isStarting ? { cls: 'up', text: 'Starting…' } : describeState(bot);
+    const state = isStarting ? { cls: 'up', text: 'Waking up…' } : describeState(bot);
     const sub = el('div', 'sub');
-    sub.append(el('span', `state ${state.cls}`, state.text));
-    // A closed bot's port says nothing useful; when it was last used does.
-    const where = [
-      bot.name !== labelOf(bot) ? bot.name : null,
-      bot.running ? (bot.port ? `port ${bot.port}` : null) : usedAgo(bot.lastUsedAt),
-    ].filter(Boolean);
-    if (where.length) sub.append(document.createTextNode(` · ${where.join(' · ')}`));
-    sub.title = `${bot.name}${bot.port ? ` · port ${bot.port}` : ''}`;
+    if (state) sub.append(el('span', `state ${state.cls}`, state.text));
+    else sub.append(document.createTextNode(usedAgo(bot.lastUsedAt) || 'Not used yet'));
     who.append(sub);
     row.append(who);
 
@@ -236,6 +262,20 @@ async function refresh() {
 // The process pushes after every tick, so the window stays current without
 // polling it a second time from here.
 api.on('supervisor-state', (state) => {
+  // A bot is being woken (from a click here, or from anywhere else that opens
+  // one): show its placeholder on the stage until its panel arrives.
+  if (state && 'waking' in state) {
+    const bot = lastBots.find((b) => b.name === state.waking);
+    if (bot) { starting.add(bot.name); showStage(bot); }
+    if (state.wakeFailed) {
+      starting.delete(state.wakeFailed);
+      rowErrors.set(state.wakeFailed, `Could not open it: ${state.error || 'unknown error'}`);
+      showStage(null);
+    }
+  }
+  // The bot arrived (or the stage was cleared): drop the placeholder, so it
+  // cannot resurface later from behind the panel.
+  if (state && state.selected !== undefined) { starting.clear(); showStage(null); }
   // Not every push is a calendar tick: a change in the browser's open calls
   // pushes too, with no events, and must not blank the Upcoming list.
   if (state && 'events' in state) renderEvents(state);

@@ -32,6 +32,19 @@
       color: var(--faint); font-size: 13px; text-align: center; padding: 24px;
     }
     .bot.selectable { cursor: pointer; }
+    /* The stage while a bot wakes up: its face and name from disk, then the
+       live panel covers it. */
+    .waking { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+    .waking-face {
+      width: 160px; height: 160px; border-radius: 40px; overflow: hidden;
+      background: var(--hover); color: var(--dim); font-size: 64px; font-weight: 500;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .waking-face img { width: 100%; height: 100%; object-fit: cover; }
+    .waking-name { color: var(--text); font-size: 20px; font-weight: 500; }
+    .waking-note { color: var(--dim); animation: waking 1.6s ease-in-out infinite; }
+    @keyframes waking { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) { .waking-note { animation: none; } }
     .bot.selected { background: var(--hover); }
     .bot.selected .dot { border-color: var(--hover); }
     body {
@@ -72,9 +85,6 @@
       font-size: 18px; font-weight: 500;
     }
     .avatar img { width: 100%; height: 100%; object-fit: cover; border-radius: inherit; display: block; }
-    /* A closed bot's face is dimmed, so who is up reads at a glance without
-       parsing any text. */
-    .bot.off .avatar img, .bot.off .avatar .mono { opacity: 0.45; filter: saturate(0.4); }
     /* Status dot on the avatar's corner, ringed in the background colour so it
        stays legible over any artwork. The words in .sub say the same thing:
        colour alone would hide the one state that matters most, in a call. */

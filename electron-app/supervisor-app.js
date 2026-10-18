@@ -531,7 +531,7 @@ function startDirectory() {
         const name = url.searchParams.get('profile');
         if (!name) return send(400, { ok: false, error: 'profile is required' });
         if (!win || win.isDestroyed()) createWindow();
-        return send(200, await whenUp(name, () => selectBot(name))); // same as a sidebar click
+        return send(200, await openBot(name)); // same as a sidebar click
       }
       if (url.pathname === '/api/launch' && req.method === 'POST') {
         const name = url.searchParams.get('profile');
@@ -666,6 +666,24 @@ async function selectBot(name) {
   layoutShell();
   pushState({ selected: name });
   return { ok: true, port: inst.port };
+}
+
+// A sidebar click. A bot that is not up yet is started behind the scenes; the
+// previous bot's panel comes off the stage at once, so the window's own
+// "Waking up…" placeholder (drawn by supervisor.html from the bot's face and
+// name, already on disk) shows until the new panel replaces it.
+async function openBot(name) {
+  const up = (await scanRunning()).has(name);
+  if (!up) {
+    closeRelayStream();
+    relay.name = null;
+    relay.port = null;
+    if (panelHost) panelHost.setVisible(false);
+    pushState({ waking: name });
+  }
+  const result = await whenUp(name, () => selectBot(name));
+  if (!result?.ok) pushState({ waking: null, wakeFailed: name, error: result?.error || null });
+  return result;
 }
 
 async function relayPost(pathname, body) {
@@ -875,7 +893,7 @@ function start() {
     ipcMain.handle('supervisor:launch', (_e, name) => launchProfile(name));
     ipcMain.handle('supervisor:select', (_e, name) => selectBot(name));
     // A sidebar click: show the bot, starting it first if it is closed.
-    ipcMain.handle('supervisor:open', (_e, name) => whenUp(name, () => selectBot(name)));
+    ipcMain.handle('supervisor:open', (_e, name) => openBot(name));
     installRelayIpc();
     ipcMain.handle('supervisor:focus', (_e, name) => focusProfile(name));
     ipcMain.handle('supervisor:call', (_e, name) => startCall(name));

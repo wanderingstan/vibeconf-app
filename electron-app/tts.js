@@ -7,6 +7,38 @@
 //   const audioBuffer = await tts.synthesize('Hello everyone');
 //   // audioBuffer is an ArrayBuffer ready for VirtualMic.playAudio()
 
+// Words for 0..9999 ("fifty-eight", "one thousand two hundred"). Used for
+// version groups only, where a group is a small integer in practice.
+const ONES = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+  'eight', 'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen',
+  'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty',
+  'seventy', 'eighty', 'ninety'];
+
+function smallNumberToWords(n) {
+  if (n < 20) return ONES[n];
+  if (n < 100) return TENS[Math.floor(n / 10)] + (n % 10 ? '-' + ONES[n % 10] : '');
+  if (n < 1000) {
+    const rest = n % 100;
+    return ONES[Math.floor(n / 100)] + ' hundred' + (rest ? ' ' + smallNumberToWords(rest) : '');
+  }
+  const rest = n % 1000;
+  return ONES[Math.floor(n / 1000)] + ' thousand' + (rest ? ' ' + smallNumberToWords(rest) : '');
+}
+
+// One version group as words. A leading zero ("02") or a group too long to be
+// a sensible cardinal (a build number, 5+ digits) is read digit by digit.
+function versionGroupToWords(group) {
+  if ((group.length > 1 && group[0] === '0') || group.length > 4) {
+    return group.split('').map((d) => ONES[Number(d)]).join(' ');
+  }
+  return smallNumberToWords(Number(group));
+}
+
+function spellVersion(dotted) {
+  return dotted.split('.').map(versionGroupToWords).join(' point ');
+}
+
 // #383: pronunciation fixes for words every engine mangles — "vibeconferencing"
 // came out as "vibey-conferencing"; a hyphen makes the engines break the
 // compound correctly. A table (not a one-off) so future awkward names just add
@@ -16,19 +48,23 @@
 // original spelling). Capture groups preserve the caller's casing.
 const TTS_PRONUNCIATION_FIXES = [
   [/(vibe)(conferencing)/gi, '$1-$2'],
-  // #383 follow-up: a dot BETWEEN DIGITS is spoken, not punctuation. Stan, on a
-  // call 2026-09-09, hearing the bot say a version number: "your pronunciation
-  // of version numbers is really weird, it doesn't even really sound like
-  // English." Engines treat "0.8.51" as one token and guess; saying "point"
-  // removes the guess.
+  // Version numbers are spelled out as WORDS: "0.8.58" -> "zero point eight
+  // point fifty-eight". History: #728 (call 2026-09-09) rewrote a dot between
+  // digits as " point ", giving "0 point 8 point 58" — but ElevenLabs still
+  // read the trailing digits as an ordinal ("fifty-eighth"), heard on the
+  // 2026-10-17 Teams call. Digits left as digits get guessed at; words don't.
   //
-  // Between digits ONLY, which is what keeps this safe. Sentence-ending periods,
-  // decimals in domain names (vibeconferencing.com) and file extensions are all
-  // untouched because at least one side is not a digit.
+  // What counts as a version (deliberately narrow):
+  //   - 3+ dot-separated integer groups: 0.8.58, 1.2.3, 192.168.1.1
+  //   - or 2+ groups with a "v" prefix: v0.8, v0.8.61 (the "v" is dropped)
+  // A single-dot number WITHOUT a "v" (1.4 seconds, $1.25, 3.5) is a decimal
+  // or a price and is left to the engine, which says those correctly; #728's
+  // blanket rule had been turning "$1.25" into "$1 point 25".
   //
-  // A function rather than '$1 point $2' because a version has TWO dots and a
-  // pattern with capture groups only replaces one of them.
-  [/\d+(?:\.\d+)+/g, (m) => m.replace(/\./g, ' point ')],
+  // Not touched: sentence periods, domains, extensions ("0.8.51.dmg" keeps
+  // ".dmg"), a dot glued to letters ("a1.2.3"), and times ("12:30").
+  [/(?<![\w.])(?:[vV](\d+(?:\.\d+)+)|(\d+(?:\.\d+){2,}))(?![\w]|\.\d)/g,
+    (m, vGroups, plainGroups) => spellVersion(vGroups || plainGroups)],
 ];
 
 function applyTtsPronunciationFixes(text) {

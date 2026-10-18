@@ -48,3 +48,15 @@ test('boundary with closing quote splits after the quote', () => {
   assert.match(a, /ship today\."$/);
   assert.match(b, /^The rest of the team/);
 });
+
+test('never splits inside a version number', () => {
+  // The dots in "0.8.58" are followed by digits, not whitespace, so they are
+  // not sentence ends. Only the full stop after the version may split.
+  const t = 'The installed app really is 0.8.58. The updater kicked off a minute ago and is still downloading v0.8.61 in the background.';
+  const parts = splitForTts(t);
+  assert.equal(parts.length, 2);
+  assert.equal(parts[0], 'The installed app really is 0.8.58.');
+  assert.ok(parts[1].includes('v0.8.61'));
+  const long = 'We moved from 0.8.58 to 0.8.61 and then on to 0.8.62 over the course of the afternoon without a hitch, which was nice to see happen.';
+  assert.deepEqual(splitForTts(long), [long]);
+});

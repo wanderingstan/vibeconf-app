@@ -4121,9 +4121,11 @@ api.on('call-failed', (data) => {
 //     it, and a separate "Call <bot> now" for a fresh meeting. Detection still
 //     pre-fills the field, but no longer switches modes: links for Zoom and
 //     Teams cannot be detected, and a mode you cannot see change was confusing.
-//   · The inspectors (bot's view, brain, troubleshooting) are a labelled row
-//     at the foot of the panel, before and during a call. They click the
-//     existing buttons, so their behaviour stays in one place.
+//   · The inspectors are a labelled row at the foot of the panel, on the same
+//     rule the old rows had: Bot's view always (it was beside Call, because it
+//     is how you see where a join got stuck), Brain and Troubleshoot only in a
+//     call (they lived beside Leave). They click the existing buttons, so their
+//     behaviour stays in one place.
 //   · The name's bot-picker menu and the footer line are gone (panel.css).
 
 function syncCallNowBtn() {
@@ -4157,7 +4159,7 @@ function setupHostedLayout() {
   tools.id = 'hostedTools';
   const tool = (icon, label, title, run) => {
     const b = document.createElement('button');
-    b.className = 'hosted-tool';
+    b.className = `hosted-tool tool-${icon}`;
     b.title = title;
     const i = document.createElement('i');
     i.className = `ui-icon ui-icon-${icon} ui-icon--lead`;

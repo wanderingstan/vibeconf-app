@@ -531,7 +531,7 @@ function startDirectory() {
         const name = url.searchParams.get('profile');
         if (!name) return send(400, { ok: false, error: 'profile is required' });
         if (!win || win.isDestroyed()) createWindow();
-        return send(200, await selectBot(name));
+        return send(200, await whenUp(name, () => selectBot(name))); // same as a sidebar click
       }
       if (url.pathname === '/api/launch' && req.method === 'POST') {
         const name = url.searchParams.get('profile');
@@ -874,6 +874,8 @@ function start() {
     ipcMain.handle('supervisor:tick', () => tick());
     ipcMain.handle('supervisor:launch', (_e, name) => launchProfile(name));
     ipcMain.handle('supervisor:select', (_e, name) => selectBot(name));
+    // A sidebar click: show the bot, starting it first if it is closed.
+    ipcMain.handle('supervisor:open', (_e, name) => whenUp(name, () => selectBot(name)));
     installRelayIpc();
     ipcMain.handle('supervisor:focus', (_e, name) => focusProfile(name));
     ipcMain.handle('supervisor:call', (_e, name) => startCall(name));

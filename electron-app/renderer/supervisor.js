@@ -10,7 +10,6 @@ const api = window.electronAPI;
 const els = {
   bots: document.getElementById('bots'),
   count: document.getElementById('count'),
-  callBar: document.getElementById('callBar'),
   orphans: document.getElementById('orphans'),
   events: document.getElementById('events'),
   banner: document.getElementById('calendarBanner'),
@@ -28,35 +27,9 @@ function el(tag, className, text) {
   return node;
 }
 
-// The detected call "Add" targets. Only more than one open Meet tab makes this
-// a choice, and that is rare; the pick survives refreshes while its tab does.
-let selectedCode = null;
 // Last failure per bot, shown under its name until its next action. Kept here
 // because every refresh rebuilds the rows.
 const rowErrors = new Map();
-
-function renderCallBar(calls) {
-  if (!calls.some((c) => c.code === selectedCode)) selectedCode = calls[0]?.code || null;
-  els.callBar.replaceChildren();
-  if (!calls.length) return;
-  const bar = el('div', 'callbar');
-  bar.append(el('span', 'live'));
-  bar.append(el('span', 'label', 'Meet open in your browser'));
-  if (calls.length === 1) {
-    bar.append(el('span', 'code', calls[0].code));
-  } else {
-    const pick = document.createElement('select');
-    for (const c of calls) {
-      const opt = el('option', null, c.code);
-      opt.value = c.code;
-      opt.selected = c.code === selectedCode;
-      pick.append(opt);
-    }
-    pick.addEventListener('change', () => { selectedCode = pick.value; refresh(); });
-    bar.append(pick);
-  }
-  els.callBar.append(bar);
-}
 
 // Busy = anything from starting to join through the post-call write-up. The
 // supervisor decides it (callPhase in supervisor.js), so the window and the
@@ -128,11 +101,22 @@ function avatarFor(bot) {
 
 // The bot whose panel is on the stage (#301 one-window spike).
 let selectedBot = null;
+// Bots launched from the sidebar that have not answered yet, so their row
+// says "Starting…" across refreshes instead of flickering back to closed.
+const starting = new Set();
 
-function renderBots({ bots = [], orphans = [], calls = [], selected = null }) {
+async function openBot(bot) {
+  if (starting.has(bot.name)) return;
+  rowErrors.delete(bot.name);
+  if (!bot.running) { starting.add(bot.name); refresh(); }
+  const r = await api.invoke('supervisor:open', bot.name).catch((e) => ({ ok: false, error: e.message }));
+  starting.delete(bot.name);
+  if (!r?.ok) rowErrors.set(bot.name, `Could not open it: ${r?.error || 'unknown error'}`);
+  refresh();
+}
+
+function renderBots({ bots = [], orphans = [], selected = null }) {
   selectedBot = selected;
-  renderCallBar(calls);
-  const target = calls.find((c) => c.code === selectedCode) || null;
   els.bots.replaceChildren();
   const up = bots.filter((b) => b.running).length;
   els.count.textContent = bots.length ? `${up} of ${bots.length} running` : '';
@@ -143,16 +127,12 @@ function renderBots({ bots = [], orphans = [], calls = [], selected = null }) {
 
   const sorted = [...bots].sort(byRecency);
   for (const bot of sorted) {
-    const row = el('div', `bot${bot.running ? ' selectable' : ' off'}${bot.name === selectedBot ? ' selected' : ''}`);
-    // A running bot's row puts its panel on the stage. Buttons inside the row
-    // keep their own meaning (they stop the click from reaching the row).
-    if (bot.running) {
-      row.addEventListener('click', async () => {
-        const r = await api.invoke('supervisor:select', bot.name).catch((e) => ({ ok: false, error: e.message }));
-        if (!r?.ok) rowErrors.set(bot.name, `Could not show it here: ${r?.error || 'unknown error'}`);
-        refresh();
-      });
-    }
+    const isStarting = starting.has(bot.name) && !bot.running;
+    const row = el('div', `bot selectable${bot.running ? '' : ' off'}${bot.name === selectedBot ? ' selected' : ''}`);
+    // The row is the whole control: click a bot and its panel is on the stage,
+    // where Call, Join and everything else already live. A closed bot is
+    // started first (the supervisor waits for it to answer, then shows it).
+    row.addEventListener('click', () => openBot(bot));
     row.append(avatarFor(bot));
 
     const who = el('div', 'who');
@@ -162,7 +142,7 @@ function renderBots({ bots = [], orphans = [], calls = [], selected = null }) {
     const name = el('div', 'name', labelOf(bot));
     if (bot.isDefault) name.append(el('span', 'tag', 'default'));
     who.append(name);
-    const state = describeState(bot);
+    const state = isStarting ? { cls: 'up', text: 'Starting…' } : describeState(bot);
     const sub = el('div', 'sub');
     sub.append(el('span', `state ${state.cls}`, state.text));
     // A closed bot's port says nothing useful; when it was last used does.
@@ -177,49 +157,9 @@ function renderBots({ bots = [], orphans = [], calls = [], selected = null }) {
 
     // A stuck join says why when the bot told us; otherwise what we can see.
     const err = rowErrors.get(bot.name)
-      || (bot.phase === 'stuck' ? (bot.error || 'No progress for over a minute. Show the bot to see where it is.') : null);
+      || (bot.phase === 'stuck' ? (bot.error || 'No progress for over a minute. Select it to see where it is.') : null);
     if (err) who.append(el('div', 'err', err));
 
-    // What the row offers, by state:
-    //   in a call   Show
-    //   otherwise   Open/Show, plus Add when a Meet is open in the browser, else
-    //               Call. On a closed bot, Call and Add launch it first.
-    const actions = el('div', 'actions');
-    const button = (label, busy, cls, run) => {
-      const b = el('button', cls, label);
-      b.addEventListener('click', async (ev) => {
-        ev.stopPropagation();
-        rowErrors.delete(bot.name);
-        b.disabled = true;
-        b.textContent = busy;
-        const result = await run().catch((e) => ({ ok: false, error: e.message }));
-        if (!result?.ok) rowErrors.set(bot.name, `${label} failed: ${result?.error || 'unknown error'}`);
-        // A launched or joining bot takes a moment to bind its port or change
-        // state, so an instant refresh would report the old state and read as
-        // a failure.
-        setTimeout(refresh, result?.ok ? 2500 : 0);
-      });
-      actions.append(b);
-      return b;
-    };
-    if (inCall(bot)) {
-      button('Show', 'Showing…', '', () => api.invoke('supervisor:focus', bot.name));
-    } else {
-      if (bot.running) button('Show', 'Showing…', 'ghost', () => api.invoke('supervisor:focus', bot.name));
-      else button('Open', 'Opening…', 'ghost', () => api.invoke('supervisor:launch', bot.name));
-      // A closed bot has to start before it can call, which takes seconds; say
-      // so, or the button reads as stuck.
-      const busy = (verb) => (bot.running ? verb : 'Starting…');
-      const cls = bot.running ? 'primary' : 'primary closed';
-      if (target) {
-        button('Add', busy('Adding…'), cls, () => api.invoke('supervisor:add', bot.name, target.url))
-          .title = `Add ${labelOf(bot)} to ${target.code}`;
-      } else {
-        button('Call', busy('Calling…'), cls, () => api.invoke('supervisor:call', bot.name))
-          .title = `Start a new Meet with ${labelOf(bot)}`;
-      }
-    }
-    row.append(actions);
     els.bots.append(row);
   }
 

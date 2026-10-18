@@ -25,6 +25,11 @@ if (process.argv.includes('--supervisor')) {
   return;
 }
 
+// #301 one-window spike: lets the supervisor's window drive this bot's panel
+// over HTTP (see panel-relay.js). Installed before any ipcMain.handle below,
+// because it records handlers as they are registered.
+const panelRelay = require('./panel-relay.js').createPanelRelay({ ipcMain });
+
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
@@ -3581,6 +3586,7 @@ const localServer = new globalThis.LocalServer({
     }
   },
 });
+localServer.panelRelay = panelRelay; // #301: /api/panel/* routes, behind the server's auth
 
 function pushAvatarEmojiOverrides(overrides = {}) {
   console.log('[local-server] Avatar emoji override:', overrides);
@@ -12040,6 +12046,7 @@ function createMainWindow() {
   // NOT the 'screen' param: that one marks a POP-OUT window (IS_POPOUT_WINDOW),
   // which would suppress this panel's height reporting and leave the main window
   // stuck at its startup size.
+  panelRelay.attachPanel(panelView.webContents); // #301: tee pushes to the supervisor's window
   panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'),
     cliArgs['open-settings'] === 'true' ? { search: 'startScreen=settings' } : undefined);
   // The window is hidden until the panel reports its height (showMainWindowOnce).

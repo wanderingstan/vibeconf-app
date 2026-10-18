@@ -21,7 +21,7 @@
 // works would make the cross-platform story an afterthought. The window is the
 // product; the menulet is a way to hide it.
 
-const { app, BrowserWindow, ipcMain, shell, dialog, Menu, Notification } = require('electron');
+const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Menu, Notification, clipboard } = require('electron');
 const path = require('path');
 const { execFile } = require('child_process');
 
@@ -174,7 +174,7 @@ async function fleetStatus() {
   const calls = browserScan.scanning
     ? detectedCalls([{ callStatus: 'idle', detectedMeetUrls: browserScan.meetUrls }])
     : detectedCalls([...running.values()]);
-  return { bots, orphans, calls, defaultProfile: paths.defaultProfile };
+  return { bots, orphans, calls, selected: relay.name, defaultProfile: paths.defaultProfile };
 }
 
 // ── Calendar ────────────────────────────────────────────────────────────────
@@ -510,6 +510,29 @@ function startDirectory() {
       if (url.pathname === '/api/health') {
         return send(200, { ok: true, supervisor: { port, pid: process.pid, version: app.getVersion() } });
       }
+      // Debug only: pictures of the sidebar and the hosted panel, for checking
+      // the shell without access to the screen. Off unless asked for.
+      if (url.pathname === '/api/debug/capture' && process.env.VIBECONF_SUPERVISOR_DEBUG === '1') {
+        const dir = url.searchParams.get('dir') || require('os').tmpdir();
+        const fs = require('fs');
+        const out = {};
+        if (win && !win.isDestroyed()) {
+          fs.writeFileSync(path.join(dir, 'shell-sidebar.png'), (await win.webContents.capturePage()).toPNG());
+          out.sidebar = path.join(dir, 'shell-sidebar.png');
+        }
+        if (panelHost && relay.name) {
+          fs.writeFileSync(path.join(dir, 'shell-panel.png'), (await panelHost.webContents.capturePage()).toPNG());
+          out.panel = path.join(dir, 'shell-panel.png');
+        }
+        return send(200, { ok: true, ...out });
+      }
+      // Put a running bot's panel on the window's stage (#301 one-window spike).
+      if (url.pathname === '/api/select' && req.method === 'POST') {
+        const name = url.searchParams.get('profile');
+        if (!name) return send(400, { ok: false, error: 'profile is required' });
+        if (!win || win.isDestroyed()) createWindow();
+        return send(200, await selectBot(name));
+      }
       if (url.pathname === '/api/launch' && req.method === 'POST') {
         const name = url.searchParams.get('profile');
         if (!name) return send(400, { ok: false, error: 'profile is required' });
@@ -531,6 +554,144 @@ function startDirectory() {
   // Loopback only. This lists every bot on the machine and can start processes;
   // it is not something to expose beyond this host.
   directory.listen(port, '127.0.0.1', () => console.log(`[supervisor] directory listening on 127.0.0.1:${port}`));
+}
+
+// ── The shell: one window, a sidebar of bots, the selected bot's panel ─────
+//
+// #301 one-window spike. The window's own page (supervisor.html) is the
+// sidebar plus an empty stage; the selected bot's REAL panel (panel.html, the
+// same file the bot's own window loads) sits on the stage in a
+// WebContentsView, talking to that bot through panel-relay.js:
+//
+//   panel.js → preload-panel-relay.js → relay:invoke/relay:send (here)
+//            → POST http://127.0.0.1:<bot port>/api/panel/{invoke,send}
+//   bot's webContents.send → GET /api/panel/events (SSE) → here → panel view
+//
+// The bot stays its own process; only its UI is shown here. A bot that
+// crashes takes its panel with it, not the window.
+
+const SIDEBAR_W = 320;
+const PANEL_W = 380; // the bot window's column width (WINDOW_WIDTH in main.js)
+
+let panelHost = null;           // WebContentsView showing the selected bot's panel
+const relay = { name: null, port: null, req: null, retry: null };
+
+function layoutShell() {
+  if (!win || win.isDestroyed() || !panelHost) return;
+  const [w, h] = win.getContentSize();
+  const stageW = Math.max(0, w - SIDEBAR_W);
+  const pw = Math.min(PANEL_W, stageW);
+  panelHost.setBounds({ x: SIDEBAR_W + Math.floor((stageW - pw) / 2), y: 0, width: pw, height: h });
+}
+
+function closeRelayStream() {
+  if (relay.retry) { clearTimeout(relay.retry); relay.retry = null; }
+  if (relay.req) { try { relay.req.destroy(); } catch { /* already closed */ } relay.req = null; }
+}
+
+// Subscribe to the selected bot's pushes and replay each one onto the panel
+// view, as if the bot had sent it there itself.
+function openRelayStream() {
+  const http = require('http');
+  const { name, port } = relay;
+  const req = http.get({
+    host: '127.0.0.1', port, path: '/api/panel/events',
+    headers: { Accept: 'text/event-stream', ...botAuthHeaders(port) },
+  }, (res) => {
+    if (res.statusCode !== 200) {
+      console.warn(`[supervisor] ${name}'s panel relay answered HTTP ${res.statusCode}${res.statusCode === 404 ? ' (a build without /api/panel)' : ''}`);
+      res.resume();
+      return;
+    }
+    res.setEncoding('utf8');
+    let buf = '';
+    res.on('data', (chunk) => {
+      buf += chunk;
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const frame = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        const data = frame.split('\n').filter((l) => l.startsWith('data: ')).map((l) => l.slice(6)).join('\n');
+        if (!data) continue; // a ': ping' comment
+        let msg;
+        try { msg = JSON.parse(data); } catch { continue; }
+        if (panelHost && !panelHost.webContents.isDestroyed() && relay.name === name) {
+          panelHost.webContents.send(msg.channel, ...(Array.isArray(msg.args) ? msg.args : []));
+        }
+      }
+    });
+    res.on('end', () => onRelayDropped(name));
+  });
+  req.on('error', () => onRelayDropped(name));
+  relay.req = req;
+}
+
+// The stream ended: the bot quit, crashed or restarted. Re-resolve it by
+// profile (a restart can land on another port) and resubscribe, or clear
+// the stage if it is gone.
+function onRelayDropped(name) {
+  if (relay.name !== name) return;
+  relay.req = null;
+  relay.retry = setTimeout(async () => {
+    relay.retry = null;
+    if (relay.name !== name) return;
+    const inst = (await scanRunning().catch(() => new Map())).get(name);
+    if (!inst) { deselectBot(); return; }
+    const moved = inst.port !== relay.port;
+    relay.port = inst.port;
+    openRelayStream();
+    if (moved && panelHost) panelHost.webContents.reload();
+  }, 2000);
+}
+
+function deselectBot() {
+  closeRelayStream();
+  relay.name = null;
+  relay.port = null;
+  if (panelHost) panelHost.setVisible(false);
+  pushState({ selected: null });
+}
+
+async function selectBot(name) {
+  const inst = (await scanRunning()).get(name);
+  if (!inst) return { ok: false, error: 'not running' };
+  closeRelayStream();
+  relay.name = name;
+  relay.port = inst.port;
+  // Stream first, then load, so nothing the bot pushes while the panel boots
+  // is lost. The panel asks for its initial state itself, over invoke.
+  openRelayStream();
+  panelHost.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
+  panelHost.setVisible(true);
+  layoutShell();
+  pushState({ selected: name });
+  return { ok: true, port: inst.port };
+}
+
+async function relayPost(pathname, body) {
+  if (!relay.port) throw new Error('no bot selected');
+  const res = await fetch(`http://127.0.0.1:${relay.port}${pathname}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...botAuthHeaders(relay.port) },
+    body: JSON.stringify(body),
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json.ok === false) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+function installRelayIpc() {
+  const fromPanel = (e) => panelHost && e.sender === panelHost.webContents;
+  ipcMain.handle('relay:invoke', async (e, channel, args) => {
+    if (!fromPanel(e)) throw new Error('relay:invoke is for the hosted panel only');
+    return (await relayPost('/api/panel/invoke', { channel, args })).result;
+  });
+  ipcMain.on('relay:send', (e, channel, args) => {
+    if (!fromPanel(e)) return;
+    relayPost('/api/panel/send', { channel, args })
+      .catch((err) => console.warn(`[supervisor] relay send "${channel}" failed:`, err.message));
+  });
+  ipcMain.on('relay:copy', (e, text) => { if (fromPanel(e)) clipboard.writeText(text); });
 }
 
 // ── Window ──────────────────────────────────────────────────────────────────
@@ -619,8 +780,11 @@ function installMenu() {
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 520,
-    height: 720,
+    width: SIDEBAR_W + 640,
+    height: 760,
+    minWidth: SIDEBAR_W + PANEL_W,
+    minHeight: 520,
+    backgroundColor: '#202124',
     title: 'Vibeconferencing',
     webPreferences: {
       preload: path.join(__dirname, 'preload-supervisor.js'),
@@ -629,6 +793,27 @@ function createWindow() {
     },
   });
   win.loadFile(path.join(__dirname, 'renderer', 'supervisor.html'));
+
+  panelHost = new WebContentsView({
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-panel-relay.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  panelHost.setBackgroundColor('#202124');
+  // The hosted panel's own warnings and errors, in the supervisor's log: the
+  // first place a relay gap (a call that did not cross) shows up.
+  panelHost.webContents.on('console-message', (e) => {
+    const level = e.level ?? e.params?.level;
+    if (level === 'warning' || level === 'error' || level === 2 || level === 3) {
+      console.log(`[panel:${relay.name || '-'}] ${e.message ?? e.params?.message}`);
+    }
+  });
+  panelHost.setVisible(false);
+  win.contentView.addChildView(panelHost);
+  win.on('resize', layoutShell);
+  layoutShell();
 
   // The Granola model (Stan, 2026-08-31): this wants to be always-on, says so
   // loudly when you go to quit it, and then lets you.
@@ -647,7 +832,7 @@ function createWindow() {
     event.preventDefault();
     requestQuit();
   });
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => { win = null; panelHost = null; closeRelayStream(); relay.name = null; relay.port = null; });
 }
 
 // ── Entry ───────────────────────────────────────────────────────────────────
@@ -688,6 +873,8 @@ function start() {
     ipcMain.handle('supervisor:fleet', () => fleetStatus());
     ipcMain.handle('supervisor:tick', () => tick());
     ipcMain.handle('supervisor:launch', (_e, name) => launchProfile(name));
+    ipcMain.handle('supervisor:select', (_e, name) => selectBot(name));
+    installRelayIpc();
     ipcMain.handle('supervisor:focus', (_e, name) => focusProfile(name));
     ipcMain.handle('supervisor:call', (_e, name) => startCall(name));
     ipcMain.handle('supervisor:add', (_e, name, url) => addToCall(name, url));

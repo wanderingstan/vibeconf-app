@@ -126,7 +126,11 @@ function avatarFor(bot) {
   return box;
 }
 
-function renderBots({ bots = [], orphans = [], calls = [] }) {
+// The bot whose panel is on the stage (#301 one-window spike).
+let selectedBot = null;
+
+function renderBots({ bots = [], orphans = [], calls = [], selected = null }) {
+  selectedBot = selected;
   renderCallBar(calls);
   const target = calls.find((c) => c.code === selectedCode) || null;
   els.bots.replaceChildren();
@@ -139,7 +143,16 @@ function renderBots({ bots = [], orphans = [], calls = [] }) {
 
   const sorted = [...bots].sort(byRecency);
   for (const bot of sorted) {
-    const row = el('div', `bot${bot.running ? '' : ' off'}`);
+    const row = el('div', `bot${bot.running ? ' selectable' : ' off'}${bot.name === selectedBot ? ' selected' : ''}`);
+    // A running bot's row puts its panel on the stage. Buttons inside the row
+    // keep their own meaning (they stop the click from reaching the row).
+    if (bot.running) {
+      row.addEventListener('click', async () => {
+        const r = await api.invoke('supervisor:select', bot.name).catch((e) => ({ ok: false, error: e.message }));
+        if (!r?.ok) rowErrors.set(bot.name, `Could not show it here: ${r?.error || 'unknown error'}`);
+        refresh();
+      });
+    }
     row.append(avatarFor(bot));
 
     const who = el('div', 'who');
@@ -174,7 +187,8 @@ function renderBots({ bots = [], orphans = [], calls = [] }) {
     const actions = el('div', 'actions');
     const button = (label, busy, cls, run) => {
       const b = el('button', cls, label);
-      b.addEventListener('click', async () => {
+      b.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
         rowErrors.delete(bot.name);
         b.disabled = true;
         b.textContent = busy;

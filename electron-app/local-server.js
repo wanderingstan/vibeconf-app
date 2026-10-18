@@ -5590,8 +5590,12 @@ class LocalServer {
         // rather than completion because wait_for_speech blocks for up to 55s —
         // crediting it at the end would backdate the agent's liveness by a
         // whole cycle.
-        this.lastAgentActivityAt = Date.now();
-        this.agentSocketLost = false;
+        // The supervisor's window driving this bot's panel (/api/panel/*) is not
+        // the agent, so it must not count as the agent being alive.
+        if (!String(req.url || '').startsWith('/api/panel/')) {
+          this.lastAgentActivityAt = Date.now();
+          this.agentSocketLost = false;
+        }
         this._handleRequest(req, res).catch(err => {
           console.error('[local-server] Request error:', err.message);
           // A handler that already responded and THEN threw would otherwise
@@ -5723,6 +5727,11 @@ class LocalServer {
     }
 
     const url = new URL(req.url, `http://127.0.0.1:${this.port}`);
+    // #301: the supervisor's window driving this bot's panel. After the auth
+    // check above on purpose: it can do anything the bot's own window can.
+    if (this.panelRelay && url.pathname.startsWith('/api/panel/')) {
+      if (await this.panelRelay.handleRequest(req, res, url, (r) => this._readBody(r))) return;
+    }
     // Room id is any lowercase slug — the server adopts whatever id the first
     // request uses (see "Accept requests for any room ID" below). This used to
     // be locked to Meet's three-group code shape (`xxx-xxxx-xxx`), which 404'd

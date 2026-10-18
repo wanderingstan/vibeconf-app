@@ -18,6 +18,22 @@
       --up: #81c995; --call: #fdd663; --warn: #f28b82;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    /* #301 one-window spike: this page is the sidebar plus an empty stage.
+       The selected bot's panel is a separate view the supervisor lays over the
+       stage (SIDEBAR_W / PANEL_W in supervisor-app.js; keep the width equal). */
+    html, body { height: 100%; }
+    body { display: flex; overflow: hidden; }
+    .sidebar {
+      width: 320px; flex: none; height: 100%; overflow-y: auto;
+      border-right: 1px solid var(--line);
+    }
+    .stage {
+      flex: 1; height: 100%; display: flex; align-items: center; justify-content: center;
+      color: var(--faint); font-size: 13px; text-align: center; padding: 24px;
+    }
+    .bot.selectable { cursor: pointer; }
+    .bot.selected { background: var(--hover); }
+    .bot.selected .dot { border-color: var(--hover); }
     body {
       background: var(--bg); color: var(--text);
       font: 13px/1.45 'Google Sans', Roboto, Arial, sans-serif;
@@ -151,6 +167,7 @@
   </style>
 </head>
 <body>
+  <aside class="sidebar">
   <header>
     <div>
       <h1>Bots on this machine</h1>
@@ -176,6 +193,9 @@
     <span>Watching the calendar for every bot, including closed ones</span>
     <span id="tickStatus"></span>
   </footer>
+  </aside>
+
+  <main class="stage" id="stage">Select a running bot to see it here.</main>
 
   <script src="supervisor.js"></script>
 </body>

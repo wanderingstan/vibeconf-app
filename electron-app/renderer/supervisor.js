@@ -138,6 +138,10 @@ function renderBots({ bots = [], orphans = [], selected = null }) {
     els.bots.append(el('div', 'empty', 'No bots configured yet.'));
   }
 
+  // "New bot" heads the list: making one is a list-level action, so it lives
+  // here rather than inside any one bot's panel.
+  els.bots.append(newBotRow());
+
   const sorted = [...bots].sort(byRecency);
   for (const bot of sorted) {
     const isStarting = starting.has(bot.name) && !bot.running;
@@ -247,8 +251,11 @@ api.on('supervisor-state', (state) => {
   // A bot is being woken (from a click here, or from anywhere else that opens
   // one): show its placeholder on the stage until its panel arrives.
   if (state && 'waking' in state) {
+    const wake = (b) => { starting.add(b.name); showStage(b); };
     const bot = lastBots.find((b) => b.name === state.waking);
-    if (bot) { starting.add(bot.name); showStage(bot); }
+    if (bot) wake(bot);
+    // A bot just created is not in the last list drawn yet: fetch, then show it.
+    else if (state.waking) refresh().then(() => { const b = lastBots.find((x) => x.name === state.waking); if (b) wake(b); });
     if (state.wakeFailed) {
       starting.delete(state.wakeFailed);
       rowErrors.set(state.wakeFailed, `Could not open it: ${state.error || 'unknown error'}`);
@@ -276,6 +283,28 @@ api.on('supervisor-state', (state) => {
   }
   refresh();
 });
+
+// ── New bot ──
+
+let creatingBot = false;
+function newBotRow() {
+  const row = el('div', 'bot selectable new-bot');
+  const tile = el('div', 'avatar new-tile');
+  tile.append(el('span', null, '+'));
+  const who = el('div', 'who');
+  who.append(el('div', 'name', creatingBot ? 'Creating…' : 'New bot'));
+  row.append(tile, who);
+  row.addEventListener('click', async () => {
+    if (creatingBot) return;
+    creatingBot = true;
+    refresh();
+    const r = await api.invoke('supervisor:new-bot').catch((e) => ({ ok: false, error: e.message }));
+    creatingBot = false;
+    if (!r?.ok && r?.name) rowErrors.set(r.name, `Could not start the new bot: ${r.error || 'unknown error'}`);
+    refresh();
+  });
+  return row;
+}
 
 // ── The account line pinned to the sidebar's bottom ──
 

@@ -21,6 +21,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+// How a new bot is born moved to new-bot.js (#301), shared with the app window.
+const newBot = readFileSync(join(root, 'electron-app/new-bot.js'), 'utf8');
 
 // The implementation is a named function assigned to a module-scope holder, with
 // the ipcMain handler a thin delegate over it — because the CALLER is a terminal
@@ -36,14 +38,14 @@ test('reachable from BOTH a terminal and the panel', () => {
 test('the seed carries BOTH the workdir and the session', () => {
   // Sessions are stored per working directory, so the pair is the identity — a
   // session name means nothing without the directory it was recorded in.
-  assert.match(main, /seeded\.claudeWorkDir = adopt\.workdir/);
-  assert.match(main, /seeded\.agentSession = adopt\.session/);
+  assert.match(newBot, /seeded\.claudeWorkDir = adopt\.workdir/);
+  assert.match(newBot, /seeded\.agentSession = adopt\.session/);
 });
 
 test('an adopted session is pinned, not left to follow the bot name', () => {
   // On auto, planAgentSession rewrites a name ref to the bot's own name at first
   // launch, so the bot starts a fresh session instead of resuming.
-  assert.match(main, /seeded\.agentSessionAuto = false/);
+  assert.match(newBot, /seeded\.agentSessionAuto = false/);
 });
 
 test('the skill pins the session by id, not by its title', () => {
@@ -75,18 +77,18 @@ test('the session name goes through the same sanitizer the launcher uses', () =>
 });
 
 test('the adopted name must be addressable, or the random pool takes over', () => {
-  assert.match(main, /isAddressableBotName\(adopt\.botName\)/);
-  assert.match(main, /const botName = adopted \|\| randomBotName/);
+  assert.match(newBot, /isAddressableBotName\(adopt\.botName\)/);
+  assert.match(newBot, /const botName = adopted \|\| randomBotName/);
 });
 
 test('adopting does not skip onboarding — the bot still introduces itself', () => {
   // Seeded false for every new bot, adopted or not: an adopted session has
   // context but has never chosen a voice, emoji or background.
-  assert.match(main, /onboardingCallComplete: false/);
+  assert.match(newBot, /onboardingCallComplete: false/);
 });
 
 test('an existing config is never clobbered by a reused profile directory', () => {
   // nextBotProfileName picks the first GAP, so the directory may have been used
   // before and still hold something the user cares about.
-  assert.match(main, /if \(existing\.botName\) return;/);
+  assert.match(newBot, /if \(existing\.botName\) return;/);
 });

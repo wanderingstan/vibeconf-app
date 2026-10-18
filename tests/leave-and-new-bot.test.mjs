@@ -22,6 +22,8 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+// How a new bot is born moved to new-bot.js (#301), shared with the app window.
+const newBot = readFileSync(join(root, 'electron-app/new-bot.js'), 'utf8');
 const panelJs = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
 require('../electron-app/local-server.js');
 const LocalServer = globalThis.LocalServer;
@@ -88,7 +90,7 @@ test('new bot: no prompt, auto-named, opens on Settings', () => {
 
 test('auto-naming fills the first gap rather than counting up forever', () => {
   // Deleting bot3 and adding a bot should reuse bot3, not creep to bot4.
-  const fn = main.slice(main.indexOf('function nextBotProfileName'));
+  const fn = newBot.slice(newBot.indexOf('function nextBotProfileName'));
   const body = fn.slice(0, fn.indexOf('\n  }'));
   assert.match(body, /for \(let i = 2;/, 'starts at 2 — the default profile is 1');
   assert.match(body, /if \(!taken\.has\(candidate\)\) return candidate/);
@@ -109,8 +111,8 @@ test('a new bot gets a real NAME, not just a folder', () => {
   // bot3 is a directory. Without a seeded name the bot introduces itself as
   // "Unnamed bot" — a worse first impression than any random name, and one the
   // user has to fix before the thing is usable.
-  const fn = main.slice(main.indexOf('function seedNewBotName'));
-  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  const fn = newBot.slice(newBot.indexOf('function seedNewBot('));
+  const body = fn.slice(0, fn.indexOf('\n}\n')); // top level in new-bot.js
   assert.match(body, /randomBotName\(\{ taken \}\)/, 'drawn from the spinner pool');
   assert.match(body, /botName/);
   // Written to the profile config, NOT passed as --bot-name: that flag is a
@@ -123,8 +125,8 @@ test('a new bot gets a real NAME, not just a folder', () => {
 test('seeding never clobbers an existing config', () => {
   // Directory names are allocated first-gap, so bot3 may be a REUSED folder
   // that still holds something the user cares about.
-  const fn = main.slice(main.indexOf('function seedNewBotName'));
-  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  const fn = newBot.slice(newBot.indexOf('function seedNewBot('));
+  const body = fn.slice(0, fn.indexOf('\n}\n')); // top level in new-bot.js
   assert.match(body, /if \(existing\.botName\) return;/);
   assert.match(body, /\{ \.\.\.existing, botName, onboardingCallComplete: false \}/, 'merge, never overwrite the file');
 });
@@ -143,10 +145,10 @@ test('a new bot does not take a name another bot is already using', () => {
 test('naming failure is not fatal', () => {
   // An unnamed bot is still a working bot, and it lands on the page where that
   // gets fixed. Throwing here would block creating the bot at all.
-  const fn = main.slice(main.indexOf('function seedNewBotName'));
-  const body = fn.slice(0, fn.indexOf('\n  }\n'));
+  const fn = newBot.slice(newBot.indexOf('function seedNewBot('));
+  const body = fn.slice(0, fn.indexOf('\n}\n')); // top level in new-bot.js
   assert.match(body, /catch \(err\)/);
-  assert.match(body, /console\.warn/);
+  assert.match(body, /log\.warn/);
 });
 
 test('both create-a-bot entry points behave identically', () => {
@@ -234,11 +236,11 @@ test('a new bot is seeded into the AGENT dir, where the store actually reads', (
   // ORIGINAL name forever: bot8's loose file still read "Diego" long after the
   // bot was renamed Taylor, which cost a real debugging detour.
   const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
-  const fn = main.slice(main.indexOf('function seedNewBotName'));
-  const body = fn.slice(0, fn.indexOf('\n  }\n'));
-  assert.match(body, /agentDirFor\(path\.join\(PROFILES_ROOT, profileName\)\)/,
+  const fn = newBot.slice(newBot.indexOf('function seedNewBot('));
+  const body = fn.slice(0, fn.indexOf('\n}\n')); // top level in new-bot.js
+  assert.match(body, /agentDirFor\(path\.join\(profilesRoot, profileName\)\)/,
     'seed into the agent dir, not the profile dir');
-  assert.doesNotMatch(body, /const dir = path\.join\(PROFILES_ROOT, profileName\);/,
+  assert.doesNotMatch(body, /const dir = path\.join\(profilesRoot, profileName\);/,
     'the loose path is the pre-#305 location the store no longer reads');
   // The never-clobber guard is the reason this is safe on a reused directory
   // name (profile names are allocated first-gap), so it must survive.

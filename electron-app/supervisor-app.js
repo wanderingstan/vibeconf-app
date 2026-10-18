@@ -768,7 +768,7 @@ async function canHost(port) {
   }
 }
 
-async function selectBot(name) {
+async function selectBot(name, { startScreen = null } = {}) {
   const inst = (await scanRunning()).get(name);
   if (!inst) return { ok: false, error: 'not running' };
   if (!(await canHost(inst.port))) {
@@ -788,7 +788,9 @@ async function selectBot(name) {
   // Stream first, then load, so nothing the bot pushes while the panel boots
   // is lost. The panel asks for its initial state itself, over invoke.
   openRelayStream();
-  panelHost.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'));
+  // startScreen: the panel's own ?startScreen= (a new bot opens on Settings).
+  panelHost.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'),
+    startScreen ? { search: `startScreen=${startScreen}` } : undefined);
   panelHost.setVisible(true);
   layoutShell();
   pushState({ selected: name });
@@ -814,6 +816,28 @@ async function openBot(name) {
   // An outdated bot already explained itself on the stage (selectBot).
   if (!result?.ok && result?.code !== 'outdated') pushState({ waking: null, wakeFailed: name, error: result?.error || null });
   return result;
+}
+
+// The sidebar's "New bot": made the same way a bot's own "New bot…" makes one
+// (new-bot.js: the first free botN folder, a random name and background), then
+// started headless and put on the stage, opened on its Settings page, which
+// is a new bot's next step (name, voice, face).
+async function createBot() {
+  const { nextBotProfileName, seedNewBot } = require('./new-bot.js');
+  const name = nextBotProfileName(paths.profilesRoot);
+  seedNewBot(paths.profilesRoot, name);
+  closeRelayStream();
+  relay.name = null;
+  relay.port = null;
+  if (panelHost) panelHost.setVisible(false);
+  pushState({ created: name, waking: name });
+  const result = await launchThenAct({
+    isRunning: async () => (await scanRunning()).has(name),
+    launch: () => launchProfile(name, { openSettings: true }),
+    act: () => selectBot(name, { startScreen: 'settings' }),
+  });
+  if (!result?.ok) pushState({ waking: null, wakeFailed: name, error: result?.error || null });
+  return { ...result, name };
 }
 
 async function relayPost(pathname, body) {
@@ -930,7 +954,7 @@ function createWindow() {
     height: 760,
     minWidth: SIDEBAR_W + PANEL_W,
     minHeight: 520,
-    backgroundColor: '#202124',
+    backgroundColor: '#FFF4DA', // --cream, so nothing flashes dark before the page paints
     title: 'Vibeconferencing',
     webPreferences: {
       preload: path.join(__dirname, 'preload-supervisor.js'),
@@ -947,7 +971,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
-  panelHost.setBackgroundColor('#202124');
+  panelHost.setBackgroundColor('#FFF4DA');
   // The hosted panel's own warnings and errors, in the supervisor's log: the
   // first place a relay gap (a call that did not cross) shows up.
   panelHost.webContents.on('console-message', (e) => {
@@ -1046,6 +1070,7 @@ function start() {
     ipcMain.handle('supervisor:launch', (_e, name) => launchProfile(name));
     ipcMain.handle('supervisor:select', (_e, name) => selectBot(name));
     ipcMain.handle('supervisor:account', () => fetchAccount());
+    ipcMain.handle('supervisor:new-bot', () => createBot());
     // Signing in is a bot's job today (it owns the browser-based login flow), so
     // the footer's Sign in goes through whichever bot is on the stage.
     ipcMain.handle('supervisor:sign-in', async () => {

@@ -8,14 +8,25 @@
 <head>
   <meta charset="utf-8" />
   <title>Vibeconferencing</title>
+  <link rel="stylesheet" href="fonts.css" />
   <style>
-    /* The bot panel's palette and type (panel.css), so the supervisor reads as
-       the same app rather than a debug page bolted onto it. */
+    /* The bot panel's system (panel.css :root, the same tokens as
+       vibeconferencing.com): cream grounds, ink type, magenta accents, call
+       green. Keep these values in step with panel.css; the semantic names on
+       the right are what this page's rules use. */
     :root {
-      --bg: #202124; --surface: #303134; --hover: #3c4043; --line: #3c4043;
-      --text: #e8eaed; --dim: #9aa0a6; --faint: #5f6368;
-      --accent: #8ab4f8; --accent-hover: #aecbfa;
-      --up: #81c995; --call: #fdd663; --warn: #f28b82;
+      --cream: #FFF4DA; --paper: #FFFDF7; --paper-lo: #FFE7B3;
+      --ink: #4A3140; --ink-soft: #6B5566; --ink-faint: #9A8798;
+      --magenta: #9F0BA4; --pink: #E62776; --go: #44CE81; --go-deep: #3BBE74;
+      --shadow-lo: -1px 1px 3px rgba(74, 49, 64, 0.14);
+      --font-display: 'Syne', Futura, 'Trebuchet MS', sans-serif;
+      --font-body: 'DM Sans', 'Avenir Next', -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+      --bg: var(--cream); --surface: #FFEDC4; --hover: var(--paper-lo); --line: #F1D9A4;
+      --text: var(--ink); --dim: var(--ink-soft); --faint: var(--ink-faint);
+      --accent: var(--magenta); --accent-hover: var(--pink);
+      --up: var(--go-deep); --call: var(--go); --warn: var(--pink);
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     /* #301 one-window spike: this page is the sidebar plus an empty stage.
@@ -162,7 +173,7 @@
     }
     button:hover:not(:disabled) { background: var(--hover); }
     .bot:hover button:not(.primary) { background: var(--hover); }
-    .bot:hover button:not(.primary):hover:not(:disabled) { background: #4a4e52; }
+    .bot:hover button:not(.primary):hover:not(:disabled) { background: var(--paper); }
     button.primary { background: var(--accent); color: var(--bg); }
     button.primary:hover:not(:disabled) { background: var(--accent-hover); }
     button:disabled { opacity: 0.5; cursor: default; }
@@ -206,12 +217,36 @@
     .event .for { color: var(--dim); font-size: 12px; }
     .banner {
       margin: 0 8px 10px; padding: 8px 12px; border-radius: 8px; font-size: 12px;
-      background: #3a2a28; color: var(--warn);
+      background: #FCE3EE; color: var(--pink);
     }
     footer {
       padding: 12px 20px 16px; color: var(--faint); font-size: 11px;
       display: flex; justify-content: space-between; gap: 12px;
     }
+
+    /* ── Type, as in the bot panel: Syne for names, DM Sans for body, JetBrains
+       Mono for the small print (status lines, the account, notes). ── */
+    body { font-family: var(--font-body); }
+    .bot .name { font-family: var(--font-display); font-weight: 700; font-size: 15px; letter-spacing: 0.1px; }
+    .sub, .tag, .account, .empty, .pane footer, .waking-note, .stage, .err, .event .for {
+      font-family: var(--font-mono); font-size: 11.5px;
+    }
+    .waking-name { font-family: var(--font-display); font-weight: 800; font-size: 22px; }
+    .tag { background: var(--paper-lo); color: var(--ink-soft); }
+    .bot:hover .tag { background: var(--paper); }
+    .bot.selected { background: var(--paper-lo); }
+    .bot.selected .dot { border-color: var(--paper-lo); }
+
+    /* The three-way switch: a sunken cream track, the active choice raised on paper. */
+    .modes { background: var(--paper-lo); }
+    .modes .mode.active, .modes .mode.active:hover { background: var(--paper); color: var(--ink); box-shadow: var(--shadow-lo); }
+
+    /* "New bot": a dashed tile where a face would be. */
+    .new-tile { background: transparent; border: 1.5px dashed var(--ink-faint); color: var(--ink-soft); }
+    .new-tile span { font-family: var(--font-display); font-weight: 700; font-size: 24px; line-height: 1; }
+    .new-bot .name { color: var(--ink-soft); }
+    .new-bot:hover .new-tile { border-color: var(--ink); color: var(--ink); }
+    .new-bot:hover .name { color: var(--ink); }
   </style>
 </head>
 <body>

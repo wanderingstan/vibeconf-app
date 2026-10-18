@@ -54,30 +54,16 @@ function describeState(bot) {
   return { cls: bot.phase === 'stuck' ? 'stuck' : 'call', text: `${PHASE_TEXT[bot.phase] || 'Busy'}${where}` };
 }
 
-// Busy first, then most recently used. Name breaks ties (and orders bots that
-// have never been used). Bots behave more like browser tabs than a fixed
-// roster: whatever you used lately is what you reach for, and a bot tried once
-// last month sinks on its own.
+// In a call (or joining, waiting, wrapping up) first, then most recently in a
+// call. Selecting a bot does not move it: only calls do, so the list stays put
+// while you click around it. Name breaks ties (and orders bots never in a call).
 function rank(bot) { return inCall(bot) ? 0 : 1; }
 function byRecency(a, b) {
   return rank(a) - rank(b)
-    || (b.lastUsedAt || 0) - (a.lastUsedAt || 0)
+    || (b.lastCallAt || 0) - (a.lastCallAt || 0)
     || labelOf(a).localeCompare(labelOf(b));
 }
 
-// "used 5m ago", "used 3d ago": enough to tell last week's bot from last
-// year's, not a timestamp.
-function usedAgo(ms) {
-  if (!ms) return null;
-  const mins = Math.round((Date.now() - ms) / 60000);
-  if (mins < 1) return 'used just now';
-  if (mins < 60) return `used ${mins}m ago`;
-  const hours = Math.round(mins / 60);
-  if (hours < 24) return `used ${hours}h ago`;
-  const days = Math.round(hours / 24);
-  if (days < 60) return `used ${days}d ago`;
-  return `used ${Math.round(days / 30)}mo ago`;
-}
 function labelOf(bot) { return bot.botName || bot.name; }
 
 function avatarFor(bot) {
@@ -175,10 +161,13 @@ function renderBots({ bots = [], orphans = [], selected = null }) {
     if (bot.isDefault) name.append(el('span', 'tag', 'default'));
     who.append(name);
     const state = isStarting ? { cls: 'up', text: 'Waking up…' } : describeState(bot);
-    const sub = el('div', 'sub');
-    if (state) sub.append(el('span', `state ${state.cls}`, state.text));
-    else sub.append(document.createTextNode(usedAgo(bot.lastUsedAt) || 'Not used yet'));
-    who.append(sub);
+    // Only something worth saying earns a second line: a call state, or waking
+    // up. Otherwise the row is just the name.
+    if (state) {
+      const sub = el('div', 'sub');
+      sub.append(el('span', `state ${state.cls}`, state.text));
+      who.append(sub);
+    }
     row.append(who);
 
     // A stuck join says why when the bot told us; otherwise what we can see.

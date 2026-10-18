@@ -32,7 +32,7 @@
 // a value that will not serialise fails loudly at the relay rather than
 // arriving half-formed.
 
-function createPanelRelay({ ipcMain, log = console }) {
+function createPanelRelay({ ipcMain, log = console, onQuit = null }) {
   const handlers = new Map();
   const realHandle = ipcMain.handle.bind(ipcMain);
   const realRemoveHandler = ipcMain.removeHandler.bind(ipcMain);
@@ -101,6 +101,16 @@ function createPanelRelay({ ipcMain, log = console }) {
     // and loading the panel against it fails call by call.
     if (url.pathname === '/api/panel/ping' && req.method === 'GET') {
       json(200, { ok: true, relay: 1, handlers: handlers.size });
+      return true;
+    }
+
+    // The app asking this bot to stop: the reaper (an idle bot) or the app
+    // quitting (every bot). Answered first, then quit, so the caller is not
+    // left waiting on a connection the quit tears down.
+    if (url.pathname === '/api/panel/quit' && req.method === 'POST') {
+      if (!onQuit) { json(404, { ok: false, error: 'quit not supported' }); return true; }
+      json(200, { ok: true });
+      setTimeout(() => { try { onQuit(); } catch (err) { log.warn('[panel-relay] quit failed:', err.message); } }, 50);
       return true;
     }
 

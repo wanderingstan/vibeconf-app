@@ -237,52 +237,89 @@ test('a bot with neither an invite address nor a name matches nothing', () => {
   assert.deepEqual(upcomingForFleet([event()], [{ name: 'blank', calendarIdentityEmail: '', botName: '' }], NOW), []);
 });
 
-// ── Most recently used first ──
+// ── Most recently in a call first ──
 //
-// Bots behave more like browser tabs than a fixed roster, so the window lists
-// them by when they were last used. Each bot stamps lastUsedAt (launch, and
-// getting into a call); a bot from before the stamp falls back to the mtime
-// of its logs folder, which every launch writes to.
+// The app lists bots by when each was last in a call. Each bot stamps
+// lastCallAt on getting into one (launching or selecting it does not count); a
+// bot from before the stamp falls back to the mtime of its call recordings
+// folder, which changes once per call.
 
 const join = (...parts) => parts.join('/');
 
-test('lastUsedAt comes from the bot\'s own stamp when it has one', () => {
-  const pm = { listProfileNames: () => ['a'], readConfigFields: () => ({ botName: 'A', lastUsedAt: 1234 }) };
+test('lastCallAt comes from the bot\'s own stamp when it has one', () => {
+  const pm = { listProfileNames: () => ['a'], readConfigFields: () => ({ botName: 'A', lastCallAt: 1234 }) };
   const fs = { statSync: () => { throw new Error('must not stat when the stamp exists'); } };
-  assert.equal(readFleet('/p', { profileManager: pm, path: { join }, fs })[0].lastUsedAt, 1234);
+  assert.equal(readFleet('/p', { profileManager: pm, path: { join }, fs })[0].lastCallAt, 1234);
 });
 
-test('an older bot without the stamp falls back to its logs folder\'s mtime', () => {
+test('an older bot without the stamp falls back to its call recordings folder, not its logs', () => {
   const pm = { listProfileNames: () => ['old'], readConfigFields: () => ({ botName: 'Old' }) };
   const seen = [];
   const fs = { statSync: (p) => { seen.push(p); return { mtimeMs: 999 }; } };
-  assert.equal(readFleet('/p', { profileManager: pm, path: { join }, fs })[0].lastUsedAt, 999);
-  assert.deepEqual(seen, ['/p/old/logs']);
+  assert.equal(readFleet('/p', { profileManager: pm, path: { join }, fs })[0].lastCallAt, 999);
+  assert.deepEqual(seen, ['/p/old/agent/calls']);
 });
 
-test('a bot with neither is simply never-used (null), not dropped', () => {
+test('a bot never in a call is null, not dropped', () => {
   const pm = { listProfileNames: () => ['new'], readConfigFields: () => ({ botName: 'New' }) };
   const fs = { statSync: () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); } };
   const fleet = readFleet('/p', { profileManager: pm, path: { join }, fs });
   assert.equal(fleet.length, 1);
-  assert.equal(fleet[0].lastUsedAt, null);
+  assert.equal(fleet[0].lastCallAt, null);
 });
 
-test('profile-manager passes lastUsedAt through, and only as a number', async () => {
+test('profile-manager passes lastCallAt through, and only as a number', async () => {
   const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
   const pm = require('../electron-app/profile-manager.js');
   const root = mkdtempSync(join(tmpdir(), 'mru-'));
   mkdirSync(join(root, 'agent'));
-  writeFileSync(join(root, 'agent', 'config.json'), JSON.stringify({ botName: 'X', lastUsedAt: 42 }));
-  assert.equal(pm.readConfigFields(root).lastUsedAt, 42);
-  writeFileSync(join(root, 'agent', 'config.json'), JSON.stringify({ botName: 'X', lastUsedAt: 'yesterday' }));
-  assert.equal(pm.readConfigFields(root).lastUsedAt, null);
+  writeFileSync(join(root, 'agent', 'config.json'), JSON.stringify({ botName: 'X', lastCallAt: 42 }));
+  assert.equal(pm.readConfigFields(root).lastCallAt, 42);
+  writeFileSync(join(root, 'agent', 'config.json'), JSON.stringify({ botName: 'X', lastCallAt: 'yesterday' }));
+  assert.equal(pm.readConfigFields(root).lastCallAt, null);
 });
 
-test('a bot stamps lastUsedAt at launch and on getting into a call', () => {
+test('a bot stamps lastCallAt on getting into a call, and not at launch', () => {
   const main = require('node:fs').readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
-  assert.match(main, /store\.set\('lastUsedAt', Date\.now\(\)\)/);
-  assert.match(main, /await localServer\.start\(\);\s*\n\s*markLastUsed\(\);/);
-  assert.match(main, /if \(status === 'in-call'\) markLastUsed\(\);/);
+  assert.match(main, /store\.set\('lastCallAt', Date\.now\(\)\)/);
+  assert.match(main, /if \(status === 'in-call'\) markLastCall\(\);/);
+  assert.doesNotMatch(main, /await localServer\.start\(\);\s*\n\s*markLast/);
+});
+
+// ── The reaper ──
+//
+// The app stops bots nobody is using, the way a browser unloads a background
+// tab. These pin what counts as "in use".
+
+const { decideReaping, REAP_IDLE_MS } = require('../electron-app/supervisor.js');
+const idle = (profile, over = {}) => ({ profile, headless: true, callStatus: 'idle', ...over });
+
+test('an idle, unselected headless bot is stopped after five minutes, not before', () => {
+  const first = decideReaping({ instances: [idle('a')], now: NOW });
+  assert.deepEqual(first.quit, []);
+  assert.equal(first.idleSince.a, NOW, 'the clock starts the first time it is seen idle');
+  const later = decideReaping({ instances: [idle('a')], idleSince: first.idleSince, now: NOW + REAP_IDLE_MS - 1 });
+  assert.deepEqual(later.quit, []);
+  const due = decideReaping({ instances: [idle('a')], idleSince: first.idleSince, now: NOW + REAP_IDLE_MS });
+  assert.deepEqual(due.quit, ['a']);
+});
+
+test('the selected bot, a bot in any call state, and a hand-opened bot are never stopped', () => {
+  const long = { a: NOW - 60 * REAP_IDLE_MS, b: NOW - 60 * REAP_IDLE_MS, c: NOW - 60 * REAP_IDLE_MS };
+  const r = decideReaping({
+    instances: [idle('a'), idle('b', { callStatus: 'after-call-work' }), idle('c', { headless: false })],
+    selected: 'a', idleSince: long, now: NOW,
+  });
+  assert.deepEqual(r.quit, []);
+  assert.deepEqual(r.idleSince, {}, 'being in use resets the clock');
+});
+
+test('a bot with its own meeting coming up is spared, even if idle for ages', () => {
+  const fleet = [bethany];
+  const meeting = event({ start: soon(8 * 60_000) }); // bethany is on it
+  const r = decideReaping({ instances: [idle('bethany')], fleet, events: [meeting], idleSince: { bethany: NOW - 60 * REAP_IDLE_MS }, now: NOW });
+  assert.deepEqual(r.quit, []);
+  const someoneElses = event({ start: soon(8 * 60_000), attendees: ['other@vibe.test'] });
+  assert.deepEqual(decideReaping({ instances: [idle('bethany')], fleet, events: [someoneElses], idleSince: { bethany: NOW - 60 * REAP_IDLE_MS }, now: NOW }).quit, ['bethany']);
 });

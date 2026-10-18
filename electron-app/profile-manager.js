@@ -42,9 +42,9 @@ function readConfigFields(dir) {
     // calendar event belongs to this one and launch it — see
     // checkOtherProfilesForCalendarMatch in main.js.
     calendarIdentityEmail: cfg.calendarIdentityEmail || null,
-    // #301: epoch ms of the last launch or call, for the supervisor's
-    // most-recently-used ordering. null for a bot that predates it.
-    lastUsedAt: Number.isFinite(cfg.lastUsedAt) ? cfg.lastUsedAt : null,
+    // #301: epoch ms this bot was last in a call; the app's bot list is
+    // ordered by it. null for a bot that predates the stamp.
+    lastCallAt: Number.isFinite(cfg.lastCallAt) ? cfg.lastCallAt : null,
   };
 }
 

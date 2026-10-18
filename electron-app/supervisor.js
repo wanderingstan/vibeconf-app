@@ -113,7 +113,7 @@ function decideWakeups({ profiles = [], events = [], now = 0, running = new Set(
 // Read every locally-configured profile as the decision wants it — flat records,
 // off disk, with no running instance required. Injectable so the tests can
 // describe a fleet without building one on the filesystem.
-function logsMtime(fs, dir) {
+function mtimeOf(fs, dir) {
   try { return fs.statSync(dir).mtimeMs || null; } catch { return null; }
 }
 
@@ -135,11 +135,11 @@ function readFleet(profilesRoot, { profileManager = require('./profile-manager.j
         // The small PNG each bot renders of its own avatar (a data: URL). Kept
         // off /api/instances: the window wants faces, the agents only want ports.
         avatarThumb: fields.avatarThumb || null,
-        // When the bot was last launched or in a call, for most-recent-first
-        // ordering. A bot that predates the stamp falls back to its logs
-        // folder's mtime: every launch writes a session log there, so it is a
-        // fair stand-in, and far better than sorting old bots as never used.
-        lastUsedAt: fields.lastUsedAt || logsMtime(fs, path.join(profilesRoot, name, 'logs')),
+        // When the bot was last in a call; the app's list puts the most recent
+        // first. A bot from before the stamp falls back to its call recordings
+        // folder (agent/calls), which changes once per call, so it is a fair
+        // stand-in; its logs folder would not be, since every launch writes there.
+        lastCallAt: fields.lastCallAt || mtimeOf(fs, path.join(profilesRoot, name, 'agent', 'calls')),
       });
     } catch { /* skip this one, keep the fleet */ }
   }
@@ -257,4 +257,51 @@ function upcomingForFleet(events, fleet, now = Date.now()) {
       || ((a.ownerConfirmed ? 0 : 1) - (b.ownerConfirmed ? 0 : 1)));
 }
 
-module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS, upcomingForFleet };
+// The reaper (#301 one window): which idle bots to stop.
+//
+// A bot's process is the app's business, not the user's: selecting a bot
+// starts it, and one nobody is using is stopped again, the way a browser
+// unloads a background tab. Nothing is lost by that; its settings, face and
+// history are on disk, and selecting it wakes it in a second.
+//
+// Stopped only when ALL of these hold for idleMs (5 minutes) straight:
+//   • the app started it (headless). A bot someone launched themselves, in
+//     its own window, is theirs to close.
+//   • it is not the one on the stage.
+//   • it is not in any call state (joining, waiting, in a call, wrapping up).
+//   • no meeting of its own starts within the next 10 minutes or began in the
+//     last 5. The calendar wakes a bot up to 5 minutes early, which on its own
+//     would race a 5-minute reaper.
+//
+// idleSince is the caller's memory across ticks ({ [profile]: ms }); this
+// returns the next one, so the function stays pure and testable.
+const REAP_IDLE_MS = 5 * 60 * 1000;
+const MEETING_GUARD_AHEAD_MS = 10 * 60 * 1000;
+const MEETING_GUARD_BEHIND_MS = 5 * 60 * 1000;
+
+function decideReaping({ instances, selected = null, fleet = [], events = [], idleSince = {}, now = Date.now(), idleMs = REAP_IDLE_MS }) {
+  const nextIdleSince = {};
+  const quit = [];
+  const byName = new Map((fleet || []).map((p) => [p.name, p]));
+  const meetingSoon = (name) => {
+    const p = byName.get(name);
+    if (!p || !(p.calendarIdentityEmail || p.botName)) return false;
+    return (events || []).some((e) => {
+      const t = msUntilStart(e, now);
+      return t !== null && t <= MEETING_GUARD_AHEAD_MS && -t <= MEETING_GUARD_BEHIND_MS
+        && matchesCalendarEvent(e, { calendarIdentityEmail: p.calendarIdentityEmail, botName: p.botName });
+    });
+  };
+  for (const inst of instances || []) {
+    const name = inst && inst.profile;
+    if (!name || !inst.headless) continue;
+    const busy = inst.callStatus && inst.callStatus !== 'idle';
+    if (busy || name === selected || meetingSoon(name)) continue; // in use: the clock restarts
+    const since = Number.isFinite(idleSince[name]) ? idleSince[name] : now;
+    if (now - since >= idleMs) quit.push(name);
+    else nextIdleSince[name] = since;
+  }
+  return { quit, idleSince: nextIdleSince };
+}
+
+module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS, upcomingForFleet, decideReaping, REAP_IDLE_MS };

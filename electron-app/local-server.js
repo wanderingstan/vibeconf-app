@@ -5765,6 +5765,7 @@ class LocalServer {
           localServerUrl: this.getLocalServerUrl(),
           localServerPort: this.port,
           localProfile: this.localProfile,
+          headless: !!this.headless, // #301: started by the app, so the app may stop it
           appVersion: this.appVersion,
           buildType: this.buildType, // 'release' (DMG) | 'source' (pnpm dev)
           lastResponseMs: this.lastResponseMs,

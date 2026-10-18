@@ -27,7 +27,7 @@ const { execFile } = require('child_process');
 
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
-const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, upcomingForFleet } = require('./supervisor.js');
+const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, upcomingForFleet, decideReaping } = require('./supervisor.js');
 const { spawnArgsForProfile, profileLaunchCommand } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
 const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
@@ -71,6 +71,8 @@ async function probe(port) {
       botName: status.currentCallBotName || status.configuredBotName || null,
       configuredBotName: (status.configuredBotName || '').trim() || null,
       callStatus: status.callStatus || null,
+      // Started by this app (no window of its own), so the reaper may stop it.
+      headless: !!status.headless,
       roomId: body?.roomId || null,
       // Meet tabs this bot found in the browser. For the window only; the
       // directory strips it (see startDirectory).
@@ -150,7 +152,7 @@ async function fleetStatus() {
       name: p.name,
       botName: p.botName || '',
       avatarThumb: p.avatarThumb || null,
-      lastUsedAt: p.lastUsedAt || null,
+      lastCallAt: p.lastCallAt || null,
       calendarIdentityEmail: p.calendarIdentityEmail || '',
       isDefault: p.name === paths.defaultProfile,
       running: !!live,
@@ -222,10 +224,67 @@ async function fetchAccount() {
   }
 }
 
+// ── Stopping bots: the reaper, and the app quitting ─────────────────────────
+
+const REAP_EVERY_MS = 30 * 1000;
+let reapTimer = null;
+let lastEvents = [];      // the calendar as of the last tick, for the reaper's meeting guard
+let idleSince = {};       // profile -> when it was first seen idle and unselected
+
+// Ask one bot to stop (panel-relay's /api/panel/quit). A bot from an older
+// build has no such route and is left running: better than killing it blind.
+async function stopBot(port, timeoutMs = 2000) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/panel/quit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...botAuthHeaders(port) },
+      body: '{}',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function reapTick() {
+  const running = await scanRunning().catch(() => null);
+  if (!running) return;
+  const { quit, idleSince: next } = decideReaping({
+    instances: [...running.values()],
+    selected: relay.name,
+    fleet: readFleet(paths.profilesRoot),
+    events: lastEvents,
+    idleSince,
+    now: Date.now(),
+    // Test hook: a shorter idle limit, so the reaper can be exercised live.
+    ...(Number(process.env.VIBECONF_REAP_IDLE_MS) > 0 ? { idleMs: Number(process.env.VIBECONF_REAP_IDLE_MS) } : {}),
+  });
+  idleSince = next;
+  for (const name of quit) {
+    const ok = await stopBot(running.get(name).port);
+    console.log(`[supervisor] reaper: "${name}" idle for ${Math.round((Number(process.env.VIBECONF_REAP_IDLE_MS) || 300000) / 1000)}s${ok ? ', stopped it' : ', but it would not stop (an older build?)'}`);
+  }
+  if (quit.length) pushState({ reaped: quit });
+}
+
+// Quitting the app stops every bot it can reach, its own and any opened by
+// hand: the app is the bots. Capped, so a wedged bot cannot hold the quit.
+async function stopAllBots(capMs = 3000) {
+  const running = await scanRunning().catch(() => new Map());
+  if (!running.size) return;
+  console.log(`[supervisor] quitting: stopping ${running.size} bot${running.size > 1 ? 's' : ''}`);
+  await Promise.race([
+    Promise.allSettled([...running.values()].map((inst) => stopBot(inst.port, capMs))),
+    new Promise((r) => setTimeout(r, capMs)),
+  ]);
+}
+
 // One tick: who is up, what is coming, who needs waking.
 async function tick() {
   const now = Date.now();
   const [{ events, signedIn, error }, running] = await Promise.all([fetchUpcomingEvents(), scanRunning()]);
+  lastEvents = events;
 
   const { wakeups, launched } = decideWakeups({
     profiles: readFleet(paths.profilesRoot),  // re-read every tick: a bot added or renamed since the last one counts
@@ -796,18 +855,14 @@ function pushState(extra = {}) {
 // anything away right now.
 async function confirmQuit() {
   const running = await scanRunning().catch(() => new Map());
+  const busy = [...running.values()].filter((i) => i.callStatus && i.callStatus !== 'idle').length;
   const detail = [
-    'Bots that are already open keep working, and their calls are not interrupted.',
-    '',
-    'What stops:',
-    '  • Meetings will not auto-join for any bot that is closed.',
-    '  • Agents fall back to scanning ports to find a bot.',
-    '',
     running.size
-      ? `${running.size} bot${running.size > 1 ? 's are' : ' is'} running right now.`
+      ? `This stops ${running.size === 1 ? 'the 1 bot' : `all ${running.size} bots`} that ${running.size === 1 ? 'is' : 'are'} running.`
       : 'No bots are running right now.',
+    ...(busy ? ['', `${busy === 1 ? '1 bot is' : `${busy} bots are`} in a call, and will leave it.`] : []),
     '',
-    'Opening any bot starts the supervisor again.',
+    'Scheduled meetings will not auto-join while the app is closed.',
   ].join('\n');
 
   const { response, checkboxChecked } = await dialog.showMessageBox(win, {
@@ -816,7 +871,7 @@ async function confirmQuit() {
     defaultId: 0,
     cancelId: 0,
     title: 'Quit Vibeconferencing?',
-    message: 'This is the process that watches the calendar for every bot.',
+    message: 'Quit Vibeconferencing?',
     detail,
     checkboxLabel: "Don't ask again",
     checkboxChecked: false,
@@ -940,7 +995,14 @@ function start() {
   // shutdown, Dock → Quit, the updater. None of those should park the process
   // on a dialog nobody is there to answer. Same rule as the bot window
   // (appIsQuitting in main.js).
-  app.on('before-quit', () => { quitting = true; });
+  let botsStopped = false;
+  app.on('before-quit', (event) => {
+    quitting = true;
+    if (botsStopped) return;
+    // Hold the quit until the bots have been asked to stop, then quit for real.
+    event.preventDefault();
+    stopAllBots().finally(() => { botsStopped = true; app.quit(); });
+  });
   app.on('second-instance', () => {
     if (!win || win.isDestroyed()) return createWindow();
     if (win.isMinimized()) win.restore();
@@ -987,6 +1049,7 @@ function start() {
 
     startDirectory();
     startBrowserScan();
+    reapTimer = setInterval(() => { reapTick().catch((err) => console.warn('[supervisor] reaper failed:', err.message)); }, REAP_EVERY_MS);
     installMenu();
     createWindow();
     tick().catch((err) => console.warn('[supervisor] first tick failed:', err.message));
@@ -998,6 +1061,7 @@ function start() {
   app.on('window-all-closed', () => {
     if (pollTimer) clearInterval(pollTimer);
     if (scanTimer) clearInterval(scanTimer);
+    if (reapTimer) clearInterval(reapTimer);
     if (directory) directory.close();
     app.quit();
   });

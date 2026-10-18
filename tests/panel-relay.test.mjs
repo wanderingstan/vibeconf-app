@@ -107,7 +107,7 @@ test('the relay routes sit behind the bot\'s auth check', () => {
 
 test('main.js installs the relay before registering any handler', () => {
   const main = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
-  const install = main.indexOf("createPanelRelay({ ipcMain })");
+  const install = main.indexOf("createPanelRelay({ ipcMain");
   const firstHandle = main.indexOf('ipcMain.handle(');
   assert.ok(install > 0 && install < firstHandle);
 });
@@ -147,4 +147,22 @@ test('the relay answers a ping, so the supervisor can tell a hostable bot from a
   assert.equal(await relay.handleRequest({ method: 'GET' }, res, new URL('http://x/api/panel/ping'), async () => ''), true);
   assert.equal(status, 200);
   assert.equal(JSON.parse(body).ok, true);
+});
+
+test('the app can ask a bot to stop; it answers before it quits', async () => {
+  let quit = 0;
+  const relay = createPanelRelay({ ipcMain: fakeIpcMain(), onQuit: () => { quit += 1; } });
+  let status = 0;
+  const res = { writeHead: (c) => { status = c; }, end() {} };
+  await relay.handleRequest({ method: 'POST' }, res, new URL('http://x/api/panel/quit'), async () => '{}');
+  assert.equal(status, 200);
+  assert.equal(quit, 0, 'not before the answer is on its way');
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(quit, 1);
+});
+
+test('a bot reports whether the app started it, so only those are reaped', () => {
+  const src = readFileSync(new URL('../electron-app/local-server.js', import.meta.url), 'utf8');
+  assert.match(src, /headless: !!this\.headless,/);
+  assert.match(mainSrc, /localServer\.headless = HEADLESS;/);
 });

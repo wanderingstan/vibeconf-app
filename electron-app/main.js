@@ -28,7 +28,10 @@ if (process.argv.includes('--supervisor')) {
 // #301 one-window spike: lets the supervisor's window drive this bot's panel
 // over HTTP (see panel-relay.js). Installed before any ipcMain.handle below,
 // because it records handlers as they are registered.
-const panelRelay = require('./panel-relay.js').createPanelRelay({ ipcMain });
+// onQuit: the app stopping this bot (its reaper, or the app quitting). app.quit()
+// goes through before-quit, which marks the quit as intended, so the bot's own
+// "Quit?" confirmation does not stop it.
+const panelRelay = require('./panel-relay.js').createPanelRelay({ ipcMain, onQuit: () => app.quit() });
 
 const path = require('path');
 const fs = require('fs');
@@ -2976,10 +2979,9 @@ const localServer = new globalThis.LocalServer({
     //
     // Here rather than in each join path because this is where every route
     // converges — a new one cannot forget to defuse it.
-    // #301: when this bot was last used, so the supervisor can list bots most
-    // recently used first. Stamped on getting into a call and at launch (below),
-    // the two moments a person has chosen this bot.
-    if (status === 'in-call') markLastUsed();
+    // #301: when this bot was last in a call; the app lists bots most recently
+    // in a call first. Only a call counts: launching or selecting a bot does not.
+    if (status === 'in-call') markLastCall();
     if (_afterCallWorkTimer && isInCall(status)) {
       console.log('[electron] Call live again — cancelling the pending after-call teardown');
       clearTimeout(_afterCallWorkTimer);
@@ -3973,10 +3975,10 @@ async function pushAvatarBackground(svgSource) {
 
 let store;
 
-// Per-profile "last chosen" time (#301 MRU ordering in the supervisor). Read by
-// profile-manager.readConfigFields like the other identity fields.
-function markLastUsed() {
-  try { if (store) store.set('lastUsedAt', Date.now()); } catch { /* best-effort */ }
+// Per-profile "last in a call" time (#301: the app's bot list is ordered by it).
+// Read by profile-manager.readConfigFields like the other identity fields.
+function markLastCall() {
+  try { if (store) store.set('lastCallAt', Date.now()); } catch { /* best-effort */ }
 }
 let meetAccountEmailPinned = false; // true when --meet-account-email pinned the account (#282)
 // Calendar auto-join (#299): this bot's matching events within the next 24h,
@@ -6633,6 +6635,7 @@ const cliArgs = parseCLIArgs();
 // supervisor answering, the bot falls back to showing its own window, so it
 // can never become unreachable. See makeHeadless.
 const HEADLESS = cliArgs.headless === 'true';
+localServer.headless = HEADLESS; // reported in status, so the reaper only stops the app's own bots
 // --dom-probe=1 | --dom-probe='<css selector>' (dom-probe.js): a research tool
 // for finding a calling app's hidden signals, e.g. Teams' speaking ring (#847).
 // Passed on as VIBECONF_DOM_PROBE, which each provider's preload reads at load;
@@ -9921,7 +9924,6 @@ app.whenReady().then(async () => {
     console.log('[electron] Requested local server port:', explicitLocalPort);
   }
   await localServer.start();
-  markLastUsed(); // launched = chosen, for the supervisor's most-recent-first list
 
   // Remote log shipping (opt-in via `remoteLogging` pref). Build a stable
   // instanceId from hostname + profile so the same bot is recognizable across

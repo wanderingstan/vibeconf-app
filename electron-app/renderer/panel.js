@@ -4,7 +4,11 @@
 const api = window.electronAPI;
 // #301: shown inside the app's window, which has its own account line, so the
 // app-level login is left out of this panel's footer (panel.css, .hosted).
-if (api && api.hosted) document.documentElement.classList.add('hosted');
+const HOSTED = !!(api && api.hosted);
+if (HOSTED) document.documentElement.classList.add('hosted');
+// The app window's separate "Call <bot> now" (setupHostedLayout, at the end).
+// Declared up here because updateJoinBtnState can run before the script gets there.
+let callNowBtn = null;
 
 // The user's hour-cycle preference, resolved by main (a renderer cannot read
 // macOS's AppleICUForce24HourTime itself). Null until it arrives; formatTime
@@ -1342,7 +1346,8 @@ let manualUrlEntry = false; // the user opened + themselves
 
 // "Add to call" mode = there's a URL to act on, from either source.
 function isAddToCallMode() {
-  return !!detectedCallUrl || manualUrlEntry;
+  // In the app window the link field is always there (#301): no mode to switch.
+  return HOSTED || !!detectedCallUrl || manualUrlEntry;
 }
 
 // True between pressing the call button and the call actually starting (or
@@ -1437,6 +1442,7 @@ window.addEventListener('keydown', async (e) => {
 });
 
 function updateJoinBtnState() {
+  syncCallNowBtn();
   if (inCall) return; // in-call UI owns the button
   if (joinPhase) {
     // One label per phase, in one place. (The two routes used to disagree:
@@ -1998,6 +2004,8 @@ async function refreshProfilesCache() {
 if (profileMenuBtn && profileMenu) {
   refreshProfilesCache(); // warm the cache at load so the first open is instant
   profileMenuBtn.addEventListener('click', (e) => {
+    // In the app window the sidebar is the bot picker; the name is just a name.
+    if (HOSTED) return;
     e.stopPropagation();
     // The name doubles as the switcher, and the name stays on screen in-call —
     // so the CLICK is what gets gated now, not the control's visibility (#379:
@@ -2652,6 +2660,30 @@ const CREATE_MEET_ERRORS = {
   'unknown': "Couldn't start a call.",
 };
 
+// "Call <bot> now": ask the website for a fresh Meet anyone can walk into, then
+// send the bot in. Main does the request: a renderer fetch carries an Origin the
+// backend rejects. Its own function because two buttons start a call: the
+// classic window's single button in its "Call" mode, and the app window's
+// separate "Call <bot> now" (#301, see setupHostedLayout).
+async function startFreshCall() {
+  setJoinPhase('starting'); // asking the website for a room, not joining yet
+  try {
+    const r = await api.invoke('create-and-join-meet');
+    if (r?.ok) {
+      // Main has already pointed the bot's view at the room. Put the link in
+      // the field so the in-call view can show and copy it for the human.
+      if (r.url) { meetUrlInput.value = r.url; detectedCallUrl = r.url; lastKnownCallUrl = r.url; }
+      setJoinPhase('joining');
+      // enterCallState waits for 'call-status-changed', same as a manual join.
+      return;
+    }
+    showError(CREATE_MEET_ERRORS[r?.code] || CREATE_MEET_ERRORS.unknown);
+  } catch (err) {
+    showError('Could not start a call: ' + err.message);
+  }
+  setJoinPhase(null); // restores the right label + enabled state for the mode
+}
+
 joinBtn.addEventListener('click', async (e) => {
   // Option-held is the alternate action: open the bot's session in a terminal
   // instead of calling it. Read the event rather than `optionHeld` so a click
@@ -2661,26 +2693,8 @@ joinBtn.addEventListener('click', async (e) => {
     await openChatSession();
     return;
   }
-  // "Call <bot> now" — ask the website for a fresh Meet anyone can walk into,
-  // then send the bot in. Main does the request: a renderer fetch carries an
-  // Origin the backend rejects.
   if (!isAddToCallMode()) {
-    setJoinPhase('starting'); // asking the website for a room, not joining yet
-    try {
-      const r = await api.invoke('create-and-join-meet');
-      if (r?.ok) {
-        // Main has already pointed the bot's view at the room. Put the link in
-        // the field so the in-call view can show and copy it for the human.
-        if (r.url) { meetUrlInput.value = r.url; detectedCallUrl = r.url; lastKnownCallUrl = r.url; }
-        setJoinPhase('joining');
-        // enterCallState waits for 'call-status-changed', same as a manual join.
-        return;
-      }
-      showError(CREATE_MEET_ERRORS[r?.code] || CREATE_MEET_ERRORS.unknown);
-    } catch (err) {
-      showError('Could not start a call: ' + err.message);
-    }
-    setJoinPhase(null); // restores the right label + enabled state for the mode
+    await startFreshCall();
     return;
   }
 
@@ -4095,3 +4109,69 @@ api.on('call-failed', (data) => {
   exitCallState();
   if (data?.message) showError(data.message, null, data.errorAction);
 });
+
+// ── The panel inside the app window (#301) ──────────────────────────────────
+//
+// The app's window shows this panel on a 380px stage under its own sidebar, so
+// some of what the panel carries for a standalone window is either repeated
+// there (the account, the version, the bot picker) or has more room to spread
+// out. Applied only when hosted; a bot in its own window is unchanged.
+//
+//   · The meeting link field is always shown, with "Add <bot> to call" beside
+//     it, and a separate "Call <bot> now" for a fresh meeting. Detection still
+//     pre-fills the field, but no longer switches modes: links for Zoom and
+//     Teams cannot be detected, and a mode you cannot see change was confusing.
+//   · The inspectors (bot's view, brain, troubleshooting) are a labelled row
+//     at the foot of the panel, before and during a call. They click the
+//     existing buttons, so their behaviour stays in one place.
+//   · The name's bot-picker menu and the footer line are gone (panel.css).
+
+function syncCallNowBtn() {
+  if (!callNowBtn) return;
+  const name = currentBotName || 'your bot';
+  callNowBtn.textContent = joinPhase === 'starting' ? 'Starting…' : `Call ${name} now`;
+  callNowBtn.disabled = !!joinPhase;
+}
+
+function setupHostedLayout() {
+  const container = document.querySelector('#mainScreen .container');
+  const hero = container && container.querySelector('.bot-hero');
+  if (!container || !hero) return;
+
+  const controls = document.createElement('div');
+  controls.id = 'hostedControls';
+  if (callUrlField) controls.append(callUrlField);
+  const buttons = document.createElement('div');
+  buttons.className = 'hosted-buttons';
+  joinBtn.classList.remove('primary');
+  joinBtn.classList.add('hosted-add');
+  callNowBtn = document.createElement('button');
+  callNowBtn.className = 'primary hosted-call';
+  callNowBtn.title = 'Start a new meeting and bring this bot into it';
+  callNowBtn.addEventListener('click', () => { startFreshCall(); });
+  buttons.append(joinBtn, callNowBtn);
+  controls.append(buttons);
+  hero.after(controls);
+
+  const tools = document.createElement('div');
+  tools.id = 'hostedTools';
+  const tool = (icon, label, title, run) => {
+    const b = document.createElement('button');
+    b.className = 'hosted-tool';
+    b.title = title;
+    const i = document.createElement('i');
+    i.className = `ui-icon ui-icon-${icon} ui-icon--lead`;
+    b.append(i, document.createTextNode(label));
+    b.addEventListener('click', run);
+    tools.append(b);
+  };
+  tool('eyes', "Bot's view", 'See what the bot sees', () => document.querySelector('.botview-toggle-btn')?.click());
+  tool('brain', 'Brain', 'What the agent is thinking and doing', () => document.getElementById('openBrainBtn')?.click());
+  tool('info', 'Troubleshoot', 'Live call state, captions, and the agent\'s view', () => document.getElementById('openTroubleshootingBtn')?.click());
+  container.append(tools);
+
+  updateJoinBtnState();
+}
+
+if (HOSTED) setupHostedLayout();
+

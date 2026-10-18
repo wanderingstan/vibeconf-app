@@ -1460,3 +1460,43 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
    so the panel's footer does not repeat it. */
 .hosted #userIdStatus,
 .hosted #userSignInMainBtn { display: none !important; }
+
+/* ── The panel inside the app window (#301; panel.js setupHostedLayout) ──
+   The app's sidebar is the bot picker and carries the account; About has the
+   version. So the name is just a name, the footer goes, and the meeting
+   controls move off the artwork into the cream below it, with the inspectors
+   as a labelled row at the foot. A bot in its own window is unchanged. */
+.hosted .agent-caret { display: none; }
+.hosted button.agent-namebtn { cursor: default; }
+.hosted button.agent-namebtn:hover:not(:disabled) { background: none; }
+.hosted .app-footer { display: none !important; }
+/* Its field and button now live in #hostedControls; what is left (👀, +) is
+   replaced by the tools row and the always-open field. */
+.hosted .hero-precall { display: none !important; }
+/* In a call, Leave stays on the artwork; its neighbours are the tools row. */
+.hosted .hero-incall #openBrainBtn,
+.hosted .hero-incall #botViewToggleBtn,
+.hosted .hero-incall #openTroubleshootingBtn { display: none !important; }
+/* Full stage height, so the tools row can sit at the foot. */
+.hosted #mainScreen .container { min-height: 100vh; }
+
+#hostedControls { padding: 18px 0 0; display: flex; flex-direction: column; gap: 12px; }
+#hostedControls .field { margin: 0; }
+.hosted-buttons { display: flex; gap: 8px; }
+.hosted-buttons button {
+  flex: 1 1 0; min-width: 0; margin: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+body[data-call-state="in-call"] #hostedControls { display: none; }
+
+#hostedTools {
+  margin-top: auto; display: flex; gap: 4px;
+  padding: 12px 0 14px; border-top: 1px solid var(--line);
+}
+button.hosted-tool {
+  flex: 1 1 0; width: auto; margin: 0; padding: 8px 4px;
+  border: none; border-radius: 10px; background: none; box-shadow: none;
+  color: var(--ink-soft); font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+button.hosted-tool:hover:not(:disabled) { background: var(--paper-lo); color: var(--ink); }

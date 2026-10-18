@@ -613,7 +613,9 @@ function startDirectory() {
         const chunks = [];
         for await (const c of req) chunks.push(c);
         const js = Buffer.concat(chunks).toString('utf8');
-        const value = await win.webContents.executeJavaScript(js);
+        // ?target=panel runs it in the hosted bot panel instead of the sidebar page.
+        const target = url.searchParams.get('target') === 'panel' && panelHost ? panelHost.webContents : win.webContents;
+        const value = await target.executeJavaScript(js);
         return send(200, { ok: true, value: value === undefined ? null : value });
       }
       // Put a running bot's panel on the window's stage (#301 one-window spike).

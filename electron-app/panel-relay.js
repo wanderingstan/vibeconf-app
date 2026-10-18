@@ -96,6 +96,14 @@ function createPanelRelay({ ipcMain, log = console }) {
   async function handleRequest(req, res, url, readBody) {
     const json = (code, body) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
 
+    // "Can you be hosted?" The supervisor asks before putting this bot's panel
+    // on its stage: a bot started by an older build has no /api/panel at all,
+    // and loading the panel against it fails call by call.
+    if (url.pathname === '/api/panel/ping' && req.method === 'GET') {
+      json(200, { ok: true, relay: 1, handlers: handlers.size });
+      return true;
+    }
+
     if (url.pathname === '/api/panel/events' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
       res.write(': connected\n\n');

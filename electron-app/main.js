@@ -2443,8 +2443,10 @@ const localServer = new globalThis.LocalServer({
       mainWindow.show();
       mainWindow.focus();
     }
-    if (app.dock) app.dock.show();
-    app.focus({ steal: true });
+    // Headless: mainWindow.show above already asked the supervisor to show this
+    // bot; a Dock icon would bring back the second app it exists to remove.
+    if (app.dock && !HEADLESS) app.dock.show();
+    if (!HEADLESS) app.focus({ steal: true });
   },
   // Silence the shared surface's audio without touching the share itself.
   //
@@ -6623,6 +6625,14 @@ function parseCLIArgs() {
 }
 
 const cliArgs = parseCLIArgs();
+// #301 one window: a bot started by the supervisor runs HEADLESS. Its UI is the
+// panel on the supervisor's stage (panel-relay.js), so its own window is built
+// as usual (everything that reads mainWindow keeps working) but never shown,
+// and it has no Dock icon or taskbar entry. Anything that would bring the
+// window forward instead asks the supervisor to select this bot; with no
+// supervisor answering, the bot falls back to showing its own window, so it
+// can never become unreachable. See makeHeadless.
+const HEADLESS = cliArgs.headless === 'true';
 // --dom-probe=1 | --dom-probe='<css selector>' (dom-probe.js): a research tool
 // for finding a calling app's hidden signals, e.g. Teams' speaking ring (#847).
 // Passed on as VIBECONF_DOM_PROBE, which each provider's preload reads at load;
@@ -10110,6 +10120,8 @@ app.whenReady().then(async () => {
     app.dock.setIcon(icon);
   }
 
+  // Headless (#301): no Dock icon; this bot's UI is the supervisor's window.
+  if (HEADLESS && app.dock) app.dock.hide();
   createMainWindow();
   setupIPC();
 
@@ -11097,6 +11109,9 @@ let mainWindowShown = false;
 let _showMainWindowFallback = null;
 function showMainWindowOnce() {
   if (mainWindowShown) return;
+  // Headless: the supervisor's window shows this bot; showing ours would only
+  // ask it to (re)select us. See makeHeadless.
+  if (HEADLESS) { mainWindowShown = true; return; }
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindowShown = true;
   clearTimeout(_showMainWindowFallback);
@@ -11970,6 +11985,43 @@ function hasHiddenTitleBar() {
   return process.platform === 'darwin';
 }
 
+// Redirect "bring this window forward" to the supervisor's window. One
+// interception for the ~20 places that show, focus or restore mainWindow
+// (notification clicks, /api/focus, a second launch, join flows), rather than
+// a headless check at each.
+function makeHeadless(win) {
+  const real = {
+    show: win.show.bind(win),
+    focus: win.focus.bind(win),
+  };
+  let presenting = false;
+  const presentInShell = () => {
+    if (presenting) return;
+    presenting = true;
+    (async () => {
+      try {
+        const { supervisorUrl } = require('./supervisor-port.js');
+        const res = await fetch(`${supervisorUrl()}/api/select?profile=${encodeURIComponent(appProfile)}`, {
+          method: 'POST', signal: AbortSignal.timeout(5000),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.ok === false) throw new Error(body.error || `HTTP ${res.status}`);
+      } catch (err) {
+        console.log(`[electron] headless: no supervisor to show this bot in (${err.message}); showing its own window`);
+        if (app.dock) app.dock.show();
+        real.show();
+        real.focus();
+      } finally {
+        presenting = false;
+      }
+    })();
+  };
+  win.show = presentInShell;
+  win.showInactive = presentInShell;
+  win.focus = presentInShell;
+  win.restore = presentInShell;
+}
+
 function createMainWindow() {
   // Optional explicit window placement from CLI (--window-x/-y/-w/-h), used by
   // the multi-bot test launcher to tile windows in a grid. Setting x/y at
@@ -12016,12 +12068,17 @@ function createMainWindow() {
     minHeight: MIN_WINDOW_HEIGHT,
     title: 'Vibeconferencing',
     icon: path.join(__dirname, 'icon.png'),
+    // Headless (#301): no taskbar entry on Windows/Linux, the counterpart of the
+    // hidden Dock icon on macOS.
+    skipTaskbar: HEADLESS,
     webPreferences: {
       // Main window itself doesn't load content — views do
       nodeIntegration: false,
       contextIsolation: true,
     },
   });
+
+  if (HEADLESS) makeHeadless(mainWindow);
 
   // --- Panel sidebar (left) ---
   panelView = new BrowserView({

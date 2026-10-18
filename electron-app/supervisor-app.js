@@ -174,7 +174,7 @@ async function fleetStatus() {
   const calls = browserScan.scanning
     ? detectedCalls([{ callStatus: 'idle', detectedMeetUrls: browserScan.meetUrls }])
     : detectedCalls([...running.values()]);
-  return { bots, orphans, calls, selected: relay.name, defaultProfile: paths.defaultProfile };
+  return { bots, orphans, calls, selected: relay.name || stageOutdated, defaultProfile: paths.defaultProfile };
 }
 
 // ── Calendar ────────────────────────────────────────────────────────────────
@@ -251,7 +251,9 @@ function launchProfile(name, { openSettings = false } = {}) {
   }
 
   let args;
-  try { args = spawnArgsForProfile({ name, isDefault, port, openSettings }); }
+  // Headless: its UI is the panel on this window's stage, so it gets no
+  // window or Dock icon of its own.
+  try { args = spawnArgsForProfile({ name, isDefault, port, openSettings, headless: true }); }
   catch (err) { return { ok: false, error: err.message }; }
 
   try {
@@ -530,7 +532,13 @@ function startDirectory() {
       if (url.pathname === '/api/select' && req.method === 'POST') {
         const name = url.searchParams.get('profile');
         if (!name) return send(400, { ok: false, error: 'profile is required' });
+        // "Show me this bot": from a headless bot's notification, focus
+        // request or relaunch, as well as from agents. So the window comes forward too.
         if (!win || win.isDestroyed()) createWindow();
+        if (win.isMinimized()) win.restore();
+        win.show();
+        win.focus();
+        app.focus({ steal: true });
         return send(200, await openBot(name)); // same as a sidebar click
       }
       if (url.pathname === '/api/launch' && req.method === 'POST') {
@@ -575,6 +583,9 @@ const PANEL_W = 380; // the bot window's column width (WINDOW_WIDTH in main.js)
 
 let panelHost = null;           // WebContentsView showing the selected bot's panel
 const relay = { name: null, port: null, req: null, retry: null };
+// A selected bot that cannot be hosted (an older build), so its row stays
+// highlighted while the stage explains why.
+let stageOutdated = null;
 
 function layoutShell() {
   if (!win || win.isDestroyed() || !panelHost) return;
@@ -652,10 +663,34 @@ function deselectBot() {
   pushState({ selected: null });
 }
 
+// Does this bot carry the panel relay? A bot started by an older build does
+// not, and its panel would load and then fail on every call.
+async function canHost(port) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api/panel/ping`, {
+      headers: botAuthHeaders(port), signal: AbortSignal.timeout(1500),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function selectBot(name) {
   const inst = (await scanRunning()).get(name);
   if (!inst) return { ok: false, error: 'not running' };
+  if (!(await canHost(inst.port))) {
+    // Say so on the stage instead of hosting a panel that cannot reach its bot.
+    closeRelayStream();
+    relay.name = null;
+    relay.port = null;
+    if (panelHost) panelHost.setVisible(false);
+    stageOutdated = name;
+    pushState({ selected: null, outdated: name });
+    return { ok: false, code: 'outdated', error: 'running an older version of the app' };
+  }
   closeRelayStream();
+  stageOutdated = null;
   relay.name = name;
   relay.port = inst.port;
   // Stream first, then load, so nothing the bot pushes while the panel boots
@@ -682,7 +717,8 @@ async function openBot(name) {
     pushState({ waking: name });
   }
   const result = await whenUp(name, () => selectBot(name));
-  if (!result?.ok) pushState({ waking: null, wakeFailed: name, error: result?.error || null });
+  // An outdated bot already explained itself on the stage (selectBot).
+  if (!result?.ok && result?.code !== 'outdated') pushState({ waking: null, wakeFailed: name, error: result?.error || null });
   return result;
 }
 

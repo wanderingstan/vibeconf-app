@@ -111,3 +111,40 @@ test('main.js installs the relay before registering any handler', () => {
   const firstHandle = main.indexOf('ipcMain.handle(');
   assert.ok(install > 0 && install < firstHandle);
 });
+
+// ── Headless bots ──
+
+const mainSrc = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
+
+test('a headless bot never shows its window itself; show/focus/restore ask the supervisor instead', () => {
+  assert.match(mainSrc, /const HEADLESS = cliArgs\.headless === 'true';/);
+  const once = mainSrc.slice(mainSrc.indexOf('function showMainWindowOnce()'));
+  assert.match(once.slice(0, 400), /if \(HEADLESS\) \{ mainWindowShown = true; return; \}/);
+  const mh = mainSrc.slice(mainSrc.indexOf('function makeHeadless(win)'), mainSrc.indexOf('function createMainWindow()'));
+  for (const m of ['show', 'showInactive', 'focus', 'restore']) assert.match(mh, new RegExp(`win\\.${m} = presentInShell;`));
+  assert.match(mh, /\/api\/select\?profile=/);
+  assert.match(mainSrc, /if \(HEADLESS\) makeHeadless\(mainWindow\);/);
+});
+
+test('with no supervisor answering, a headless bot falls back to its own window and Dock icon', () => {
+  const mh = mainSrc.slice(mainSrc.indexOf('function makeHeadless(win)'), mainSrc.indexOf('function createMainWindow()'));
+  const fallback = mh.slice(mh.indexOf('} catch (err) {'));
+  assert.match(fallback, /app\.dock\.show\(\)/);
+  assert.match(fallback, /real\.show\(\);/);
+});
+
+test('no Dock icon and no taskbar entry while headless', () => {
+  assert.match(mainSrc, /if \(HEADLESS && app\.dock\) app\.dock\.hide\(\);\s*\n\s*createMainWindow\(\);/);
+  assert.match(mainSrc, /skipTaskbar: HEADLESS,/);
+  assert.match(mainSrc, /if \(app\.dock && !HEADLESS\) app\.dock\.show\(\);/);
+});
+
+test('the relay answers a ping, so the supervisor can tell a hostable bot from an older build', async () => {
+  const relay = createPanelRelay({ ipcMain: fakeIpcMain() });
+  let status = 0;
+  let body = '';
+  const res = { writeHead: (c) => { status = c; }, end: (b) => { body = b; } };
+  assert.equal(await relay.handleRequest({ method: 'GET' }, res, new URL('http://x/api/panel/ping'), async () => ''), true);
+  assert.equal(status, 200);
+  assert.equal(JSON.parse(body).ok, true);
+});

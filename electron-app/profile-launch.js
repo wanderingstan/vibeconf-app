@@ -65,7 +65,7 @@ function profileLaunchCommand({ platform, isPackaged, exePath, appPath, args = [
 // `windowPos`: #379 — open the new window where the launching one is, rather
 // than centred. Position only; size is not ours to hand over, since the window
 // is a fixed-width column with a content-derived height.
-function spawnArgsForProfile({ name, isDefault = false, port = null, openSettings = false, windowPos = null } = {}) {
+function spawnArgsForProfile({ name, isDefault = false, port = null, openSettings = false, windowPos = null, headless = false } = {}) {
   const args = [];
   if (!isDefault) {
     if (!name) throw new Error('a named profile needs a name');
@@ -75,6 +75,9 @@ function spawnArgsForProfile({ name, isDefault = false, port = null, openSetting
   // A newly created bot lands on Settings rather than "Call now" — it has no
   // name, voice or face yet, so that page IS its next step.
   if (openSettings) args.push('--open-settings=true');
+  // #301: a bot whose UI lives in the supervisor's window. No window of its
+  // own, no Dock icon; see HEADLESS in main.js.
+  if (headless) args.push('--headless=true');
   if (windowPos && Number.isFinite(windowPos.x) && Number.isFinite(windowPos.y)) {
     args.push(`--window-x=${windowPos.x}`, `--window-y=${windowPos.y}`);
   }

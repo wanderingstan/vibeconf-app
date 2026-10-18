@@ -186,3 +186,18 @@ test('--supervisor returns before any of main.js runs', () => {
   const body = code.slice(branch, branch + 200);
   assert.match(body, /require\('\.\/supervisor-app\.js'\)\.start\(\);\s*\n\s*return;/);
 });
+
+// ── Headless bots (#301 one window) ──
+
+test('headless adds --headless=true, and only when asked', () => {
+  assert.ok(spawnArgsForProfile({ name: 'bot9', port: 7890, headless: true }).includes('--headless=true'));
+  assert.ok(!spawnArgsForProfile({ name: 'bot9', port: 7890 }).includes('--headless=true'));
+  assert.deepEqual(spawnArgsForProfile({ isDefault: true, headless: true }), ['--headless=true']);
+});
+
+test('the supervisor starts bots headless; a bot\'s own launcher does not (yet)', () => {
+  const sup = readFileSync(new URL('../electron-app/supervisor-app.js', import.meta.url), 'utf8');
+  assert.match(sup, /spawnArgsForProfile\(\{ name, isDefault, port, openSettings, headless: true \}\)/);
+  const main = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(main, /spawnArgsForProfile\(\{[^}]*headless/, 'the profile switcher still opens windowed bots');
+});

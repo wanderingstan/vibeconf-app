@@ -108,7 +108,7 @@ const starting = new Set();
 // The stage behind the panel view. While a bot wakes up it shows that bot's
 // face and name, straight from disk, so selecting a closed bot looks like a
 // tab loading rather than a separate "start the bot" step.
-function showStage(bot) {
+function showStage(bot, { note = 'Waking up…', pulse = true } = {}) {
   const stage = document.getElementById('stage');
   stage.replaceChildren();
   if (!bot) { stage.append(el('div', null, 'Select a bot to see it here.')); return; }
@@ -122,7 +122,7 @@ function showStage(bot) {
   } else {
     face.append(el('span', null, (labelOf(bot).trim().charAt(0) || '?').toUpperCase()));
   }
-  card.append(face, el('div', 'waking-name', labelOf(bot)), el('div', 'waking-note', 'Waking up…'));
+  card.append(face, el('div', 'waking-name', labelOf(bot)), el('div', `waking-note${pulse ? '' : ' still'}`, note));
   stage.append(card);
 }
 
@@ -137,7 +137,8 @@ async function openBot(bot) {
   }
   const r = await api.invoke('supervisor:open', bot.name).catch((e) => ({ ok: false, error: e.message }));
   starting.delete(bot.name);
-  if (!r?.ok) { rowErrors.set(bot.name, `Could not open it: ${r?.error || 'unknown error'}`); showStage(null); }
+  // An outdated bot is explained on the stage (see the 'outdated' push), not as a row error.
+  if (!r?.ok && r?.code !== 'outdated') { rowErrors.set(bot.name, `Could not open it: ${r?.error || 'unknown error'}`); showStage(null); }
   refresh();
 }
 
@@ -276,6 +277,16 @@ api.on('supervisor-state', (state) => {
   // The bot arrived (or the stage was cleared): drop the placeholder, so it
   // cannot resurface later from behind the panel.
   if (state && state.selected !== undefined) { starting.clear(); showStage(null); }
+  // Selected a bot started by an older build: it cannot be shown here until it
+  // restarts. Say that on the stage, with its face, rather than a broken panel.
+  if (state && state.outdated) {
+    const bot = lastBots.find((b) => b.name === state.outdated);
+    selectedBot = state.outdated;
+    showStage(bot || { name: state.outdated }, {
+      note: `${bot ? labelOf(bot) : state.outdated} is running an older version of the app. Quit it, then select it again to show it here.`,
+      pulse: false,
+    });
+  }
   // Not every push is a calendar tick: a change in the browser's open calls
   // pushes too, with no events, and must not blank the Upcoming list.
   if (state && 'events' in state) renderEvents(state);

@@ -42,7 +42,8 @@
     }
     .waking-face img { width: 100%; height: 100%; object-fit: cover; }
     .waking-name { color: var(--text); font-size: 20px; font-weight: 500; }
-    .waking-note { color: var(--dim); animation: waking 1.6s ease-in-out infinite; }
+    .waking-note { color: var(--dim); animation: waking 1.6s ease-in-out infinite; max-width: 360px; line-height: 1.5; }
+    .waking-note.still { animation: none; }
     @keyframes waking { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
     @media (prefers-reduced-motion: reduce) { .waking-note { animation: none; } }
     .bot.selected { background: var(--hover); }

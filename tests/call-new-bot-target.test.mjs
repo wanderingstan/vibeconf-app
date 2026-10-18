@@ -306,6 +306,12 @@ test('the skill no longer asks for a link the running bot already has', () => {
 });
 
 test('the browser scan used by /call-new-bot is the SAME script as the background Meet poll', () => {
-  assert.match(main, /const appleScript = browserTabScanScript\(\);/);
-  assert.match(main, /execFile\('osascript', \['-e', browserTabScanScript\(\)\]/);
+  // Both go through browser-call-scan.js (#301), which the supervisor shares
+  // too; no copy of the AppleScript is left inline in main.js.
+  const oneShot = main.slice(main.indexOf('function scanBrowserMeetUrls'), main.indexOf('function joinSummonedCall'));
+  assert.match(oneShot, /require\('\.\/browser-call-scan\.js'\)/);
+  assert.match(oneShot, /scanBrowsers\(\{ timeoutMs \}\)/);
+  const poll = main.slice(main.indexOf('function startMeetDetection()'));
+  assert.match(poll.slice(0, 4000), /const \{ scanBrowsers, isAutomationDenied \} = require\('\.\/browser-call-scan\.js'\)/);
+  assert.doesNotMatch(main, /tell application "\$\{appName\}"/, 'no inline copy of the scan script');
 });

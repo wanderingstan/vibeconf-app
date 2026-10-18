@@ -202,6 +202,26 @@ async function fetchUpcomingEvents() {
   }
 }
 
+// Who is signed in to vibeconferencing.com, for the sidebar's footer. The login
+// is app-level (one sign-in covers every bot), and its token is in the base
+// config this process reads, so no bot needs to be running to answer.
+async function fetchAccount() {
+  const baseUrl = (store.get('websiteUrl') || store.get('syncBaseUrl') || 'https://vibeconferencing.com').replace(/\/$/, '');
+  const token = store.get('vcSessionToken');
+  if (!token) return { signedIn: false };
+  try {
+    const res = await fetch(`${baseUrl}/api/auth/me`, {
+      headers: { Cookie: `vc_session=${token}` },
+      signal: AbortSignal.timeout(8000),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!body?.authenticated) return { signedIn: false };
+    return { signedIn: true, email: body.user?.email || null, name: body.user?.name || null };
+  } catch {
+    return { signedIn: null }; // could not tell (offline); the footer says nothing rather than "signed out"
+  }
+}
+
 // One tick: who is up, what is coming, who needs waking.
 async function tick() {
   const now = Date.now();
@@ -941,6 +961,14 @@ function start() {
     ipcMain.handle('supervisor:tick', () => tick());
     ipcMain.handle('supervisor:launch', (_e, name) => launchProfile(name));
     ipcMain.handle('supervisor:select', (_e, name) => selectBot(name));
+    ipcMain.handle('supervisor:account', () => fetchAccount());
+    // Signing in is a bot's job today (it owns the browser-based login flow), so
+    // the footer's Sign in goes through whichever bot is on the stage.
+    ipcMain.handle('supervisor:sign-in', async () => {
+      if (!relay.port) return { ok: false, error: 'select a bot first' };
+      await relayPost('/api/panel/invoke', { channel: 'login', args: [] });
+      return { ok: true };
+    });
     ipcMain.handle('supervisor:layout', (_e, { sidebarWidth: w } = {}) => {
       sidebarWidth = w === RAIL_W ? RAIL_W : SIDEBAR_W; // only the two widths the page has
       layoutShell();

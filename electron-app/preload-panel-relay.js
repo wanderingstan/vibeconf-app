@@ -31,4 +31,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   joinMeet: (url) => ipcRenderer.send('relay:send', 'join-meet', [url]),
 
   copyToClipboard: (text) => ipcRenderer.send('relay:copy', String(text || '')),
+
+  // This panel is shown inside the app's window, which has its own account
+  // line, so the panel leaves out the app-level bits it repeats.
+  hosted: true,
 });

@@ -55,6 +55,16 @@
     .pane footer { padding: 14px 8px 0; flex-direction: column; gap: 4px; }
     /* Collapsed: a rail with only the toggle. Its width is RAIL_W in
        supervisor-app.js, which lays the panel out beside it. */
+    /* The sidebar is a column: top bar, the scrolling list, the account line. */
+    .sidebar { display: flex; flex-direction: column; overflow: hidden; }
+    .sidebar .pane { flex: 1; overflow-y: auto; min-height: 0; }
+    .account {
+      flex: none; border-top: 1px solid var(--line); padding: 10px 20px 12px;
+      font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 8px; min-height: 40px;
+    }
+    .account .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .account.signed-out .who { color: var(--warn); }
+    .account button { font-size: 12px; padding: 3px 10px; }
     .rail { width: 56px; flex: none; height: 100%; border-right: 1px solid var(--line); padding: 10px 11px; }
     .rail[hidden], .sidebar[hidden], .pane[hidden] { display: none; }
     .stage {
@@ -247,6 +257,9 @@
       <div class="pane-head"><h2>Past calls</h2></div>
       <div class="empty stub">A record of your bots' past calls will appear here.</div>
     </div>
+    <!-- Pinned to the bottom: who is signed in to vibeconferencing.com. One
+         login for the whole app, so it lives here rather than in each bot. -->
+    <div class="account" id="account"></div>
   </aside>
 
   <div class="rail" id="rail" hidden>

@@ -2,6 +2,9 @@
 // Adapted from popup.js — uses window.electronAPI instead of chrome.* APIs.
 
 const api = window.electronAPI;
+// #301: shown inside the app's window, which has its own account line, so the
+// app-level login is left out of this panel's footer (panel.css, .hosted).
+if (api && api.hosted) document.documentElement.classList.add('hosted');
 
 // The user's hour-cycle preference, resolved by main (a renderer cannot read
 // macOS's AppleICUForce24HourTime itself). Null until it arrives; formatTime

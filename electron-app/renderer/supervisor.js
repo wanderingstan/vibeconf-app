@@ -290,6 +290,35 @@ api.on('supervisor-state', (state) => {
   refresh();
 });
 
+// ── The account line pinned to the sidebar's bottom ──
+
+async function renderAccount() {
+  const box = document.getElementById('account');
+  const a = await api.invoke('supervisor:account').catch(() => ({ signedIn: null }));
+  box.replaceChildren();
+  box.classList.toggle('signed-out', a.signedIn === false);
+  if (a.signedIn === null) return; // could not tell: say nothing rather than something wrong
+  if (a.signedIn) {
+    const who = el('span', 'who', a.email || a.name || 'Signed in');
+    who.title = 'Your vibeconferencing.com login. One sign-in covers every bot.';
+    box.append(who);
+    return;
+  }
+  box.append(el('span', 'who', 'Not signed in'));
+  const btn = el('button', 'ghost', 'Sign in');
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    const r = await api.invoke('supervisor:sign-in').catch((e) => ({ ok: false, error: e.message }));
+    if (!r?.ok) { btn.textContent = r?.error || 'Could not sign in'; return; }
+    setTimeout(renderAccount, 3000);
+  });
+  box.append(btn);
+}
+renderAccount();
+// A sign-in or sign-out anywhere (a bot's settings, App Settings) reaches the
+// window as a fleet refresh soon enough; re-check on focus too.
+window.addEventListener('focus', renderAccount);
+
 // ── The sidebar's top bar: hide/show, and which list it shows ──
 //
 // Remembered per machine in localStorage (a convenience, so it may be empty:

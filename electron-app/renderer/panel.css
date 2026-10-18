@@ -1455,3 +1455,8 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 .share-log-main button { flex: 0 0 auto; margin-bottom: 0; }
 .share-log-msg { flex: 1; }
 .share-log-msg .helper-text { margin: 0; display: block; }
+
+/* #301: in the app's window the sidebar shows the vibeconferencing.com login,
+   so the panel's footer does not repeat it. */
+.hosted #userIdStatus,
+.hosted #userSignInMainBtn { display: none !important; }

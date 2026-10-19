@@ -117,27 +117,44 @@ allURLs'
 
 Extract the meet code (the `xxx-xxxx-xxx` part). If no valid Meet URL found, ask the user to paste one.
 
-## Step 2: Ensure the app is running and in the call
+## Step 2: Ensure the bot is running and in the call
+
+**Ask the MCP, never a fixed port.** Call `list_call_instances`. It asks the
+Vibeconferencing app's own directory of bots (and only falls back to scanning
+ports), so it finds a bot on any port, including bots the app runs in the
+background with no window of their own. Do NOT `curl` port 7865 to decide whether
+the app is running: bots are no longer guaranteed to be there, and a wrong
+"not running" used to launch a second, unwanted bot into the call.
+
+- **The bot you are driving is listed** (the profile named in `$ARGUMENTS`, the
+  instance this session is pinned to, or the only one running): call
+  `get_room_info` with the room code as `room_id` and check `Call status`:
+  - `in-call`: Already joined. Go to Step 3.
+  - `idle` or `left`: Running but not in this call. Call `join_call` with the room
+    code to tell it to navigate to the Meet and join.
+  - `navigating`, `joining`, or `waiting-to-be-admitted`: Joining is under way.
+    Go to Step 3; the long-poll blocks until speech arrives after admission.
+- **It is not listed** (no instances, or not the profile you want): ask the app to
+  open it, then join. Leave `profile=` off to mean the default bot:
 
 ```
-curl -sf "${VIBECONF_BASE_URL:-http://127.0.0.1:7865}/api/sync/no-room" >/dev/null && echo "RUNNING" || echo "NOT_RUNNING"
+curl -sf -X POST "http://127.0.0.1:7864/api/select?profile=<PROFILE>"
 ```
 
-(Checks whether the app instance configured for this MCP client is reachable. `VIBECONF_BASE_URL` may point at a non-default port when multiple local app instances are running. A bare `pgrep Vibeconferencing` is unreliable — it matches orphaned MCP server processes from past sessions, giving false positives.)
-
-- If **NOT_RUNNING**: Launch it:
+  A reply with `"ok":true` means the bot is up (the app starts it in the
+  background and shows it in its window). Then call `join_call` with the room code
+  and the profile name.
+- **That request fails** (nothing listening on 7864): the app itself is not
+  running. Start it, with NO call arguments, wait a few seconds, then repeat the
+  request above and `join_call`:
 
 ```
-open -a Vibeconferencing \
-  --meet-url=https://meet.google.com/<ROOM_CODE> \
-  --bot-name="<BOT_NAME>" &
-disown
+open -a Vibeconferencing
 ```
 
-- If **RUNNING**: Call `get_room_info` with the room code as `room_id` and check `Call status`:
-  - `in-call`: Already joined — go to Step 3.
-  - `idle` or `left`: App is running but not in this call. Call `join_call` with the room code to tell the app to navigate to the Meet and join.
-  - `navigating`, `joining`, or `waiting-to-be-admitted`: The app is in the process of joining. Go to Step 3 — the long-poll will block until speech arrives after admission.
+  (A plain launch opens the app's window and its bots. Do not pass `--meet-url`:
+  that starts the DEFAULT bot straight into the call under whatever name you
+  give, which is how an agent once brought a second "bot" into a meeting.)
 
 ## Step 3: Start the conversation loop
 

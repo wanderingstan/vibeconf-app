@@ -620,7 +620,9 @@ function startDirectory() {
       }
       // Put a running bot's panel on the window's stage (#301 one-window spike).
       if (url.pathname === '/api/select' && req.method === 'POST') {
-        const name = url.searchParams.get('profile');
+        // No profile means the default bot: what /join-call asks for when the
+        // user named none and no bot is running (mcp-server/join-call-skill.md).
+        const name = url.searchParams.get('profile') || paths.defaultProfile;
         if (!name) return send(400, { ok: false, error: 'profile is required' });
         // "Show me this bot": from a headless bot's notification, focus
         // request or relaunch, as well as from agents. So the window comes forward too.

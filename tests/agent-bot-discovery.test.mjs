@@ -49,7 +49,43 @@ test('the app\'s "select" with no profile means the default bot', () => {
 });
 
 test('the skills are reinstalled: SKILL_VERSION moved past the old wording', () => {
-  const main = read('electron-app/main.js');
+  const main = read('electron-app/agent-integration.js');
   const v = Number((main.match(/const SKILL_VERSION = '(\d+)'/) || [])[1]);
   assert.ok(v >= 71, `SKILL_VERSION ${v}`);
+});
+
+// ── Who installs the machine-wide agent setup ──
+//
+// Skills, the agent-activity hook and the user-scoped MCP registration are the
+// app's, so the app window installs them as the single writer. Before it, only
+// the default bot did, so new skills reached ~/.claude/skills only when that
+// one bot restarted (2026-10-19: the fixed /join-call sat uninstalled because
+// only named bots had been started).
+
+test('the app window installs the agent setup on start', () => {
+  const sup = read('electron-app/supervisor-app.js');
+  assert.match(sup, /function installAgentIntegration\(\)/);
+  assert.match(sup, /startBrowserScan\(\);\s*\n\s*installAgentIntegration\(\);/);
+  assert.match(sup, /require\('\.\/agent-integration\.js'\)\.ensureClaudeIntegration\(\{ defaultPort: DEFAULT_PORT, botName \}\)/);
+});
+
+test('it honours the default bot\'s backend and a deliberate uninstall', () => {
+  const sup = read('electron-app/supervisor-app.js');
+  const fn = sup.slice(sup.indexOf('function installAgentIntegration()'));
+  assert.match(fn.slice(0, 1500), /\(cfg\.agentBackend \|\| 'claude'\) !== 'claude'/);
+  assert.match(fn.slice(0, 1500), /cfg\.claudeIntegrationRemoved === true/);
+});
+
+test('a bot hosted in the app window leaves it to the app; a classic default bot still installs', () => {
+  const main = read('electron-app/main.js');
+  assert.match(main, /\} else if \(HEADLESS\) \{\s*\n\s*\/\/ #301: running inside the app window/);
+  assert.match(main, /ensureClaudeIntegration\(\{ defaultPort: DEFAULT_PORT, botName: resolvedBotName\(\) \}\)/);
+});
+
+test('the installer is one module, shared, not two copies', () => {
+  const ai = read('electron-app/agent-integration.js');
+  const main = read('electron-app/main.js');
+  assert.match(ai, /function ensureClaudeIntegration\(\{ defaultPort, botName \} = \{\}\)/);
+  assert.doesNotMatch(main, /const AGENT_HOOK_CONTENT = `/, 'the hook script lives in agent-integration.js only');
+  assert.doesNotMatch(main, /const SKILL_VERSION = '/, 'and so does the skill version');
 });

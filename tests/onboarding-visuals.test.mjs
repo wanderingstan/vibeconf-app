@@ -124,7 +124,8 @@ test('the skill shows the emoji sets and the background grid', () => {
 });
 
 test('the skill version was bumped, or nobody gets any of this', () => {
-  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  // The skill installer moved to agent-integration.js (#301).
+  const main = readFileSync(join(root, 'electron-app/agent-integration.js'), 'utf8');
   const m = main.match(/const SKILL_VERSION = '(\d+)'/);
   assert.ok(m && Number(m[1]) >= 39, `SKILL_VERSION is ${m && m[1]}, expected >= 39`);
 });

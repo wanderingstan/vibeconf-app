@@ -493,6 +493,39 @@ function startBrowserScan() {
   scanTimer = setInterval(scanTick, SCAN_MS);
 }
 
+// ── The machine-wide agent setup ────────────────────────────────────────────
+//
+// The skills in ~/.claude/skills, the agent-activity hook and the user-scoped
+// MCP registration (agent-integration.js) belong to the app, not to any one
+// bot, so the app window installs them, as the single writer, on start. Before
+// it existed the default bot did, as an election among bots; a bot running
+// hidden inside this window now leaves it to us, and only a default bot in its
+// own window (classic mode, development) still writes it.
+//
+// Two of the default bot's settings still gate it, read off disk the way the
+// rest of the fleet is: agentBackend (codex sets up its own integration) and
+// claudeIntegrationRemoved ("leave no trace" after a menu uninstall).
+function installAgentIntegration() {
+  try {
+    const name = paths.defaultProfile;
+    let cfg = {};
+    try { cfg = JSON.parse(require('fs').readFileSync(path.join(paths.profilesRoot, name, 'agent', 'config.json'), 'utf8')); } catch { /* first run */ }
+    if ((cfg.agentBackend || 'claude') !== 'claude') {
+      console.log('[supervisor] agent integration: the default bot uses', cfg.agentBackend, '- leaving it to that bot');
+      return;
+    }
+    if (cfg.claudeIntegrationRemoved === true) {
+      console.log('[supervisor] agent integration: uninstalled on purpose (leave-no-trace) - not reinstalling');
+      return;
+    }
+    const { resolveBotName } = require('./bot-name.js');
+    const botName = resolveBotName({ storedName: cfg.botName, cliName: undefined, profileName: null });
+    require('./agent-integration.js').ensureClaudeIntegration({ defaultPort: DEFAULT_PORT, botName });
+  } catch (err) {
+    console.warn('[supervisor] agent integration install failed:', err.message);
+  }
+}
+
 // ── Calls ───────────────────────────────────────────────────────────────────
 //
 // "Call" and "Add" on a RUNNING bot. Both are the bot's own panel buttons,
@@ -1130,6 +1163,7 @@ function start() {
 
     startDirectory();
     startBrowserScan();
+    installAgentIntegration();
     reapTimer = setInterval(() => { reapTick().catch((err) => console.warn('[supervisor] reaper failed:', err.message)); }, REAP_EVERY_MS);
     installMenu();
     if (BACKGROUND) {

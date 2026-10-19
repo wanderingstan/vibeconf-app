@@ -18,7 +18,8 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const mainJsPath = join(__dirname, '..', 'electron-app', 'main.js');
+// AGENT_HOOK_CONTENT moved with the rest of the agent setup to agent-integration.js (#301).
+const mainJsPath = join(__dirname, '..', 'electron-app', 'agent-integration.js');
 
 // Extract AGENT_HOOK_CONTENT the same way it's written to disk in production
 // (ensureAgentActivityHook): parse the source, `eval` just the template

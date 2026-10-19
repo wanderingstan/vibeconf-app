@@ -133,3 +133,13 @@ test('main.js uses it where a named bot writes its agent\'s MCP config, and show
   assert.match(main, /vibeconferencing: agentMcp\.server,/);
   assert.match(main, /broadcastError\(agentMcp\.warning\)/);
 });
+
+test('one process per named bot: a second copy quits and the first shows itself', () => {
+  const main = read('electron-app/main.js');
+  const named = main.slice(main.indexOf("// #301: one copy per NAMED bot too."));
+  assert.match(named.slice(0, 1500), /if \(!app\.requestSingleInstanceLock\(\)\) \{/);
+  assert.match(named.slice(0, 1500), /already running in another process; quitting this copy/);
+  assert.match(named.slice(0, 1500), /app\.on\('second-instance', \(\) => \{/);
+  // The lock is keyed to userData, which must already be the profile's own.
+  assert.ok(main.indexOf("app.setPath('userData', profileUserData)") < main.indexOf('// #301: one copy per NAMED bot too.'));
+});

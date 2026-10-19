@@ -9033,7 +9033,29 @@ if (isDefaultInstance) {
     }
   });
 } else {
-  console.log('[electron] Allowing separate app instance for profile:', appProfile);
+  // #301: one copy per NAMED bot too. Electron's lock is keyed to the userData
+  // directory, which each profile has its own of (set above), so this is "one
+  // process per bot", never "one bot at a time": different bots still run side
+  // by side. Without it a second launch of the same bot took the next port and
+  // both kept running, the stale one unseen, answering on a port nobody
+  // expected (2026-10-18: an app window stuck on a leftover copy showed a blank
+  // Bot's view).
+  if (!app.requestSingleInstanceLock()) {
+    console.log(`[electron] Bot "${appProfile}" is already running in another process; quitting this copy.`);
+    app.quit();
+  } else {
+    console.log('[electron] Allowing separate app instance for profile:', appProfile);
+    // A second launch of this bot asks the running copy to show itself. For a
+    // hidden bot, mainWindow.show() is redirected to the app window
+    // (makeHeadless), which selects it.
+    app.on('second-instance', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------

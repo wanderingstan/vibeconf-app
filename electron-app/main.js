@@ -8236,22 +8236,28 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
         Object.assign(inherited, botMcp.mcpServers || {});
       } catch { /* none — the common case */ }
 
+      // #301: only hand the agent a server that can start (chooseAgentMcpServer).
+      const fallback = inherited.vibeconferencing;
+      const agentMcp = require('./agent-integration.js').chooseAgentMcpServer({
+        ownPath: mcpServerPath,
+        ownOk: fs.existsSync(mcpServerPath) && mcpServerDepsPresent(path.dirname(mcpServerPath)),
+        launcher: mcpNodeLauncher(),
+        inherited: fallback,
+        fallbackOk: !!(fallback && Array.isArray(fallback.args) && fallback.args[0] && fs.existsSync(fallback.args[0])),
+        botName,
+        port: localServer.port,
+      });
+      if (agentMcp.warning) {
+        console.error('[electron]', agentMcp.warning);
+        try { broadcastError(agentMcp.warning); } catch { /* panel not up */ }
+      }
       const cfg = {
         mcpServers: {
           ...inherited,
           // LAST, so it always wins. This entry is the entire reason the file
           // exists: the user-scoped one carries a fallback port pointing at the
           // PRIMARY app, so an unpinned session would drive the wrong bot.
-          vibeconferencing: {
-            command: mcpNodeLauncher().command,
-            args: [mcpServerPath],
-            env: {
-              ...mcpNodeLauncher().env,
-              VIBECONF_ROOM_ID: '',
-              VIBECONF_BOT_NAME: botName,
-              VIBECONF_BASE_URL: `http://127.0.0.1:${localServer.port}`,
-            },
-          },
+          vibeconferencing: agentMcp.server,
         },
       };
       const cfgPath = path.join(app.getPath('userData'), 'mcp-config.json');

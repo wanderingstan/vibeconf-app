@@ -89,3 +89,47 @@ test('the installer is one module, shared, not two copies', () => {
   assert.doesNotMatch(main, /const AGENT_HOOK_CONTENT = `/, 'the hook script lives in agent-integration.js only');
   assert.doesNotMatch(main, /const SKILL_VERSION = '/, 'and so does the skill version');
 });
+
+// ── A named bot only hands its agent an MCP server that can start ──
+
+import { createRequire } from 'node:module';
+const requireCjs = createRequire(import.meta.url);
+
+test('chooseAgentMcpServer: own server when it can start, pinned to the bot', () => {
+  // agent-integration.js requires electron at the top; stub it for a plain node test.
+  const Module = requireCjs('node:module');
+  const realLoad = Module._load;
+  Module._load = (req, ...rest) => (req === 'electron' ? { app: { isPackaged: false } } : realLoad(req, ...rest));
+  let mod;
+  try { mod = requireCjs('../electron-app/agent-integration.js'); } finally { Module._load = realLoad; }
+  const { chooseAgentMcpServer } = mod;
+  const launcher = { command: '/bin/electron', env: { ELECTRON_RUN_AS_NODE: '1' } };
+  const inherited = { command: '/Applications/V.app/x', args: ['/Applications/V.app/server.js'], env: { VIBECONF_BASE_URL: 'http://127.0.0.1:7865', VIBECONF_BOT_NAME: 'Jimmy' } };
+  const base = { ownPath: '/dev/mcp/server.js', launcher, inherited, botName: 'Charlie', port: 7885 };
+
+  const ok = chooseAgentMcpServer({ ...base, ownOk: true, fallbackOk: true });
+  assert.equal(ok.warning, null);
+  assert.deepEqual(ok.server.args, ['/dev/mcp/server.js']);
+  assert.equal(ok.server.env.VIBECONF_BASE_URL, 'http://127.0.0.1:7885');
+  assert.equal(ok.server.env.ELECTRON_RUN_AS_NODE, '1');
+
+  // Own cannot start: the installed app's server, re-pinned to THIS bot, and said out loud.
+  const fb = chooseAgentMcpServer({ ...base, ownOk: false, fallbackOk: true });
+  assert.deepEqual(fb.server.args, ['/Applications/V.app/server.js']);
+  assert.equal(fb.server.env.VIBECONF_BASE_URL, 'http://127.0.0.1:7885', 'not the default bot\'s port');
+  assert.equal(fb.server.env.VIBECONF_BOT_NAME, 'Charlie');
+  assert.match(fb.warning, /installed app's tools/);
+
+  // Neither: keep ours, and say plainly that the agent will have no tools.
+  const none = chooseAgentMcpServer({ ...base, ownOk: false, fallbackOk: false });
+  assert.deepEqual(none.server.args, ['/dev/mcp/server.js']);
+  assert.match(none.warning, /no Vibeconferencing tools/);
+});
+
+test('main.js uses it where a named bot writes its agent\'s MCP config, and shows the warning', () => {
+  const main = read('electron-app/main.js');
+  assert.match(main, /chooseAgentMcpServer\(\{/);
+  assert.match(main, /ownOk: fs\.existsSync\(mcpServerPath\) && mcpServerDepsPresent\(path\.dirname\(mcpServerPath\)\)/);
+  assert.match(main, /vibeconferencing: agentMcp\.server,/);
+  assert.match(main, /broadcastError\(agentMcp\.warning\)/);
+});

@@ -489,7 +489,37 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
   return changed;
 }
 
+// Which Vibeconferencing MCP server a named bot hands its agent (#301).
+//
+// Normally its own build's, pinned to its port. But an own server that cannot
+// start (its dependencies were never installed: a fresh development checkout)
+// left the agent with no tools at all, and the agent only ever saw "Connection
+// closed" (2026-10-19). So check first, and if ours cannot start, fall back to
+// the user-scoped one (normally the installed app's), still pinned to this
+// bot's port, and say so. With neither, keep ours and report that plainly.
+//
+// Pure: the caller passes what it found, so this can be tested without disk.
+// Returns { server, warning } where warning is null when all is well.
+function chooseAgentMcpServer({ ownPath, ownOk, launcher, inherited, fallbackOk, botName, port }) {
+  const pin = { VIBECONF_ROOM_ID: '', VIBECONF_BOT_NAME: botName, VIBECONF_BASE_URL: `http://127.0.0.1:${port}` };
+  const own = { command: launcher.command, args: [ownPath], env: { ...launcher.env, ...pin } };
+  if (ownOk) return { server: own, warning: null };
+  if (inherited && fallbackOk) {
+    return {
+      server: { ...inherited, env: { ...(inherited.env || {}), ...pin } },
+      warning: `This bot's own agent tools cannot start (its MCP server at ${ownPath} is missing its dependencies), `
+        + `so its agent uses the installed app's tools instead (${(inherited.args || [])[0]}).`,
+    };
+  }
+  return {
+    server: own,
+    warning: `This bot's agent has no Vibeconferencing tools: its MCP server at ${ownPath} cannot start `
+      + '(missing dependencies; run npm install in mcp-server) and there is no other one registered to fall back to.',
+  };
+}
+
 module.exports = {
+  chooseAgentMcpServer,
   mcpNodeLauncher, bundledMcpServerRoot, bundledMcpServerPath, mcpServerDepsPresent,
   runningFromGitWorktree, AGENT_HOOK_CONTENT, ensureAgentActivityHook, ensureClaudeIntegration,
 };

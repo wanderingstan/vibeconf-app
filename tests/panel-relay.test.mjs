@@ -117,7 +117,7 @@ test('main.js installs the relay before registering any handler', () => {
 const mainSrc = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
 
 test('a headless bot never shows its window itself; show/focus/restore ask the supervisor instead', () => {
-  assert.match(mainSrc, /const HEADLESS = cliArgs\.headless === 'true';/);
+  assert.match(mainSrc, /const HEADLESS = cliArgs\.hosted === 'true';/);
   const once = mainSrc.slice(mainSrc.indexOf('function showMainWindowOnce()'));
   assert.match(once.slice(0, 400), /if \(HEADLESS\) \{ mainWindowShown = true; return; \}/);
   const mh = mainSrc.slice(mainSrc.indexOf('function makeHeadless(win)'), mainSrc.indexOf('function createMainWindow()'));

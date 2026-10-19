@@ -76,8 +76,9 @@ function spawnArgsForProfile({ name, isDefault = false, port = null, openSetting
   // name, voice or face yet, so that page IS its next step.
   if (openSettings) args.push('--open-settings=true');
   // #301: a bot whose UI lives in the supervisor's window. No window of its
-  // own, no Dock icon; see HEADLESS in main.js.
-  if (headless) args.push('--headless=true');
+  // own, no Dock icon; see HEADLESS in main.js. Spelled --hosted because
+  // --headless is Chromium's own switch, which stops windows drawing at all.
+  if (headless) args.push('--hosted=true');
   if (windowPos && Number.isFinite(windowPos.x) && Number.isFinite(windowPos.y)) {
     args.push(`--window-x=${windowPos.x}`, `--window-y=${windowPos.y}`);
   }

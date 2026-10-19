@@ -189,10 +189,22 @@ test('--supervisor returns before any of main.js runs', () => {
 
 // ── Headless bots (#301 one window) ──
 
-test('headless adds --headless=true, and only when asked', () => {
-  assert.ok(spawnArgsForProfile({ name: 'bot9', port: 7890, headless: true }).includes('--headless=true'));
-  assert.ok(!spawnArgsForProfile({ name: 'bot9', port: 7890 }).includes('--headless=true'));
-  assert.deepEqual(spawnArgsForProfile({ isDefault: true, headless: true }), ['--headless=true']);
+test('headless adds --hosted=true, and only when asked', () => {
+  assert.ok(spawnArgsForProfile({ name: 'bot9', port: 7890, headless: true }).includes('--hosted=true'));
+  assert.ok(!spawnArgsForProfile({ name: 'bot9', port: 7890 }).includes('--hosted=true'));
+  assert.deepEqual(spawnArgsForProfile({ isDefault: true, headless: true }), ['--hosted=true']);
+});
+
+test('no launch flag is one of Chromium\'s own switches (the --headless lesson)', () => {
+  // Electron passes app arguments through to Chromium. Spelled --headless, the
+  // bot ran Chromium's headless mode, and every window it opened (Bot's view,
+  // Brain, Troubleshooting) came up blank: pages rendered, nothing was drawn.
+  const CHROMIUM = new Set(['headless', 'disable-gpu', 'no-sandbox', 'remote-debugging-port', 'user-data-dir', 'disable-features', 'enable-features', 'kiosk', 'incognito', 'app']);
+  const all = spawnArgsForProfile({ name: 'bot9', port: 7890, openSettings: true, windowPos: { x: 1, y: 2 }, headless: true });
+  for (const a of all) {
+    const name = a.replace(/^--/, '').split('=')[0];
+    assert.ok(!CHROMIUM.has(name), `--${name} is a Chromium switch`);
+  }
 });
 
 test('the supervisor starts bots headless; a bot\'s own launcher does not (yet)', () => {

@@ -354,7 +354,7 @@ test('a plain launch opens the app window; a launch that names a bot or call sta
   assert.equal(opensApp(['--profile=test-slack-1', '--local-port=7901']), false, 'the test fleet');
   assert.equal(opensApp(['--meet-url=https://meet.google.com/abc-defg-hij', '--bot-name=Jo']), false, '/join-call');
   assert.equal(opensApp(['--join-url=https://meet.google.com/abc-defg-hij']), false, '/call-new-bot');
-  assert.equal(opensApp(['--headless=true']), false, 'a bot the app starts');
+  assert.equal(opensApp(['--hosted=true']), false, 'a bot the app starts');
   assert.equal(opensApp(['--profiles-dir=x']), true, 'only whole flag names count');
 });
 

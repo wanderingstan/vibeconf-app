@@ -25,7 +25,7 @@ const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, d
 // (--profile, --meet-url, --join-url, ... from the test fleet, /join-call,
 // the supervisor itself) still starts that bot as before. VIBECONF_CLASSIC=1
 // keeps the old "plain launch = the default bot in its own window".
-const BOT_LAUNCH_FLAG = /^--(profile|local-port|meet-url|join-url|bot-name|bot-view|config|dom-probe|headless|open-settings|summoned|provider|window-x|window-y|website-url|devtools)(=|$)/;
+const BOT_LAUNCH_FLAG = /^--(profile|local-port|meet-url|join-url|bot-name|bot-view|config|dom-probe|hosted|open-settings|summoned|provider|window-x|window-y|website-url|devtools)(=|$)/;
 const plainLaunch = !process.argv.slice(1).some((a) => BOT_LAUNCH_FLAG.test(a)) && process.env.VIBECONF_CLASSIC !== '1';
 if (process.argv.includes('--supervisor') || plainLaunch) {
   require('./supervisor-app.js').start();
@@ -6641,7 +6641,12 @@ const cliArgs = parseCLIArgs();
 // window forward instead asks the supervisor to select this bot; with no
 // supervisor answering, the bot falls back to showing its own window, so it
 // can never become unreachable. See makeHeadless.
-const HEADLESS = cliArgs.headless === 'true';
+// The launch flag is --hosted, NOT --headless: Chromium has its own --headless
+// switch, Electron passes app arguments through to it, and under it nothing is
+// composited to screen. Pages still render and capture, so the bot worked, but
+// every window it opened for the user (Bot's view, Brain, Troubleshooting)
+// came up blank. Found 2026-10-18 by elimination; see tests/panel-relay.
+const HEADLESS = cliArgs.hosted === 'true';
 localServer.headless = HEADLESS; // reported in status, so the reaper only stops the app's own bots
 // --dom-probe=1 | --dom-probe='<css selector>' (dom-probe.js): a research tool
 // for finding a calling app's hidden signals, e.g. Teams' speaking ring (#847).
@@ -11623,6 +11628,7 @@ function setBotViewState(state) {
     };
     fit();
     win.on('resize', fit);
+    presentHeadlessWindow(win);
     // Survive teardown: detach the view before the window dies so the call lives,
     // then re-dock. Covers both the toggle and the user closing the window.
     // The resize listener comes off FIRST — otherwise a resize event fired
@@ -12016,6 +12022,16 @@ function hasHiddenTitleBar() {
 // interception for the ~20 places that show, focus or restore mainWindow
 // (notification clicks, /api/focus, a second launch, join flows), rather than
 // a headless check at each.
+// A window a headless bot opens for the user (Bot's view, Brain,
+// Troubleshooting) brings the bot app forward with it. The click came from the
+// app window, another process, so this bot is not the active app, and its new
+// window could open behind the app's (it took two clicks to find).
+function presentHeadlessWindow(win) {
+  if (!HEADLESS || !win || win.isDestroyed()) return;
+  try { app.focus({ steal: true }); } catch { /* not on this platform */ }
+  try { win.show(); win.focus(); } catch { /* gone */ }
+}
+
 function makeHeadless(win) {
   const real = {
     show: win.show.bind(win),
@@ -13455,6 +13471,7 @@ function setupIPC() {
     if (brainWindow && !brainWindow.isDestroyed()) {
       brainWindow.show();
       brainWindow.focus();
+      presentHeadlessWindow(brainWindow);
       return { ok: true };
     }
     const win = new BrowserWindow({
@@ -13471,6 +13488,7 @@ function setupIPC() {
     brainWindow = win;
     win.on('closed', () => { brainWindow = null; focusMainWindow(); });
     win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=brain' });
+    presentHeadlessWindow(win);
     return { ok: true };
   }
   ipcMain.handle('open-brain-window', () => openBrainWindow());
@@ -13480,6 +13498,7 @@ function setupIPC() {
     if (troubleshootingWindow && !troubleshootingWindow.isDestroyed()) {
       troubleshootingWindow.show();
       troubleshootingWindow.focus();
+      presentHeadlessWindow(troubleshootingWindow);
       return { ok: true };
     }
     const win = new BrowserWindow({
@@ -13500,6 +13519,7 @@ function setupIPC() {
     troubleshootingWindow = win;
     win.on('closed', () => { troubleshootingWindow = null; focusMainWindow(); });
     win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=troubleshooting' });
+    presentHeadlessWindow(win);
     return { ok: true };
   }
   ipcMain.handle('open-troubleshooting-window', () => openTroubleshootingWindow());

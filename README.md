@@ -147,7 +147,7 @@ Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issue
 | `electron-app/` | The Electron app: audio pipeline, virtual camera, Meet/Zoom/Teams/Slack automation, turn-taking, the local control server, and the settings UI. |
 | `mcp-server/` | The MCP server the agent talks to (tools like `join_call`, `wait_for_speech`, `speak`, `update_whiteboard`, `set_voice`). Bundled into the app. |
 | `extension/` | Injected page scripts (Runway avatar bridge, LiveKit client). Bundled into the app. |
-| `scripts/`, `tests/`, `docs/` | Test harness (fleet + nightly), unit/e2e tests, and user docs. |
+| `scripts/`, `tests/`, `docs/` | Test harness (fleet + nightly), unit/e2e tests, and user docs. The visual system for the app and the website is in [docs/STYLE-GUIDE.md](docs/STYLE-GUIDE.md). |
 
 **How it works** (see the [diagram](#how-it-works) above)
 

@@ -124,3 +124,10 @@ test('on air uses the website\'s call palette, on the main screen only', () => {
   assert.doesNotMatch(css, /html\.on-air body \{/, 'Settings, another screen, stays light');
   assert.match(css, /html\.on-air #mainScreen button\.primary:not\(\.danger\) \{ color: #202124; \}/, 'green keeps a dark label');
 });
+
+test('Open call opens the bot\'s own call in your browser, https only', () => {
+  const main2 = read('electron-app/main.js');
+  assert.match(main2, /ipcMain\.handle\('open-current-call', \(\) => \{\s*\n\s*const url = currentMeetUrl \|\| \(localServer && localServer\.currentUrl\) \|\| '';\s*\n\s*if \(!\/\^https:\\\/\\\/\/i\.test\(url\)\)/);
+  assert.match(panel, /const openCall = el\('button', 'hosted-open-call', 'Open call'\);/);
+  assert.match(panel, /if \(leaveRow\) leaveRow\.before\(openCall\);/, 'above Leave');
+});

@@ -4315,7 +4315,19 @@ function setupHostedLayout() {
   after.push(controls);
 
   const incall = hero.querySelector('.hero-incall');
-  if (incall) after.push(incall);
+  if (incall) {
+    // Open the call in your own browser, above Leave: often the bot joined on
+    // its own (a calendar event, an agent) and the link is nowhere to hand.
+    const openCall = el('button', 'hosted-open-call', 'Open call');
+    openCall.title = 'Open this call in your browser (a Zoom or Teams link offers its app)';
+    openCall.addEventListener('click', async () => {
+      const r = await api.invoke('open-current-call').catch(() => null);
+      if (!r?.ok) showError("Couldn't find this call's link.");
+    });
+    const leaveRow = incall.querySelector('.join-row');
+    if (leaveRow) leaveRow.before(openCall); else incall.append(openCall);
+    after.push(incall);
+  }
 
   after.push(buildHostedAbout(el));
   let anchor = hero;

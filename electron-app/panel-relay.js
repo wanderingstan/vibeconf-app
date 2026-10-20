@@ -110,7 +110,10 @@ function createPanelRelay({ ipcMain, log = console, onQuit = null }) {
     if (url.pathname === '/api/panel/quit' && req.method === 'POST') {
       if (!onQuit) { json(404, { ok: false, error: 'quit not supported' }); return true; }
       json(200, { ok: true });
-      setTimeout(() => { try { onQuit(); } catch (err) { log.warn('[panel-relay] quit failed:', err.message); } }, 50);
+      // Who asked: the app says why in the body (reaper, app quitting).
+      let why = null;
+      try { why = (JSON.parse((await readBody(req)) || '{}') || {}).reason || null; } catch { /* no body */ }
+      setTimeout(() => { try { onQuit(why); } catch (err) { log.warn('[panel-relay] quit failed:', err.message); } }, 50);
       return true;
     }
 

@@ -38,7 +38,16 @@ if (process.argv.includes('--supervisor') || plainLaunch) {
 // onQuit: the app stopping this bot (its reaper, or the app quitting). app.quit()
 // goes through before-quit, which marks the quit as intended, so the bot's own
 // "Quit?" confirmation does not stop it.
-const panelRelay = require('./panel-relay.js').createPanelRelay({ ipcMain, onQuit: () => app.quit() });
+// #301: WHY this bot is quitting, logged in before-quit. On 2026-10-19 a bot in
+// a live call quit four times, mid-sentence, cleanly and with no reason in its
+// log: several paths call app.quit() and none of them said so. Each now names
+// itself; anything unnamed (a signal, Dock > Quit, an OS shutdown) shows as
+// "unattributed", with what is known about the moment.
+let quitCause = null;
+function noteQuitCause(cause) { if (!quitCause) quitCause = cause; }
+const panelRelay = require('./panel-relay.js').createPanelRelay({ ipcMain, onQuit: (from) => { noteQuitCause(`the app window asked it to stop (/api/panel/quit${from ? ' from ' + from : ''})`); app.quit(); } });
+// (No signal handlers: Electron turns SIGTERM into an ordinary quit before any
+// JS handler runs, so a signal shows up below as unattributed.)
 
 const path = require('path');
 const fs = require('fs');
@@ -10547,6 +10556,7 @@ function confirmQuitBeforeClose(e) {
 }
 
 app.on('window-all-closed', () => {
+  noteQuitCause('its last window closed (window-all-closed)');
   closeClaudeTerminal();
   localServer.stop();
   app.quit();
@@ -10555,6 +10565,11 @@ app.on('window-all-closed', () => {
 // Close any terminal windows we opened, synchronously, before the process
 // exits — covers Cmd-Q and other quit paths the async close would miss.
 app.on('before-quit', () => {
+  try {
+    console.log(`[electron] QUITTING: ${quitCause || 'unattributed (not one of the app\'s own quit paths: a signal, Dock > Quit, Cmd+Q, logout or shutdown)'}`
+      + ` · callStatus=${localServer && localServer.callStatus} hosted=${HEADLESS}`
+      + ` windows=${BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).map((w) => JSON.stringify(w.getTitle())).join(',')}`);
+  } catch { /* logging must never block a quit */ }
   // Every quit that is NOT a click on ✕ passes through here first, so this is
   // where the confirmation learns to stand down (see confirmQuitBeforeClose).
   appIsQuitting = true;
@@ -13720,6 +13735,7 @@ function setupIPC() {
     }
     // Target is up. Each profile is its own process, so closing this instance IS
     // the switch. Quit shortly after the IPC resolves so the renderer settles.
+    noteQuitCause(`switched to another bot (switch-profile → ${r.runningKey || '?'})`);
     setTimeout(() => app.quit(), 200);
     return { ok: true, switched: true, port: r.port };
   });

@@ -233,12 +233,13 @@ let idleSince = {};       // profile -> when it was first seen idle and unselect
 
 // Ask one bot to stop (panel-relay's /api/panel/quit). A bot from an older
 // build has no such route and is left running: better than killing it blind.
-async function stopBot(port, timeoutMs = 2000) {
+async function stopBot(port, timeoutMs = 2000, reason = 'unspecified') {
+  console.log(`[supervisor] stopping the bot on port ${port}: ${reason}`);
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/panel/quit`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...botAuthHeaders(port) },
-      body: '{}',
+      body: JSON.stringify({ reason: `supervisor: ${reason}` }),
       signal: AbortSignal.timeout(timeoutMs),
     });
     return res.ok;
@@ -262,7 +263,7 @@ async function reapTick() {
   });
   idleSince = next;
   for (const name of quit) {
-    const ok = await stopBot(running.get(name).port);
+    const ok = await stopBot(running.get(name).port, 2000, `reaper ("${name}" idle)`);
     console.log(`[supervisor] reaper: "${name}" idle for ${Math.round((Number(process.env.VIBECONF_REAP_IDLE_MS) || 300000) / 1000)}s${ok ? ', stopped it' : ', but it would not stop (an older build?)'}`);
   }
   if (quit.length) pushState({ reaped: quit });
@@ -275,7 +276,7 @@ async function stopAllBots(capMs = 3000) {
   if (!running.size) return;
   console.log(`[supervisor] quitting: stopping ${running.size} bot${running.size > 1 ? 's' : ''}`);
   await Promise.race([
-    Promise.allSettled([...running.values()].map((inst) => stopBot(inst.port, capMs))),
+    Promise.allSettled([...running.values()].map((inst) => stopBot(inst.port, capMs, 'the app is quitting'))),
     new Promise((r) => setTimeout(r, capMs)),
   ]);
 }
@@ -970,6 +971,7 @@ async function confirmQuit() {
 
   if (checkboxChecked) store.set('confirmSupervisorQuit', false);
   if (response !== 1) return;
+  appQuitCause = 'the user quit, confirmed in the dialog';
   quitting = true;
   app.quit();
 }
@@ -978,8 +980,10 @@ async function confirmQuit() {
 // get the dialog. Guarded so a second Cmd+Q while it is up does not stack a
 // second one.
 let confirming = false;
+// Why the app is quitting, for the log (#301: bots vanished mid-call and nothing said why).
+let appQuitCause = null;
 async function requestQuit() {
-  if (quitting || store.get('confirmSupervisorQuit') === false) { quitting = true; app.quit(); return; }
+  if (quitting || store.get('confirmSupervisorQuit') === false) { appQuitCause = appQuitCause || 'the user quit (Cmd+Q or closing the window; no confirmation asked)'; quitting = true; app.quit(); return; }
   if (confirming) return;
   confirming = true;
   try { await confirmQuit(); } finally { confirming = false; }
@@ -1113,6 +1117,7 @@ function start() {
     if (botsStopped) return;
     // Hold the quit until the bots have been asked to stop, then quit for real.
     event.preventDefault();
+    console.log(`[supervisor] QUITTING: ${appQuitCause || 'unattributed (a signal, Dock > Quit, logout or shutdown)'}`);
     stopAllBots().finally(() => { botsStopped = true; app.quit(); });
   });
   app.on('second-instance', () => {

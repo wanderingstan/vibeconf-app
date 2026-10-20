@@ -308,27 +308,54 @@ function newBotRow() {
 
 // ── The account line pinned to the sidebar's bottom ──
 
+// The account, and the gear for App Settings beside it: machine-wide settings
+// live with the account, down here, so the only gear in the window means "the
+// app". A bot's own settings are its pane's "Edit <bot>".
+function appSettingsGear() {
+  const gear = el('button', 'gear');
+  gear.title = 'App Settings: voices, keys and everything shared by all bots (⌘,)';
+  gear.setAttribute('aria-label', 'App Settings');
+  gear.append(el('i', 'ui-icon ui-icon-gear'));
+  gear.addEventListener('click', () => api.invoke('supervisor:app-settings').catch(() => {}));
+  return gear;
+}
+
 async function renderAccount() {
   const box = document.getElementById('account');
   const a = await api.invoke('supervisor:account').catch(() => ({ signedIn: null }));
   box.replaceChildren();
   box.classList.toggle('signed-out', a.signedIn === false);
-  if (a.signedIn === null) return; // could not tell: say nothing rather than something wrong
   if (a.signedIn) {
-    const who = el('span', 'who', a.email || a.name || 'Signed in');
-    who.title = 'Your vibeconferencing.com login. One sign-in covers every bot.';
+    // You, as the website shows you: your picture and email, opening your
+    // account page there.
+    const who = el('button', 'who');
+    who.title = 'Your vibeconferencing.com account (one sign-in covers every bot). Opens in your browser.';
+    if (a.avatarUrl) {
+      const img = el('img', 'me-avatar');
+      img.alt = '';
+      img.referrerPolicy = 'no-referrer'; // Google's image host refuses some referrers
+      img.src = a.avatarUrl;
+      img.addEventListener('error', () => img.remove()); // no picture beats a broken one
+      who.append(img);
+    }
+    who.append(el('span', 'me-email', a.email || a.name || 'Signed in'));
+    who.addEventListener('click', () => api.invoke('supervisor:open-account').catch(() => {}));
     box.append(who);
-    return;
+  } else if (a.signedIn === false) {
+    box.append(el('span', 'who', 'Not signed in'));
+    const btn = el('button', 'ghost', 'Sign in');
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const r = await api.invoke('supervisor:sign-in').catch((e) => ({ ok: false, error: e.message }));
+      if (!r?.ok) { btn.textContent = r?.error || 'Could not sign in'; return; }
+      setTimeout(renderAccount, 3000);
+    });
+    box.append(btn);
+  } else {
+    // Could not tell: say nothing rather than something wrong.
+    box.append(el('span', 'who', ''));
   }
-  box.append(el('span', 'who', 'Not signed in'));
-  const btn = el('button', 'ghost', 'Sign in');
-  btn.addEventListener('click', async () => {
-    btn.disabled = true;
-    const r = await api.invoke('supervisor:sign-in').catch((e) => ({ ok: false, error: e.message }));
-    if (!r?.ok) { btn.textContent = r?.error || 'Could not sign in'; return; }
-    setTimeout(renderAccount, 3000);
-  });
-  box.append(btn);
+  box.append(appSettingsGear());
 }
 renderAccount();
 // A sign-in or sign-out anywhere (a bot's settings, App Settings) reaches the

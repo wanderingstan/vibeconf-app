@@ -4546,6 +4546,7 @@ function openAppSettings() {
   if (appSettingsWindow && !appSettingsWindow.isDestroyed()) {
     appSettingsWindow.show();
     appSettingsWindow.focus();
+    presentHeadlessWindow(appSettingsWindow);
     return;
   }
   appSettingsWindow = new BrowserWindow({
@@ -4590,6 +4591,9 @@ function openAppSettings() {
     catch { clearTimeout(timer); finish(); }
   });
   appSettingsWindow.on('closed', () => { appSettingsWindow = null; focusMainWindow(); });
+  // Hosted (#301): the click came from the app window, another process, so bring
+  // this one forward with it or the window opens behind.
+  presentHeadlessWindow(appSettingsWindow);
 }
 
 // ── About window ────────────────────────────────────────────────────────────
@@ -7968,6 +7972,22 @@ function planAgentSession(claudeDir, botName) {
 // command gets the same guarantee: an id, not a name that stops being unique
 // the moment this working directory has collected a second session with that
 // title. '' means nothing usable is cached, so the caller falls back to name.
+// The bot keeps ONE agent session named after itself; this is the shell
+// command that resumes it (Bot > Copy Terminal Command, and the hosted pane).
+function buildChatCommandForThisBot() {
+  const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+  const sessionField = store.get('agentSession');
+  const botName = resolvedBotName();
+  const { resolveSessionRef } = require('./agent-session.js');
+  const ref = resolveSessionRef(sessionField, botName);
+  return require('./chat-command.js').buildChatCommand({
+    workdir: claudeDir,
+    sessionField,
+    botName,
+    cachedSessionId: ref.kind === 'name' ? cachedResumeSessionId(claudeDir, ref.name) : '',
+  });
+}
+
 function cachedResumeSessionId(claudeDir, name) {
   const { sessionCacheKey, resolveSessionId, sessionExists } = require('./agent-session.js');
   const id = resolveSessionId((store.get('agentSessionCache') || {})[sessionCacheKey(claudeDir, name)]);
@@ -12131,18 +12151,7 @@ function createMainWindow() {
           accelerator: 'Alt+CmdOrCtrl+C',
           click: () => {
             try {
-              const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
-              const sessionField = store.get('agentSession');
-              const botName = resolvedBotName();
-              const { resolveSessionRef } = require('./agent-session.js');
-              const ref = resolveSessionRef(sessionField, botName);
-              const command = require('./chat-command.js').buildChatCommand({
-                workdir: claudeDir,
-                sessionField,
-                botName,
-                cachedSessionId: ref.kind === 'name' ? cachedResumeSessionId(claudeDir, ref.name) : '',
-              });
-              require('electron').clipboard.writeText(command);
+              require('electron').clipboard.writeText(buildChatCommandForThisBot());
               console.log('[chat-session] copied chat command from the Edit menu');
             } catch (err) {
               console.warn('[chat-session] copy from menu failed:', err.message);
@@ -12209,6 +12218,22 @@ function createMainWindow() {
   function refreshAppMenu() {
     Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate()));
   }
+  // #301: the app window's Bot menu is THIS menu, for whichever bot is
+  // selected: it lists these items over the panel relay and runs them by
+  // label, so the two menus cannot drift apart.
+  const botSubmenu = () => (buildAppMenuTemplate().find((m) => m.label === 'Bot') || {}).submenu || [];
+  // createMainWindow can run again; a second ipcMain.handle would throw.
+  ipcMain.removeHandler('bot-menu-items');
+  ipcMain.removeHandler('bot-menu-click');
+  ipcMain.handle('bot-menu-items', () => botSubmenu().map((i) => (i.type === 'separator'
+    ? { type: 'separator' }
+    : { label: i.label, accelerator: i.accelerator || null, enabled: i.enabled !== false })));
+  ipcMain.handle('bot-menu-click', (_event, label) => {
+    const item = botSubmenu().find((i) => i.label === label);
+    if (!item || typeof item.click !== 'function' || item.enabled === false) return { ok: false };
+    item.click();
+    return { ok: true };
+  });
   refreshAppMenuRef = refreshAppMenu;
   refreshAppMenu();
 
@@ -12866,6 +12891,13 @@ function setupIPC() {
   // #381: open the machine-wide App Settings window (used by the panel's
   // "voice is off" onboarding banner, and available via ⌘,).
   ipcMain.handle('open-app-settings', () => { openAppSettings(); return { ok: true }; });
+  // The command that opens this bot's agent session at any prompt: the hosted
+  // pane's "Copy command" (#301). Returned, not copied, so the app window
+  // writes it to the clipboard on the user's click.
+  ipcMain.handle('copy-chat-command', () => {
+    try { return { ok: true, command: buildChatCommandForThisBot() }; }
+    catch (err) { return { ok: false, error: err.message }; }
+  });
 
   // #381: the app-level (scope:'app') schema prefs, for App Settings' schema-driven
   // section. Only prefs in BOTH the user-facing schema AND config-scope's app-level

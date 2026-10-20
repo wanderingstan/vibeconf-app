@@ -1485,7 +1485,16 @@ function updateJoinBtnState() {
   }
   joinBtn.title = 'Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.';
 
-  if (addMode) {
+  if (HOSTED) {
+    // In the app window the bot's name is the pane's headline, so the buttons
+    // just say what they do. Add appears only once there is a link to add the
+    // bot to (pasted, or a call detected in the browser): with none it is a
+    // button that cannot do anything. A link that is not a call disables it.
+    joinBtn.textContent = 'Add to this call';
+    const url = meetUrlInput.value.trim();
+    joinBtn.style.display = url ? '' : 'none';
+    joinBtn.disabled = !!url && !isJoinableUrl(url);
+  } else if (addMode) {
     joinBtn.textContent = `Add ${name} to call`;
     const url = meetUrlInput.value.trim();
     joinBtn.disabled = !url || !isJoinableUrl(url);
@@ -2296,7 +2305,7 @@ function loadConfigIntoControls() {
   }
   // #340: one unified picker merging macOS + ElevenLabs + Voicebox. Pre-selects
   // from the saved provider/voice; defaults to Daniel (tts.js's real default).
-  populateUnifiedVoices(result);
+  populateUnifiedVoices(result).then(() => refreshHostedAbout()).catch(() => {});
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.agentSession) agentSessionIdInput.value = result.agentSession;
   // Before the first launch there is nothing stored yet, so show the name that
@@ -3770,6 +3779,23 @@ function auditionVoice(opts) {
   _voiceSetNoteTimer = setTimeout(() => { voiceSetNote.style.display = 'none'; }, 4000);
 }
 
+// The audition for the voice picked in the dropdown: what update-tts-config and
+// synth-voice-sample take for its provider. Shared by the picker and the hosted
+// pane's play button, so both say the same thing in the same voice.
+function selectedVoiceSample() {
+  const val = unifiedVoiceSelect?.value || '';
+  const sep = val.indexOf(':');
+  const kind = val.slice(0, sep);
+  const id = val.slice(sep + 1);
+  const label = unifiedVoiceSelect?.selectedOptions[0]?.textContent || '';
+  const name = label.replace(/\s*[·(].*$/, '').replace(/\s+[-–—]+\s+/g, '. ').trim();
+  const text = `Hello, my name is ${name || 'your voice assistant'}.`;
+  if (kind === 'vb') return { provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: unifiedVoiceSelect.selectedOptions[0]?.dataset.engine || 'kokoro', text };
+  if (kind === 'el') return { provider: 'elevenlabs', voiceId: id, text };
+  if (kind === 'mac') return { provider: 'macos-say', macosVoice: id, text };
+  return null;
+}
+
 unifiedVoiceSelect?.addEventListener('change', () => {
   const val = unifiedVoiceSelect.value || '';
   const sep = val.indexOf(':');
@@ -4146,48 +4172,186 @@ function syncCallNowBtn() {
   syncJoiningFlag();
   if (!callNowBtn) return;
   const name = currentBotName || 'your bot';
-  callNowBtn.textContent = joinPhase === 'starting' ? 'Starting…' : `Call ${name} now`;
+  callNowBtn.textContent = joinPhase === 'starting' ? 'Starting…' : 'Start a new call';
+  callNowBtn.title = `Start a new meeting and bring ${name} into it`;
   callNowBtn.disabled = !!joinPhase;
+  // The green follows the field: with a link in it, adding the bot to that
+  // call is the expected move; with none, starting a call is (one primary at a
+  // time, docs/STYLE-GUIDE.md).
+  const hasUrl = !!(meetUrlInput && meetUrlInput.value.trim());
+  joinBtn.classList.toggle('primary', hasUrl);
+  callNowBtn.classList.toggle('primary', !hasUrl);
 }
 
+// ── The panel inside the app window (#301) ──
+// The bot no longer IS the window, so the pane reads top to bottom on the cream:
+//   name + status · the bot's face as a card the shape of its camera tile, with
+//   the inspectors (👀 🧠 🛈) on it like controls on a call tile · notices ·
+//   meeting link + Add / Start, stacked · the in-call controls · About <bot>:
+//   agent (with its terminal), voice (with a sample), Google account, Edit.
+// Built from the existing elements, moved, so every handler keeps working; a
+// bot in its own window is unchanged.
 function setupHostedLayout() {
   const container = document.querySelector('#mainScreen .container');
   const hero = container && container.querySelector('.bot-hero');
   if (!container || !hero) return;
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
 
-  const controls = document.createElement('div');
-  controls.id = 'hostedControls';
-  if (callUrlField) controls.append(callUrlField);
-  const buttons = document.createElement('div');
-  buttons.className = 'hosted-buttons';
-  joinBtn.classList.remove('primary');
-  joinBtn.classList.add('hosted-add');
-  callNowBtn = document.createElement('button');
-  callNowBtn.className = 'primary hosted-call';
-  callNowBtn.title = 'Start a new meeting and bring this bot into it';
-  callNowBtn.addEventListener('click', () => { startFreshCall(); });
-  buttons.append(joinBtn, callNowBtn);
-  controls.append(buttons);
-  hero.after(controls);
+  // Name and status, above the card.
+  const head = el('div', 'hosted-head');
+  const nameRow = hero.querySelector('.agent-name-row');
+  if (nameRow) head.append(nameRow);
+  const status = el('div', 'hosted-status');
+  status.id = 'hostedStatus';
+  head.append(status);
+  hero.before(head);
 
-  const tools = document.createElement('div');
-  tools.id = 'hostedTools';
-  const tool = (icon, label, title, run) => {
-    const b = document.createElement('button');
-    b.className = `hosted-tool tool-${icon}`;
+  // The inspectors, on the card.
+  const tools = el('div', 'card-tools');
+  const tool = (icon, title, run) => {
+    const b = el('button', `card-tool tool-${icon}`);
     b.title = title;
-    const i = document.createElement('i');
-    i.className = `ui-icon ui-icon-${icon} ui-icon--lead`;
-    b.append(i, document.createTextNode(label));
+    b.setAttribute('aria-label', title);
+    b.append(el('i', `ui-icon ui-icon-${icon}`));
     b.addEventListener('click', run);
     tools.append(b);
   };
-  tool('eyes', "Bot's view", 'See what the bot sees', () => document.querySelector('.botview-toggle-btn')?.click());
-  tool('brain', 'Brain', 'What the agent is thinking and doing', () => document.getElementById('openBrainBtn')?.click());
-  tool('info', 'Troubleshoot', 'Live call state, captions, and the agent\'s view', () => document.getElementById('openTroubleshootingBtn')?.click());
-  container.append(tools);
+  tool('eyes', "Bot's view: see what the bot sees", () => document.querySelector('.botview-toggle-btn')?.click());
+  tool('brain', 'Brain: what the agent is thinking and doing', () => document.getElementById('openBrainBtn')?.click());
+  tool('info', 'Troubleshoot: live call state, captions, and the agent\'s view', () => document.getElementById('openTroubleshootingBtn')?.click());
+  hero.append(tools);
 
+  // Below the card, in reading order.
+  const after = [];
+  const notices = hero.querySelector('.hero-notices');
+  if (notices) after.push(notices);
+
+  const controls = el('div');
+  controls.id = 'hostedControls';
+  if (callUrlField) controls.append(callUrlField);
+  const buttons = el('div', 'hosted-buttons');
+  joinBtn.classList.add('hosted-add');
+  callNowBtn = el('button', 'hosted-call');
+  callNowBtn.addEventListener('click', () => { startFreshCall(); });
+  buttons.append(joinBtn, callNowBtn);
+  controls.append(buttons);
+  after.push(controls);
+
+  const incall = hero.querySelector('.hero-incall');
+  if (incall) after.push(incall);
+
+  after.push(buildHostedAbout(el));
+  let anchor = hero;
+  for (const n of after) { anchor.after(n); anchor = n; }
+
+  // Status line: one word for where the bot is.
+  const syncStatus = () => {
+    const st = document.body.dataset.callState;
+    status.textContent = st === 'in-call' ? 'In a call'
+      : document.documentElement.classList.contains('joining') ? 'Joining…'
+      : 'Ready';
+  };
+  new MutationObserver(syncStatus).observe(document.body, { attributes: true, attributeFilter: ['data-call-state'] });
+  new MutationObserver(syncStatus).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  syncStatus();
+
+  meetUrlInput.addEventListener('input', () => updateJoinBtnState());
   updateJoinBtnState();
+}
+
+// About <bot>: what it runs on, at a glance, and the way into changing it. A
+// row appears only when it has something to say (no account, no row).
+const hostedAbout = {};
+function buildHostedAbout(el) {
+  const sec = el('section', 'hosted-about');
+  hostedAbout.title = el('div', 'hosted-eyebrow');
+  sec.append(hostedAbout.title);
+  const row = (label) => {
+    const r = el('div', 'about-row');
+    r.append(el('span', 'about-k', label));
+    const v = el('span', 'about-v');
+    r.append(v);
+    sec.append(r);
+    return { r, v };
+  };
+  const action = (icon, text, title, run) => {
+    const b = el('button', 'about-act');
+    b.title = title;
+    b.append(el('i', `ui-icon ui-icon-${icon} ui-icon--lead`), document.createTextNode(text));
+    b.addEventListener('click', run);
+    return b;
+  };
+
+  hostedAbout.agent = row('Agent');
+  hostedAbout.agentName = el('span', 'about-val');
+  hostedAbout.agentActs = el('span', 'about-acts');
+  hostedAbout.agentActs.append(
+    action('terminal', 'Open terminal', "Open the bot's agent session in a terminal: the same session it uses on calls", () => { openChatSession(); }),
+    action('copy', 'Copy command', "Copy the command that opens this session from any terminal", async () => {
+      try {
+        const r = await api.invoke('copy-chat-command');
+        if (r?.command) api.copyToClipboard(r.command);
+      } catch { /* older bot */ }
+    }),
+  );
+  hostedAbout.agent.v.append(hostedAbout.agentName, hostedAbout.agentActs);
+
+  hostedAbout.voice = row('Voice');
+  hostedAbout.voiceName = el('span', 'about-val');
+  const play = el('button', 'about-play');
+  play.title = 'Hear this voice';
+  play.setAttribute('aria-label', 'Hear this voice');
+  play.append(el('i', 'ui-icon ui-icon-play'));
+  play.addEventListener('click', () => { const o = selectedVoiceSample(); if (o) previewVoiceSample(o); });
+  hostedAbout.voice.v.append(hostedAbout.voiceName, play);
+
+  hostedAbout.google = row('Signed in');
+  hostedAbout.google.r.style.display = 'none';
+
+  const edit = el('button', 'hosted-edit');
+  edit.append(el('i', 'ui-icon ui-icon-pencil ui-icon--lead'));
+  hostedAbout.editLabel = document.createTextNode('Edit');
+  edit.append(hostedAbout.editLabel);
+  edit.addEventListener('click', () => document.getElementById('openSettingsBtn')?.click());
+  sec.append(edit);
+
+  unifiedVoiceSelect?.addEventListener('change', () => refreshHostedAbout());
+  refreshHostedAbout();
+  return sec;
+}
+
+const AGENT_LABELS = { claude: 'Claude Code', codex: 'Codex' };
+async function refreshHostedAbout() {
+  if (!HOSTED || !hostedAbout.title) return;
+  const name = currentBotName || 'this bot';
+  hostedAbout.title.textContent = `About ${name}`;
+  hostedAbout.editLabel.textContent = `Edit ${name}`;
+
+  // Voice: the picker's own label and group, which populateUnifiedVoices fills
+  // from the saved config on load.
+  const opt = unifiedVoiceSelect?.selectedOptions[0];
+  const group = opt?.parentElement?.label || '';
+  const voice = opt ? opt.textContent.replace(/\s*\(.*$/, '') : '';
+  hostedAbout.voiceName.textContent = voice ? `${voice}${group ? ` · ${group.replace(/\s*\(.*$/, '')}` : ''}` : 'Not set';
+
+  let cfg = {};
+  try { cfg = (await api.invoke('get-config', ['agentBackend', 'meetAccountEmail'])) || {}; } catch { /* keep defaults */ }
+  const backend = cfg.agentBackend || 'claude';
+  hostedAbout.agentName.textContent = AGENT_LABELS[backend] || 'Another agent';
+  // The terminal belongs to the bot's Claude Code session; other agents bring their own.
+  hostedAbout.agentActs.style.display = backend === 'claude' ? '' : 'none';
+
+  try {
+    const acct = await api.invoke('get-meet-account-email');
+    const email = acct?.email || cfg.meetAccountEmail || '';
+    hostedAbout.google.v.textContent = acct?.signedIn ? `Google${email ? ` · ${email}` : ''}` : '';
+    hostedAbout.google.r.style.display = acct?.signedIn ? '' : 'none';
+  } catch { hostedAbout.google.r.style.display = 'none'; }
 }
 
 if (HOSTED) setupHostedLayout();

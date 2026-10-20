@@ -233,8 +233,12 @@ async function fetchUpcomingEvents() {
 // Who is signed in to vibeconferencing.com, for the sidebar's footer. The login
 // is app-level (one sign-in covers every bot), and its token is in the base
 // config this process reads, so no bot needs to be running to answer.
+function websiteBase() {
+  return (store.get('websiteUrl') || store.get('syncBaseUrl') || 'https://vibeconferencing.com').replace(/\/$/, '');
+}
+
 async function fetchAccount() {
-  const baseUrl = (store.get('websiteUrl') || store.get('syncBaseUrl') || 'https://vibeconferencing.com').replace(/\/$/, '');
+  const baseUrl = websiteBase();
   const token = store.get('vcSessionToken');
   if (!token) return { signedIn: false };
   try {
@@ -244,7 +248,9 @@ async function fetchAccount() {
     });
     const body = await res.json().catch(() => ({}));
     if (!body?.authenticated) return { signedIn: false };
-    return { signedIn: true, email: body.user?.email || null, name: body.user?.name || null };
+    // avatarUrl: the Google picture the website shows in its own header.
+    const avatar = /^https:\/\//.test(body.user?.avatarUrl || '') ? body.user.avatarUrl : null;
+    return { signedIn: true, email: body.user?.email || null, name: body.user?.name || null, avatarUrl: avatar };
   } catch {
     return { signedIn: null }; // could not tell (offline); the footer says nothing rather than "signed out"
   }
@@ -836,6 +842,7 @@ function deselectBot() {
   relay.port = null;
   if (panelHost) panelHost.setVisible(false);
   pushState({ selected: null });
+  refreshBotMenu();
 }
 
 // Does this bot carry the panel relay? A bot started by an older build does
@@ -884,6 +891,7 @@ async function selectBot(name, { startScreen = null } = {}) {
   panelHost.setVisible(true);
   layoutShell();
   pushState({ selected: name });
+  refreshBotMenu();
   // Where the app reopens next time (resumeLastBot).
   try { store.set('lastSelectedBot', name); } catch { /* best-effort */ }
   return { ok: true, port: inst.port };
@@ -1031,13 +1039,53 @@ async function requestQuit() {
 // wait on a dialog (see the before-quit handler in start()). So Cmd+Q gets its
 // own item that asks first. Elsewhere there is no app menu; closing the window
 // is the gesture, and the close handler covers it.
+//
+// The Bot menu is the selected bot's own Bot menu (main.js bot-menu-items):
+// listed over the relay when a bot comes on stage, and each item run in that
+// bot by label, so the two cannot drift. Its items guard themselves, so an
+// enabled state that is a moment stale only costs a click that does nothing.
+let botMenuItems = [];
+async function refreshBotMenu() {
+  botMenuItems = [];
+  if (relay.port) {
+    try {
+      const r = await relayPost('/api/panel/invoke', { channel: 'bot-menu-items', args: [] });
+      if (Array.isArray(r.result)) botMenuItems = r.result;
+    } catch { /* an older bot: no Bot menu for it */ }
+  }
+  installMenu();
+}
+
+function runBotMenuItem(label) {
+  relayPost('/api/panel/invoke', { channel: 'bot-menu-click', args: [label] })
+    .catch((err) => console.warn(`[supervisor] Bot > ${label} failed:`, err.message));
+}
+
+// App settings are machine-wide, but the window that edits them lives in the
+// bots' code, so the selected bot opens it.
+function openAppSettings() {
+  if (!relay.port) return;
+  relayPost('/api/panel/invoke', { channel: 'open-app-settings', args: [] })
+    .catch((err) => console.warn('[supervisor] could not open App Settings:', err.message));
+}
+
 function installMenu() {
   if (process.platform !== 'darwin') return;
+  const botMenu = botMenuItems.length
+    ? botMenuItems.map((i) => (i.type === 'separator' ? { type: 'separator' } : {
+      label: i.label,
+      ...(i.accelerator ? { accelerator: i.accelerator } : {}),
+      enabled: i.enabled !== false,
+      click: () => runBotMenuItem(i.label),
+    }))
+    : [{ label: 'No bot selected', enabled: false }];
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
       label: app.name,
       submenu: [
         { role: 'about' },
+        { type: 'separator' },
+        { label: 'Settings…', accelerator: 'Command+,', enabled: !!relay.port, click: () => openAppSettings() },
         { type: 'separator' },
         { role: 'hide' },
         { role: 'hideOthers' },
@@ -1047,6 +1095,7 @@ function installMenu() {
       ],
     },
     { role: 'editMenu' },
+    { label: 'Bot', submenu: botMenu },
     { role: 'windowMenu' },
   ]));
 }
@@ -1178,6 +1227,10 @@ function start() {
     ipcMain.handle('supervisor:launch', (_e, name) => launchProfile(name));
     ipcMain.handle('supervisor:select', (_e, name) => selectBot(name));
     ipcMain.handle('supervisor:account', () => fetchAccount());
+    ipcMain.handle('supervisor:app-settings', () => { openAppSettings(); return { ok: true }; });
+    // The account line opens your page on the website. Built here from the
+    // configured site, never from a URL the page hands over.
+    ipcMain.handle('supervisor:open-account', () => { shell.openExternal(`${websiteBase()}/me`); return { ok: true }; });
     ipcMain.handle('supervisor:new-bot', () => createBot());
     // Signing in is a bot's job today (it owns the browser-based login flow), so
     // the footer's Sign in goes through whichever bot is on the stage.

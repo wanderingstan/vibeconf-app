@@ -9,6 +9,7 @@
   <meta charset="utf-8" />
   <title>Vibeconferencing</title>
   <link rel="stylesheet" href="fonts.css" />
+  <link rel="stylesheet" href="ui-icons.css" />
   <style>
     /* The bot panel's system (panel.css :root, the same tokens as
        vibeconferencing.com): cream grounds, ink type, magenta accents, call
@@ -71,8 +72,22 @@
       font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 8px; min-height: 40px;
     }
     .account .who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .account button.who {
+      display: flex; align-items: center; gap: 8px; min-width: 0; text-align: left;
+      border: none; background: none; padding: 4px 6px; margin-left: -6px; border-radius: 6px;
+      font: inherit; color: inherit; cursor: pointer;
+    }
+    .account button.who:hover { background: var(--paper-lo, #FFE7B3); color: var(--ink, #4A3140); }
+    .account .me-avatar { width: 22px; height: 22px; border-radius: 50%; flex: none; object-fit: cover; }
+    .account .me-email { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .account.signed-out .who { color: var(--warn); }
     .account button { font-size: 12px; padding: 3px 10px; }
+    .account button.gear {
+      flex: none; width: 30px; height: 30px; padding: 0; border: none; background: none;
+      border-radius: 50%; color: var(--dim); font-size: 18px; cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .account button.gear:hover { background: var(--paper-lo, #FFE7B3); color: var(--ink, #4A3140); }
     .rail { width: 56px; flex: none; height: 100%; border-right: 1px solid var(--line); padding: 10px 11px; }
     .rail[hidden], .sidebar[hidden], .pane[hidden] { display: none; }
     .stage {

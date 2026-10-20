@@ -1,8 +1,8 @@
 /* ── The site's system, in the app ──────────────────────────────────────────
    Decided 2026-09-06 (Seth + Stan): the Fluent palette + Syne, the same tokens
-   as vibeconferencing.com. Layer 1 only here — docs/APP-UI-SPEC.md in the site
-   repo: cream grounds, ink lines, mono eyebrows, the face big, native controls
-   left native. No billboard type, seals or grain at app density.
+   as vibeconferencing.com. Layer 1 only here, see docs/STYLE-GUIDE.md: cream
+   grounds, ink lines, mono eyebrows, the face big, native controls left
+   native. No billboard type, seals or grain at app density.
 
    The ONE exception is the bot hero on the main screen: the window IS the bot
    (Stan, 2026-09-07 — "the window is the identity"), so the user's own avatar

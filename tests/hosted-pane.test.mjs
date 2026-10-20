@@ -105,3 +105,22 @@ test('a click on the picture pulls a random face, from every face, never in a ca
   assert.match(panel, /if \(surpriseEmoji\) return false;/);
   assert.match(panel, /return liveFaceEmoji \|\| surpriseEmoji \|\| RESTING_EMOJI;/);
 });
+
+test('on air: the pane goes dark from joining until the bot has left, with a live call timer', () => {
+  const sync = panel.slice(panel.indexOf('const syncStatus = () => {'));
+  // From the bot's own status, not only the joining class, which can lag.
+  assert.match(sync.slice(0, 1500), /const joiningNow = !inCallNow && \(joiningStatus \|\| !!phase\);/);
+  assert.match(sync.slice(0, 1500), /classList\.toggle\('on-air', inCallNow \|\| joiningNow\);/);
+  assert.match(sync.slice(0, 1500), /`In a call · \$\{elapsed\(Date\.now\(\) - callSince\)\}`/);
+  // A panel opened mid-call times the call from when the bot started it.
+  assert.match(read('electron-app/local-server.js'), /callStartedAt: this\.callStartedAt,\s*\n\s*mode: this\.mode,/);
+  assert.match(panel, /if \(Number\.isFinite\(started\)\) hostedCallStartedAt = started;/);
+});
+
+test('on air uses the website\'s call palette, on the main screen only', () => {
+  const rule = css.slice(css.indexOf('html.on-air #mainScreen {'));
+  assert.match(rule.slice(0, 300), /--cream: #202124;/, 'the site\'s darkTheme.ts background');
+  assert.match(rule.slice(0, 300), /--paper: #2d2e30;/);
+  assert.doesNotMatch(css, /html\.on-air body \{/, 'Settings, another screen, stays light');
+  assert.match(css, /html\.on-air #mainScreen button\.primary:not\(\.danger\) \{ color: #202124; \}/, 'green keeps a dark label');
+});

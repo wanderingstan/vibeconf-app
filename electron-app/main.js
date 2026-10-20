@@ -13300,6 +13300,18 @@ function setupIPC() {
     return { ok: true };
   });
 
+  // "Open call" in the hosted pane (#301): the call this bot is in, in your own
+  // browser, for when the bot joined on its own (a calendar event, an agent)
+  // and you cannot find the link. The link it was given, normally the
+  // invite (a Zoom or Teams invite then offers its native app); else the
+  // page it loaded. https only, and only ever the bot's own call.
+  ipcMain.handle('open-current-call', () => {
+    const url = currentMeetUrl || (localServer && localServer.currentUrl) || '';
+    if (!/^https:\/\//i.test(url)) return { ok: false, error: 'no call link' };
+    shell.openExternal(url);
+    return { ok: true, url };
+  });
+
   ipcMain.handle('onboarding:open-url', (_e, url) => {
     if (/^https?:\/\//.test(String(url || ''))) shell.openExternal(String(url));
     return { ok: true };

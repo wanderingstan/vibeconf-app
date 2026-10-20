@@ -4297,6 +4297,11 @@ function setupHostedLayout() {
   tool('brain', 'Brain: what the agent is thinking and doing', () => document.getElementById('openBrainBtn')?.click());
   tool('info', 'Troubleshoot: live call state, captions, and the agent\'s view', () => document.getElementById('openTroubleshootingBtn')?.click());
   hero.append(tools);
+  // The share window's Show/Hide, on the card too, opposite the inspectors:
+  // it is about what the call sees. Moved, not copied, so applyShareWindowState
+  // still shows it only while a board window exists.
+  const share = document.getElementById('shareWindowToggleBtn');
+  if (share) { share.classList.add('card-share'); hero.append(share); }
 
   // Below the card, in reading order.
   const after = [];
@@ -4315,18 +4320,55 @@ function setupHostedLayout() {
   after.push(controls);
 
   const incall = hero.querySelector('.hero-incall');
-  if (incall) after.push(incall);
+  if (incall) {
+    // Open the call in your own browser, under Leave (the more common act):
+    // often the bot joined on its own (a calendar event, an agent) and the
+    // link is nowhere to hand.
+    const openCall = el('button', 'hosted-open-call', 'Open call');
+    openCall.title = 'Open this call in your browser (a Zoom or Teams link offers its app)';
+    openCall.addEventListener('click', async () => {
+      const r = await api.invoke('open-current-call').catch(() => null);
+      if (!r?.ok) showError("Couldn't find this call's link.");
+    });
+    const leaveRow = incall.querySelector('.join-row');
+    if (leaveRow) leaveRow.after(openCall); else incall.append(openCall);
+    after.push(incall);
+  }
 
   after.push(buildHostedAbout(el));
   let anchor = hero;
   for (const n of after) { anchor.after(n); anchor = n; }
 
-  // Status line: one word for where the bot is.
+  // Status line, and the pane goes on air: dark, the way calling apps switch
+  // from their light app to a dark call, from the moment it starts joining
+  // until it has left. In a call the line is live: a pulsing dot and the
+  // call's running time.
+  let callSince = null;
+  let callTick = null;
+  const elapsed = (ms) => {
+    const t = Math.max(0, Math.floor(ms / 1000));
+    const h = Math.floor(t / 3600);
+    const m = Math.floor((t % 3600) / 60);
+    const sec = String(t % 60).padStart(2, '0');
+    return h ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
+  };
   const syncStatus = () => {
-    const st = document.body.dataset.callState;
-    status.textContent = st === 'in-call' ? 'In a call'
-      : document.documentElement.classList.contains('joining') ? 'Joining…'
-      : 'Ready';
+    const inCallNow = document.body.dataset.callState === 'in-call';
+    // The bot's own status, not just the joining class, which can lag a step
+    // (it follows the buttons): the pane must never stay dark after a call.
+    let phase = null;
+    try { phase = joinPhase; } catch { /* declared later in the file */ }
+    const joiningNow = !inCallNow && (joiningStatus || !!phase);
+    document.documentElement.classList.toggle('on-air', inCallNow || joiningNow);
+    if (inCallNow && !callSince) callSince = hostedCallStartedAt || Date.now();
+    if (!inCallNow) callSince = null;
+    if (inCallNow && !callTick) callTick = setInterval(syncStatus, 1000);
+    if (!inCallNow && callTick) { clearInterval(callTick); callTick = null; }
+    if (inCallNow) {
+      status.replaceChildren(el('span', 'live-dot'), document.createTextNode(`In a call · ${elapsed(Date.now() - callSince)}`));
+    } else {
+      status.textContent = joiningNow ? 'Joining…' : 'Ready';
+    }
   };
   new MutationObserver(syncStatus).observe(document.body, { attributes: true, attributeFilter: ['data-call-state'] });
   new MutationObserver(syncStatus).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
@@ -4335,6 +4377,10 @@ function setupHostedLayout() {
   meetUrlInput.addEventListener('input', () => updateJoinBtnState());
   updateJoinBtnState();
 }
+
+// When the bot started the call it is in, for a panel that loads mid-call
+// (get-call-state); otherwise the call is timed from when the panel saw it.
+let hostedCallStartedAt = null;
 
 // About <bot>: what it runs on, at a glance, and the way into changing it. A
 // row appears only when it has something to say (no account, no row).
@@ -4453,6 +4499,9 @@ if (!IS_POPOUT_WINDOW) {
   api.invoke('get-call-state').then((snap) => {
     if (!snap || inCall) return;
     if (snap.callStatus === 'in-call') {
+      // A panel opened mid-call: time the call from when the bot started it.
+      const started = Date.parse(snap.callStartedAt || '');
+      if (Number.isFinite(started)) hostedCallStartedAt = started;
       if (snap.currentMeetUrl && !meetUrlInput.value) meetUrlInput.value = snap.currentMeetUrl;
       enterCallState(snap.roomId || '');
     } else if (['navigating', 'joining', 'waiting-to-be-admitted'].includes(snap.callStatus)) {

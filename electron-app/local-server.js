@@ -2201,6 +2201,9 @@ class LocalServer {
     const botNames = this._botNameSet();
     return {
       callStatus: this.callStatus,
+      // When this call began (navigating or joining), for a call timer that
+      // starts mid-call (the hosted panel, #301).
+      callStartedAt: this.callStartedAt,
       mode: this.mode,
       localServerUrl: this.getLocalServerUrl(),
       localServerPort: this.port,

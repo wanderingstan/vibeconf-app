@@ -1505,6 +1505,14 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 /* The camera draws the face at 0.77 of the tile's short side (page-inject). */
 .hosted .hero-art .agent-avatar-emoji { font-size: 77cqmin; }
 .hosted .hero-art .agent-avatar-emoji-img { width: 77cqmin; height: 77cqmin; }
+/* A hint that the face does something (a click pulls a random face, panel.js
+   surpriseFace). Not on air: then a click does nothing. */
+.hosted .hero-art .agent-avatar-emoji,
+.hosted .hero-art .agent-avatar-emoji-img { cursor: pointer; }
+html.on-air .hosted .hero-art .agent-avatar-emoji,
+html.on-air .hosted .hero-art .agent-avatar-emoji-img,
+html.on-air.hosted .hero-art .agent-avatar-emoji,
+html.on-air.hosted .hero-art .agent-avatar-emoji-img { cursor: default; }
 
 /* Inspectors on the card, like controls on a call tile: the on-art chip
    (translucent ink, cream glyph) so they read on any artwork. */
@@ -1524,6 +1532,15 @@ button.card-tool.tool-info { display: none; }
 body[data-call-state="in-call"] button.card-tool.tool-brain,
 body[data-call-state="in-call"] button.card-tool.tool-info,
 html.joining button.card-tool.tool-info { display: inline-flex; }
+/* Show / Hide share, bottom-left of the card, opposite the inspectors and in
+   the same on-art chip. */
+.hosted .bot-hero button.card-share {
+  position: absolute; left: 8px; bottom: 8px; z-index: 4; margin: 0;
+  height: 32px; padding: 0 12px; border-radius: 16px;
+  background: rgba(74, 49, 64, 0.62); border: 1px solid rgba(0, 0, 0, 0.45);
+  color: var(--on-art); font-size: 12px; box-shadow: none;
+}
+.hosted .bot-hero button.card-share:hover:not(:disabled) { background: rgba(74, 49, 64, 0.88); color: var(--on-art); }
 
 /* Notices below the card, in the flow, rather than across a small face. */
 .hosted .hero-notices {
@@ -1549,8 +1566,45 @@ body[data-call-state="in-call"] #hostedControls { display: none; }
 .hosted .call-url-copy { color: var(--ink-soft); background: none; }
 .hosted .call-url-copy:hover { background: var(--paper-lo); color: var(--ink); }
 .hosted .hero-incall .join-row { justify-content: stretch; }
-.hosted .hero-incall .join-row .primary { width: 100%; }
+.hosted .hero-incall .join-row .primary { width: 100%; padding: 10px 16px; font-size: 15px; }
+button.hosted-open-call { width: 100%; margin: 8px 0 0; padding: 10px 16px; font-size: 15px; background: var(--paper); color: var(--ink); }
+button.hosted-open-call:hover:not(:disabled) { background: var(--paper-lo); }
 .hosted .share-window-btn { margin: 0 0 8px; border-color: var(--ink); background: var(--paper); color: var(--ink); }
+
+/* On air: from joining until the bot has left, the pane goes dark, the way
+   calling apps switch from their light app to a dark call. The palette is
+   the website's own call view (src/darkTheme.ts there, Google Meet's dark),
+   per the style guide's "what stays dark". Done by redefining the pane's
+   colour tokens, so everything in it follows; the Settings screen is another
+   screen and stays light. Brand pink stays for the live dot and Leave. */
+html.on-air #mainScreen {
+  --cream: #202124;
+  --paper: #2d2e30;
+  --paper-lo: #3c4043;
+  --ink: #e8eaed;
+  --ink-soft: #9aa0a6;
+  --ink-faint: #80868b;
+  --line: #3c4043;
+  --magenta: #f48fc0;
+  --shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  --shadow-lo: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.hosted #mainScreen,
+.hosted #mainScreen .container { background: var(--cream); color: var(--ink); transition: background-color .35s ease, color .35s ease; }
+/* Labels that sit on a colour keep their own contrast whatever the ground:
+   green is labelled dark, pink light (docs/STYLE-GUIDE.md). */
+html.on-air #mainScreen button.primary:not(.danger) { color: #202124; }
+html.on-air #mainScreen button.primary.danger { color: #fff; }
+html.on-air .hosted .bot-hero,
+html.on-air.hosted .bot-hero { border-color: #5f6368; }
+
+.hosted-status .live-dot {
+  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--pink); margin-right: 7px; vertical-align: 1px;
+  animation: live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes live-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .hosted-status .live-dot { animation: none; } }
 
 /* About <bot>. Left-aligned throughout, so a wide window never puts a label
    far from its value; quiet, so it never competes with the call buttons. */

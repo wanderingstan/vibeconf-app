@@ -105,3 +105,30 @@ test('a click on the picture pulls a random face, from every face, never in a ca
   assert.match(panel, /if \(surpriseEmoji\) return false;/);
   assert.match(panel, /return liveFaceEmoji \|\| surpriseEmoji \|\| RESTING_EMOJI;/);
 });
+
+test('on air: the pane goes dark from joining until the bot has left, with a live call timer', () => {
+  const sync = panel.slice(panel.indexOf('const syncStatus = () => {'));
+  // From the bot's own status, not only the joining class, which can lag.
+  assert.match(sync.slice(0, 1500), /const joiningNow = !inCallNow && \(joiningStatus \|\| !!phase\);/);
+  assert.match(sync.slice(0, 1500), /classList\.toggle\('on-air', inCallNow \|\| joiningNow\);/);
+  assert.match(sync.slice(0, 1500), /`In a call · \$\{elapsed\(Date\.now\(\) - callSince\)\}`/);
+  // A panel opened mid-call times the call from when the bot started it.
+  assert.match(read('electron-app/local-server.js'), /callStartedAt: this\.callStartedAt,\s*\n\s*mode: this\.mode,/);
+  assert.match(panel, /if \(Number\.isFinite\(started\)\) hostedCallStartedAt = started;/);
+});
+
+test('on air uses the website\'s call palette, on the main screen only', () => {
+  const rule = css.slice(css.indexOf('html.on-air #mainScreen {'));
+  assert.match(rule.slice(0, 300), /--cream: #202124;/, 'the site\'s darkTheme.ts background');
+  assert.match(rule.slice(0, 300), /--paper: #2d2e30;/);
+  assert.doesNotMatch(css, /html\.on-air body \{/, 'Settings, another screen, stays light');
+  assert.match(css, /html\.on-air #mainScreen button\.primary:not\(\.danger\) \{ color: #202124; \}/, 'green keeps a dark label');
+});
+
+test('Open call opens the bot\'s own call in your browser, https only', () => {
+  const main2 = read('electron-app/main.js');
+  assert.match(main2, /ipcMain\.handle\('open-current-call', \(\) => \{\s*\n\s*const url = currentMeetUrl \|\| \(localServer && localServer\.currentUrl\) \|\| '';\s*\n\s*if \(!\/\^https:\\\/\\\/\/i\.test\(url\)\)/);
+  assert.match(panel, /const openCall = el\('button', 'hosted-open-call', 'Open call'\);/);
+  assert.match(panel, /if \(leaveRow\) leaveRow\.after\(openCall\);/, 'under Leave, the more common act');
+  assert.match(panel, /if \(share\) \{ share\.classList\.add\('card-share'\); hero\.append\(share\); \}/, 'share toggle on the card');
+});

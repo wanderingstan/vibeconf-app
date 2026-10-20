@@ -159,6 +159,15 @@ Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issue
 
 The agent never touches WebRTC. It calls MCP tools; the app does the real-time media work (plays synthesized speech into a virtual mic, renders the avatar/whiteboard into a virtual camera) and drives the call's web UI (Meet, Zoom, Teams or Slack).
 
+**Processes and boundaries.** The app window is one process and the parent of every bot: it starts each bot as its own child process, sees it exit and why, and shows the selected bot's panel on its stage. Each bot joins its own call. Each agent session runs its own MCP server (a stdio child of the session), which talks to its bot's local port with that bot's token, and finds the bot through the app's directory on `:7864`.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/processes-dark.svg">
+  <img alt="Process diagram: on this Mac, the vibeconferencing app window is one process that spawns each bot (Charlie, Bob) as its own child process over a private channel, relays the selected bot's panel onto its stage over HTTP and SSE, and finds bots it did not start by scanning ports. Each agent session (Claude Code, Codex) runs an MCP server as its stdio child, which finds its bot through the app's directory on port 7864 and talks to the bot's local port over HTTP with a token. Bots join Google Meet, Zoom, Microsoft Teams and Slack Huddles over the internet." src="media/processes-light.svg">
+</picture>
+
+Regenerate with `python3 media/processes-diagram.py`.
+
 **Build** (Node ≥ 18 and [pnpm](https://pnpm.io)):
 
 ```bash

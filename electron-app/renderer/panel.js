@@ -4297,6 +4297,11 @@ function setupHostedLayout() {
   tool('brain', 'Brain: what the agent is thinking and doing', () => document.getElementById('openBrainBtn')?.click());
   tool('info', 'Troubleshoot: live call state, captions, and the agent\'s view', () => document.getElementById('openTroubleshootingBtn')?.click());
   hero.append(tools);
+  // The share window's Show/Hide, on the card too, opposite the inspectors:
+  // it is about what the call sees. Moved, not copied, so applyShareWindowState
+  // still shows it only while a board window exists.
+  const share = document.getElementById('shareWindowToggleBtn');
+  if (share) { share.classList.add('card-share'); hero.append(share); }
 
   // Below the card, in reading order.
   const after = [];
@@ -4316,8 +4321,9 @@ function setupHostedLayout() {
 
   const incall = hero.querySelector('.hero-incall');
   if (incall) {
-    // Open the call in your own browser, above Leave: often the bot joined on
-    // its own (a calendar event, an agent) and the link is nowhere to hand.
+    // Open the call in your own browser, under Leave (the more common act):
+    // often the bot joined on its own (a calendar event, an agent) and the
+    // link is nowhere to hand.
     const openCall = el('button', 'hosted-open-call', 'Open call');
     openCall.title = 'Open this call in your browser (a Zoom or Teams link offers its app)';
     openCall.addEventListener('click', async () => {
@@ -4325,7 +4331,7 @@ function setupHostedLayout() {
       if (!r?.ok) showError("Couldn't find this call's link.");
     });
     const leaveRow = incall.querySelector('.join-row');
-    if (leaveRow) leaveRow.before(openCall); else incall.append(openCall);
+    if (leaveRow) leaveRow.after(openCall); else incall.append(openCall);
     after.push(incall);
   }
 

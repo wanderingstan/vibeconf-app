@@ -1532,6 +1532,15 @@ button.card-tool.tool-info { display: none; }
 body[data-call-state="in-call"] button.card-tool.tool-brain,
 body[data-call-state="in-call"] button.card-tool.tool-info,
 html.joining button.card-tool.tool-info { display: inline-flex; }
+/* Show / Hide share, bottom-left of the card, opposite the inspectors and in
+   the same on-art chip. */
+.hosted .bot-hero button.card-share {
+  position: absolute; left: 8px; bottom: 8px; z-index: 4; margin: 0;
+  height: 32px; padding: 0 12px; border-radius: 16px;
+  background: rgba(74, 49, 64, 0.62); border: 1px solid rgba(0, 0, 0, 0.45);
+  color: var(--on-art); font-size: 12px; box-shadow: none;
+}
+.hosted .bot-hero button.card-share:hover:not(:disabled) { background: rgba(74, 49, 64, 0.88); color: var(--on-art); }
 
 /* Notices below the card, in the flow, rather than across a small face. */
 .hosted .hero-notices {
@@ -1558,7 +1567,7 @@ body[data-call-state="in-call"] #hostedControls { display: none; }
 .hosted .call-url-copy:hover { background: var(--paper-lo); color: var(--ink); }
 .hosted .hero-incall .join-row { justify-content: stretch; }
 .hosted .hero-incall .join-row .primary { width: 100%; padding: 10px 16px; font-size: 15px; }
-button.hosted-open-call { width: 100%; margin: 0 0 8px; padding: 10px 16px; font-size: 15px; background: var(--paper); color: var(--ink); }
+button.hosted-open-call { width: 100%; margin: 8px 0 0; padding: 10px 16px; font-size: 15px; background: var(--paper); color: var(--ink); }
 button.hosted-open-call:hover:not(:disabled) { background: var(--paper-lo); }
 .hosted .share-window-btn { margin: 0 0 8px; border-color: var(--ink); background: var(--paper); color: var(--ink); }
 

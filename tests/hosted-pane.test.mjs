@@ -129,5 +129,6 @@ test('Open call opens the bot\'s own call in your browser, https only', () => {
   const main2 = read('electron-app/main.js');
   assert.match(main2, /ipcMain\.handle\('open-current-call', \(\) => \{\s*\n\s*const url = currentMeetUrl \|\| \(localServer && localServer\.currentUrl\) \|\| '';\s*\n\s*if \(!\/\^https:\\\/\\\/\/i\.test\(url\)\)/);
   assert.match(panel, /const openCall = el\('button', 'hosted-open-call', 'Open call'\);/);
-  assert.match(panel, /if \(leaveRow\) leaveRow\.before\(openCall\);/, 'above Leave');
+  assert.match(panel, /if \(leaveRow\) leaveRow\.after\(openCall\);/, 'under Leave, the more common act');
+  assert.match(panel, /if \(share\) \{ share\.classList\.add\('card-share'\); hero\.append\(share\); \}/, 'share toggle on the card');
 });

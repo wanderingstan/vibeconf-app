@@ -733,13 +733,14 @@ function faceAnimationAllowed() {
   // them, and a hidden panel shouldn't burn timers.
   if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
   if (liveFaceEmoji) return false; // the real face is on screen — don't animate over it
+  if (surpriseEmoji) return false; // someone just clicked for a face: let it stay
   return document.visibilityState !== 'hidden';
 }
 
 // The face to show when nothing is playing: the bot's real one in a call, else
 // the resting portrait.
 function baseFaceEmoji() {
-  return liveFaceEmoji || RESTING_EMOJI;
+  return liveFaceEmoji || surpriseEmoji || RESTING_EMOJI;
 }
 
 async function paintFace(emoji) {
@@ -800,6 +801,73 @@ function startBlinking(emojiSet) {
   emojiUriFor(emojiSet, MOOD_EASE_EMOJI);
   scheduleBlink();
   scheduleMood();
+}
+
+// --- A face on click ---------------------------------------------------------
+// Pure fun: click the bot's picture and it pulls a random face, from every
+// face emoji there is (Unicode's Smileys & Emotion face groups; the cat and
+// monkey faces and the multi-part ZWJ faces aside). It holds for a few
+// seconds, then rests; another click picks another. Never in a call, or while
+// joining: then the face is the bot's real state, and that wins.
+const SURPRISE_FACES = [
+  // smiling
+  0x1F600, 0x1F603, 0x1F604, 0x1F601, 0x1F606, 0x1F605, 0x1F923, 0x1F602, 0x1F642, 0x1F643, 0x1FAE0, 0x1F609, 0x1F60A, 0x1F607,
+  // affection
+  0x1F970, 0x1F60D, 0x1F929, 0x1F618, 0x1F617, 0x263A, 0x1F61A, 0x1F619, 0x1F972,
+  // tongue
+  0x1F60B, 0x1F61B, 0x1F61C, 0x1F92A, 0x1F61D, 0x1F911,
+  // hand
+  0x1F917, 0x1F92D, 0x1FAE2, 0x1FAE3, 0x1F92B, 0x1F914, 0x1FAE1,
+  // neutral and skeptical
+  0x1F910, 0x1F928, 0x1F610, 0x1F611, 0x1F636, 0x1FAE5, 0x1F60F, 0x1F612, 0x1F644, 0x1F62C, 0x1F925, 0x1FAE8,
+  // sleepy
+  0x1F60C, 0x1F614, 0x1F62A, 0x1F924, 0x1F634,
+  // unwell
+  0x1F637, 0x1F912, 0x1F915, 0x1F922, 0x1F92E, 0x1F927, 0x1F975, 0x1F976, 0x1F974, 0x1F635, 0x1F92F,
+  // hat and glasses
+  0x1F920, 0x1F973, 0x1F978, 0x1F60E, 0x1F913, 0x1F9D0,
+  // concerned
+  0x1F615, 0x1FAE4, 0x1F61F, 0x1F641, 0x2639, 0x1F62E, 0x1F62F, 0x1F632, 0x1F633, 0x1F97A, 0x1F979, 0x1F626, 0x1F627,
+  0x1F628, 0x1F630, 0x1F625, 0x1F622, 0x1F62D, 0x1F631, 0x1F616, 0x1F623, 0x1F61E, 0x1F613, 0x1F629, 0x1F62B, 0x1F971,
+  // negative
+  0x1F624, 0x1F621, 0x1F620, 0x1F92C, 0x1F608, 0x1F47F, 0x1F480, 0x2620,
+  // costume
+  0x1F4A9, 0x1F921, 0x1F479, 0x1F47A, 0x1F47B, 0x1F47D, 0x1F47E, 0x1F916,
+].map((cp) => String.fromCodePoint(cp) + (cp < 0x10000 ? '\uFE0F' : '')); // ☺ ☹ ☠ want the emoji presentation
+const SURPRISE_HOLD_MS = 3500;
+let surpriseEmoji = null;
+let surpriseTimer = null;
+
+// A face this bot's emoji set can draw. An image set ships only some faces
+// (Red Panda has a few dozen), and a missing one would fall back to the OS
+// glyph, out of style with the rest; a font set or the OS draws them all.
+async function pickSurpriseFace(set) {
+  const drawsAll = set === 'native' || !!fontFamilyFromSet(set) || !!EMOJI_FONT_SETS[set];
+  for (let tries = 0; tries < 24; tries++) {
+    const face = SURPRISE_FACES[Math.floor(Math.random() * SURPRISE_FACES.length)];
+    if (face === surpriseEmoji || face === RESTING_EMOJI) continue;
+    if (drawsAll || await emojiUriFor(set, face)) return face;
+  }
+  return null;
+}
+
+async function surpriseFace() {
+  if (callActive || liveFaceEmoji || inCall || document.documentElement.classList.contains('joining')) return;
+  if (blinkSet === null) return; // the avatar has not been drawn yet
+  const face = await pickSurpriseFace(blinkSet);
+  if (!face || callActive || liveFaceEmoji) return;
+  surpriseEmoji = face;
+  // A blink or mood mid-play sees surpriseEmoji, stops, and lands on it.
+  await paintFace(face);
+  clearTimeout(surpriseTimer);
+  surpriseTimer = setTimeout(() => {
+    surpriseEmoji = null;
+    if (!facePlaying) paintFace(baseFaceEmoji());
+  }, SURPRISE_HOLD_MS);
+}
+
+if (!IS_POPOUT_WINDOW) {
+  document.getElementById('agentAvatar')?.addEventListener('click', () => { surpriseFace(); });
 }
 
 // Live face from the virtual camera (in-call). Null/absent → back to idle

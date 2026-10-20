@@ -94,3 +94,14 @@ test('collapsed, the rail still shows the account stacked on the App Settings ge
   assert.match(rail.slice(0, 1800), /box\.append\(appSettingsGear\(\)\);/);
   assert.match(read('electron-app/renderer/supervisor.html'), /<div class="rail-foot" id="railAccount"><\/div>/);
 });
+
+test('a click on the picture pulls a random face, from every face, never in a call', () => {
+  const faces = panel.slice(panel.indexOf('const SURPRISE_FACES = ['), panel.indexOf('const SURPRISE_HOLD_MS'));
+  assert.ok((faces.match(/0x[0-9A-F]{4,5}/g) || []).length >= 100, 'the whole face set, not a handful');
+  assert.match(panel, /if \(callActive \|\| liveFaceEmoji \|\| inCall \|\| document\.documentElement\.classList\.contains\('joining'\)\) return;/);
+  // Only faces the bot's own set can draw, so an image set never falls back to the OS glyph.
+  assert.match(panel, /if \(drawsAll \|\| await emojiUriFor\(set, face\)\) return face;/);
+  // Blink and mood stand aside while it shows.
+  assert.match(panel, /if \(surpriseEmoji\) return false;/);
+  assert.match(panel, /return liveFaceEmoji \|\| surpriseEmoji \|\| RESTING_EMOJI;/);
+});

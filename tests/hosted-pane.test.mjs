@@ -76,3 +76,11 @@ test('the account line shows your picture and opens your page on the website', (
   assert.match(sidebar, /img\.addEventListener\('error', \(\) => img\.remove\(\)\);/);
   assert.match(sidebar, /api\.invoke\('supervisor:open-account'\)/);
 });
+
+test('collapsed, the rail still shows the account stacked on the App Settings gear', () => {
+  assert.match(sidebar, /renderAccountRail\(document\.getElementById\('railAccount'\), a\);/);
+  const rail = sidebar.slice(sidebar.indexOf('function renderAccountRail('));
+  assert.match(rail.slice(0, 1800), /me\.append\(el\('span', 'me-ring'\)\);/, 'signed out: a hollow ring that signs in');
+  assert.match(rail.slice(0, 1800), /box\.append\(appSettingsGear\(\)\);/);
+  assert.match(read('electron-app/renderer/supervisor.html'), /<div class="rail-foot" id="railAccount"><\/div>/);
+});

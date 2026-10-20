@@ -320,9 +320,34 @@ function appSettingsGear() {
   return gear;
 }
 
+// The account, drawn twice from one answer: the full line in the sidebar's
+// footer, and a stacked picture over the gear on the collapsed rail.
 async function renderAccount() {
-  const box = document.getElementById('account');
   const a = await api.invoke('supervisor:account').catch(() => ({ signedIn: null }));
+  renderAccountLine(document.getElementById('account'), a);
+  renderAccountRail(document.getElementById('railAccount'), a);
+}
+
+const openAccount = () => api.invoke('supervisor:open-account').catch(() => {});
+async function signIn(btn) {
+  if (btn) btn.disabled = true;
+  const r = await api.invoke('supervisor:sign-in').catch((e) => ({ ok: false, error: e.message }));
+  if (!r?.ok) { if (btn) { btn.disabled = false; btn.title = r?.error || 'Could not sign in'; } return false; }
+  setTimeout(renderAccount, 3000);
+  return true;
+}
+
+function accountPicture(a) {
+  if (!a.avatarUrl) return null;
+  const img = el('img', 'me-avatar');
+  img.alt = '';
+  img.referrerPolicy = 'no-referrer'; // Google's image host refuses some referrers
+  img.src = a.avatarUrl;
+  return img;
+}
+
+function renderAccountLine(box, a) {
+  if (!box) return;
   box.replaceChildren();
   box.classList.toggle('signed-out', a.signedIn === false);
   if (a.signedIn) {
@@ -330,30 +355,46 @@ async function renderAccount() {
     // account page there.
     const who = el('button', 'who');
     who.title = 'Your vibeconferencing.com account (one sign-in covers every bot). Opens in your browser.';
-    if (a.avatarUrl) {
-      const img = el('img', 'me-avatar');
-      img.alt = '';
-      img.referrerPolicy = 'no-referrer'; // Google's image host refuses some referrers
-      img.src = a.avatarUrl;
-      img.addEventListener('error', () => img.remove()); // no picture beats a broken one
-      who.append(img);
-    }
+    const img = accountPicture(a);
+    if (img) { img.addEventListener('error', () => img.remove()); who.append(img); } // no picture beats a broken one
     who.append(el('span', 'me-email', a.email || a.name || 'Signed in'));
-    who.addEventListener('click', () => api.invoke('supervisor:open-account').catch(() => {}));
+    who.addEventListener('click', openAccount);
     box.append(who);
   } else if (a.signedIn === false) {
     box.append(el('span', 'who', 'Not signed in'));
     const btn = el('button', 'ghost', 'Sign in');
     btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      const r = await api.invoke('supervisor:sign-in').catch((e) => ({ ok: false, error: e.message }));
-      if (!r?.ok) { btn.textContent = r?.error || 'Could not sign in'; return; }
-      setTimeout(renderAccount, 3000);
+      if (!(await signIn(btn))) btn.textContent = btn.title || 'Could not sign in';
     });
     box.append(btn);
   } else {
-    // Could not tell: say nothing rather than something wrong.
+    // Could not tell (offline): say nothing rather than something wrong.
     box.append(el('span', 'who', ''));
+  }
+  box.append(appSettingsGear());
+}
+
+function renderAccountRail(box, a) {
+  if (!box) return;
+  box.replaceChildren();
+  if (a.signedIn) {
+    const me = el('button', 'me');
+    me.title = `${a.email || a.name || 'Signed in'}: your vibeconferencing.com account. Opens in your browser.`;
+    me.setAttribute('aria-label', 'Your account');
+    const img = accountPicture(a);
+    const initial = () => el('span', 'me-initial', (a.name || a.email || '?').trim().charAt(0).toUpperCase());
+    if (img) { img.addEventListener('error', () => img.replaceWith(initial())); me.append(img); }
+    else me.append(initial());
+    me.addEventListener('click', openAccount);
+    box.append(me);
+  } else if (a.signedIn === false) {
+    // Signed out: an empty seat where your picture would be. Click to sign in.
+    const me = el('button', 'me');
+    me.title = 'Not signed in to vibeconferencing.com. Click to sign in.';
+    me.setAttribute('aria-label', 'Sign in');
+    me.append(el('span', 'me-ring'));
+    me.addEventListener('click', () => signIn(me));
+    box.append(me);
   }
   box.append(appSettingsGear());
 }

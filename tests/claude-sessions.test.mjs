@@ -103,7 +103,7 @@ test('Create bot adopts the session by id, in its folder, with the choices made'
   const sup = read('electron-app/supervisor-app.js');
   const fn = sup.slice(sup.indexOf('async function createBotFromSession('));
   assert.match(fn.slice(0, 1500), /seedNewBot\(paths\.profilesRoot, profile, \{ adopt: \{ workdir: s\.cwd, session: s\.id, botName: overrides\.botName \|\| s\.title \}, overrides \}\);/);
-  assert.match(fn.slice(0, 1500), /overrides\.ttsProvider = 'macos-say'; overrides\.macosVoice = voice;/);
+  assert.match(fn.slice(0, 1500), /if \(picked\) Object\.assign\(overrides, picked\.config\);/, 'any provider\'s voice, as its own settings');
 });
 
 test('seedNewBot lets choices made before the bot exists win over the random ones', async () => {
@@ -117,4 +117,54 @@ test('seedNewBot lets choices made before the bot exists win over the random one
   assert.equal(cfg.claudeWorkDir, '/w/site');
   assert.equal(cfg.agentSession, 'ad86c168-eac9-4f3d-931c-81cc465b26a0');
   assert.equal(cfg.agentSessionAuto, false, 'pinned: the first launch must not swap it for a fresh session');
+});
+
+// ── Voices and names for a bot made from a session ──
+
+test('a new bot\'s random voice comes from the best provider there is; built-in only when alone, and only good ones', () => {
+  const { pickRandomVoice, goodSystemVoices } = require('../electron-app/voice-catalog.js');
+  const el = { id: 'el:1', provider: 'elevenlabs' };
+  const vb = { id: 'vb:1', provider: 'voicebox' };
+  const os = { id: 'os:Daniel', provider: 'system' };
+  assert.equal(pickRandomVoice([os, vb, el], () => 0).id, 'el:1');
+  assert.equal(pickRandomVoice([os, vb], () => 0).id, 'vb:1');
+  assert.equal(pickRandomVoice([os], () => 0).id, 'os:Daniel');
+  assert.equal(pickRandomVoice([]), null, 'nothing to pick: the app default applies');
+  const good = goodSystemVoices([
+    { name: 'Ava (Premium)', tier: 0 }, { name: 'Zoe (Enhanced)', tier: 1 },
+    { name: 'Daniel', tier: 2 }, { name: 'Fred', tier: 2 }, { name: 'Bad News', tier: 2 },
+  ]).map((v) => v.name);
+  assert.deepEqual(good, ['Ava (Premium)', 'Zoe (Enhanced)', 'Daniel']);
+});
+
+test('the built-in whitelist is the bot picker\'s, one list', () => {
+  const { WHITELISTED_SYSTEM_STANDARD } = require('../electron-app/voice-catalog.js');
+  const panel = read('electron-app/renderer/panel.js');
+  const m = panel.match(/const WHITELISTED_MACOS_STANDARD = (\[[^\]]*\]);/);
+  assert.deepEqual(JSON.parse(m[1].replace(/'/g, '"')), WHITELISTED_SYSTEM_STANDARD);
+});
+
+test('the bot\'s own voice listing goes through the same catalog', () => {
+  const main = read('electron-app/main.js');
+  assert.match(main, /return require\('\.\/voice-catalog\.js'\)\.listElevenLabsVoices\(apiKey \|\| store\?\.get\('ttsApiKey'\)\);/);
+  assert.match(main, /return require\('\.\/voice-catalog\.js'\)\.listSystemVoices\(\);/);
+});
+
+test('a session name is tidied, then used only if it works in a call', () => {
+  const { botNameFromSession, tidySessionTitle } = require('../electron-app/addressable-name.js');
+  assert.equal(tidySessionTitle('Fleet supervisor (#301) [draft]'), 'Fleet supervisor');
+  assert.equal(botNameFromSession('Jimmy 🤖'), 'Jimmy');
+  assert.equal(botNameFromSession('VC Website'), 'VC Website');
+  assert.equal(botNameFromSession('Super Selfie Dance App (Fable)'), null, 'too long: replaced, not shortened');
+  assert.equal(botNameFromSession('pr-482-refactor'), null);
+});
+
+test('naming is an app preference, a human name by default', () => {
+  const { PREFERENCES } = require('../electron-app/preferences-schema.js');
+  assert.equal(PREFERENCES.sessionBotNames.default, 'human');
+  assert.deepEqual(PREFERENCES.sessionBotNames.enum, ['human', 'session']);
+  const { isAppLevel } = require('../electron-app/config-scope.js');
+  assert.ok(isAppLevel('sessionBotNames'), 'one setting for the machine, shown in App Settings');
+  const sup = read('electron-app/supervisor-app.js');
+  assert.match(sup, /if \(\(store\.get\('sessionBotNames'\) \|\| 'human'\) === 'session' && s\) \{/);
 });

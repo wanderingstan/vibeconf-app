@@ -696,6 +696,22 @@ const PREFERENCES = {
       'little larger. Never moves the face out of frame. OFF: the face sits dead ' +
       'centre at a fixed size, as before. See avatar-posture.js.',
   },
+  sessionBotNames: {
+    type: 'string',
+    default: 'human',
+    enum: ['human', 'session'],
+    // A bot made from a Claude Code session (the app window's Sessions list):
+    // what it is called. A session's title is the user's own word for the work
+    // but is rarely made to be said aloud, and a bot only hears its name through
+    // a call's captions. 'session' still uses it only when, tidied up, it passes
+    // addressable-name.js; otherwise the bot gets a human name either way.
+    label: 'Names for bots made from sessions',
+    description: "A bot made from one of your Claude Code sessions gets a human name, or the session's own name when it can be said and heard in a call.",
+    enumLabels: {
+      human: 'A human name',
+      session: "The session's name, when it works in a call",
+    },
+  },
   updateChannel: {
     type: 'string',
     default: 'release',

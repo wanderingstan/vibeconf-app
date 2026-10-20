@@ -18,6 +18,7 @@
 
 const APP_LEVEL_KEYS = new Set([
   'ttsApiKey', // ElevenLabs secret — one key per machine (#140 tracks storage security)
+  'sessionBotNames', // how the app window names bots made from sessions
   // OpenAI secret for the realtime-voice experiment. Same reasoning as
   // ttsApiKey exactly: machine auth, not identity. Which bot uses realtime and
   // which voice it speaks in stay per-profile (realtimeVoice / realtimeVoiceName

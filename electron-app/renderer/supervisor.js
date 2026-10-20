@@ -332,16 +332,24 @@ function showSessionStage(d) {
   const opts = el('div', 'sess-opts');
   const field = (label, control) => { const f = el('div', 'sess-opt'); f.append(el('label', null, label), control); opts.append(f); return control; };
   const nameIn = field('Name', Object.assign(document.createElement('input'), { value: suggestion.name, maxLength: 40 }));
+  const nameNote = el('div', 'sess-hint', suggestion.nameNote || '');
+  nameIn.parentElement.append(nameNote);
   const faceSel = field('Face style', document.createElement('select'));
   for (const e of emojiSets) faceSel.append(Object.assign(document.createElement('option'), { value: e.id, textContent: e.label }));
   faceSel.value = suggestion.emojiSet;
   const voiceSel = field('Voice', document.createElement('select'));
   voiceSel.append(Object.assign(document.createElement('option'), { value: '', textContent: 'The app\'s default voice' }));
-  for (const v of voices) voiceSel.append(Object.assign(document.createElement('option'), { value: v.id, textContent: v.label }));
-  const shuffle = el('button', 'sess-shuffle', 'Shuffle name and face');
+  // Grouped by provider, best first, the way a bot's own voice picker is.
+  const groups = new Map();
+  for (const v of voices) {
+    if (!groups.has(v.group)) { const g = document.createElement('optgroup'); g.label = v.group; groups.set(v.group, g); voiceSel.append(g); }
+    groups.get(v.group).append(Object.assign(document.createElement('option'), { value: v.id, textContent: v.label }));
+  }
+  voiceSel.value = suggestion.voice || '';
+  const shuffle = el('button', 'sess-shuffle', 'Shuffle');
   shuffle.addEventListener('click', async () => {
     const n = await api.invoke('supervisor:suggest-bot', s.id).catch(() => null);
-    if (n) { nameIn.value = n.name; faceSel.value = n.emojiSet; }
+    if (n) { nameIn.value = n.name; faceSel.value = n.emojiSet; voiceSel.value = n.voice || ''; nameNote.textContent = n.nameNote || ''; }
   });
   opts.append(shuffle);
   stage.append(opts);

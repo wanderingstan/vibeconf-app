@@ -977,43 +977,57 @@ function listSessions() {
   }));
 }
 
-// macOS voices for the voice picker (`say -v ?`), English first. Empty
-// elsewhere: the bot's own Settings has the full picker either way.
-let systemVoices = null;
-function listSystemVoices() {
-  if (systemVoices) return systemVoices;
-  systemVoices = [];
-  if (process.platform !== 'darwin') return systemVoices;
-  try {
-    const out = require('child_process').execFileSync('say', ['-v', '?'], { encoding: 'utf8', timeout: 4000 });
-    for (const line of out.split('\n')) {
-      const m = line.match(/^(.+?)\s{2,}([a-z]{2}[_-][A-Z0-9]+)\s+#/);
-      if (m && /^en[_-]/.test(m[2])) systemVoices.push({ id: m[1].trim(), label: `${m[1].trim()} (${m[2]})` });
-    }
-  } catch { /* no say: no list */ }
-  return systemVoices;
+// Every voice a bot could speak in (voice-catalog.js): ElevenLabs with the
+// machine's key, a running Voicebox, and the good built-in ones. Cached for a
+// few minutes: listing calls ElevenLabs and runs `say`, and the pane asks on
+// every click.
+let voiceCache = { at: 0, voices: [] };
+async function listVoices() {
+  if (Date.now() - voiceCache.at < 5 * 60 * 1000 && voiceCache.voices.length) return voiceCache.voices;
+  const { listAllVoices } = require('./voice-catalog.js');
+  const voices = await listAllVoices({ elevenLabsKey: store.get('ttsApiKey') || '' }).catch(() => []);
+  voiceCache = { at: Date.now(), voices };
+  return voices;
 }
 
 // What the pane needs for one session: its last lines, and suggestions for
 // the bot it could become (randomised the way a new bot is, but changeable).
-function sessionDetail(id) {
+async function sessionDetail(id) {
   const s = lastSessions.get(id);
   if (!s) return { ok: false, error: 'That session is no longer in the list.' };
   const { sessionExcerpt } = require('./claude-sessions.js');
+  const voices = await listVoices();
   return { ok: true, session: { id: s.id, title: s.title, lastPrompt: s.lastPrompt, cwd: s.cwd, mtimeMs: s.mtimeMs },
-    excerpt: sessionExcerpt(s.file, { max: 6 }), suggestion: suggestBot(s), emojiSets: EMOJI_SETS, voices: listSystemVoices() };
+    excerpt: sessionExcerpt(s.file, { max: 6 }), suggestion: await suggestBot(s), emojiSets: EMOJI_SETS,
+    voices: voices.map((v) => ({ id: v.id, label: v.label, group: v.group })) };
 }
 
-function suggestBot(s) {
+// The bot a session would become, picked at random the way a new bot is:
+//   name   a human one, or (App Settings > "Names for bots made from
+//          sessions") the session's own, tidied, when it can be said and heard
+//          in a call; else a human one, with a note saying why
+//   face   a random emoji set
+//   voice  a random voice from the best provider there is (ElevenLabs, then
+//          Voicebox, then the good built-in voices only)
+async function suggestBot(s) {
   const { randomBotName } = require('./bot-names.js');
-  const { isAddressableBotName } = require('./addressable-name.js');
+  const { botNameFromSession } = require('./addressable-name.js');
   let taken = [];
   try { taken = profileManager.takenBotNames(paths.profilesRoot); } catch { /* none */ }
-  // The session's own name when it can be said out loud and heard back in a
-  // call (the same rule adopting a session has always used), else a random one.
-  const name = s && isAddressableBotName(s.title) && !taken.includes(s.title.trim()) ? s.title.trim() : randomBotName({ taken });
+  let name = null;
+  let nameNote = null;
+  if ((store.get('sessionBotNames') || 'human') === 'session' && s) {
+    const fromSession = botNameFromSession(s.title);
+    if (fromSession && !taken.includes(fromSession)) name = fromSession;
+    else nameNote = fromSession
+      ? `Another bot is already called ${fromSession}, so this is a human name instead.`
+      : "This session's name would be hard to say and hear in a call, so this is a human name instead.";
+  }
+  if (!name) name = randomBotName({ taken });
   const sets = EMOJI_SETS.filter((e) => e.id !== 'native');
-  return { name, emojiSet: sets[Math.floor(Math.random() * sets.length)].id, voice: '' };
+  const { pickRandomVoice } = require('./voice-catalog.js');
+  const voice = pickRandomVoice(await listVoices());
+  return { name, nameNote, emojiSet: sets[Math.floor(Math.random() * sets.length)].id, voice: voice ? voice.id : '' };
 }
 
 async function createBotFromSession({ id, name, emojiSet, voice } = {}) {
@@ -1024,7 +1038,8 @@ async function createBotFromSession({ id, name, emojiSet, voice } = {}) {
   const overrides = {};
   if (name && String(name).trim()) overrides.botName = String(name).trim().slice(0, 40);
   if (EMOJI_SETS.some((e) => e.id === emojiSet)) overrides.emojiSet = emojiSet;
-  if (voice && listSystemVoices().some((v) => v.id === voice)) { overrides.ttsProvider = 'macos-say'; overrides.macosVoice = voice; }
+  const picked = voice ? (await listVoices()).find((v) => v.id === voice) : null;
+  if (picked) Object.assign(overrides, picked.config);
   seedNewBot(paths.profilesRoot, profile, { adopt: { workdir: s.cwd, session: s.id, botName: overrides.botName || s.title }, overrides });
   console.log(`[supervisor] new bot "${profile}" from session ${s.id} (${JSON.stringify(s.title)}) in ${s.cwd}`);
   closeRelayStream();

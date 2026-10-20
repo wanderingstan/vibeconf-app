@@ -7,6 +7,8 @@ media/processes-{light,dark}.svg. Same visual system as the architecture
 diagram (docs/STYLE-GUIDE.md, media/restyle-fluent.py): Fluent palette, Syne,
 DM Sans, JetBrains Mono, embedded from the app's vendored fonts so the SVG
 renders the same anywhere. Brand icons come from media/brand-icons.json.
+Bot faces are the app's own emoji PNGs, resized with ImageMagick (`magick`
+must be on PATH to regenerate).
 """
 import base64, json, os
 
@@ -32,7 +34,7 @@ DARK = dict(
     shadow='flood-color="#000000" flood-opacity="0.35"',
 )
 
-W, H = 1180, 792
+W, H = 1180, 826
 SYNE = "Syne, Futura, 'Trebuchet MS', sans-serif"
 MONO = "'JetBrains Mono', ui-monospace, Menlo, monospace"
 
@@ -82,6 +84,13 @@ def render(T):
         attrs = ic['attrs'].replace('width="30" height="30"', f'width="{size}" height="{size}"').replace('fill="#000"', f'fill="{T["mono_icon"]}"')
         a(f'<svg x="{x}" y="{y}" {attrs}>{ic["inner"]}</svg>')
 
+    def emoji(set_name, code, x, y, size=30):
+        # The bot's face, from the app's own emoji sets (electron-app/emoji/<set>/<code>.png).
+        import subprocess
+        src = os.path.join(HERE, '..', 'electron-app', 'emoji', set_name, f'{code}.png')
+        png = subprocess.run(['magick', src, '-resize', '96x96', '-strip', 'PNG32:-'], capture_output=True, check=True).stdout
+        a(f'<image x="{x}" y="{y}" width="{size}" height="{size}" href="data:image/png;base64,{base64.b64encode(png).decode()}"/>')
+
     def wire(pts, kind='http', start=False, end=True):
         d = ' '.join(f'{"M" if i == 0 else "L"}{px},{py}' for i, (px, py) in enumerate(pts))
         if kind == 'owner':
@@ -113,16 +122,16 @@ def render(T):
     # Layout: agents on the left, the app (main process + its bot children) in the
     # middle, call platforms on the right. Same reading direction as the README's
     # architecture diagram. Each agent sits on the same row as the bot it drives.
-    ROW = [362, 482, 602]                   # Charlie, Bob, Other bots
-    RH = 90
+    ROW = [362, 496, 630]                   # Charlie, Bob, Other bots
+    RH = 104
     SX, SW = 56, 230                        # agent sessions column
-    RX, RY, RW, RB = 330, 150, 570, 648     # the app region (x, top, width, bottom)
+    RX, RY, RW, RB = 330, 150, 570, 682     # the app region (x, top, width, bottom)
     BX, BW = 400, 460                       # bot boxes inside the app region
     GUT = RX + RW - 24                      # right gutter inside the region: spawn trunk
     PX, PW = 960, 164                       # call platforms column
 
     # ── This Mac ──
-    a(f'<rect x="36" y="104" width="884" height="626" rx="12" fill="none" stroke="{T["region"]}" stroke-width="1.5" stroke-dasharray="7 5"/>')
+    a(f'<rect x="36" y="104" width="884" height="660" rx="12" fill="none" stroke="{T["region"]}" stroke-width="1.5" stroke-dasharray="7 5"/>')
     eyebrow(56, 132, 'THIS MAC', 'everything inside talks over 127.0.0.1 only')
 
     # ── The app: one region, one main process, N bot processes ──
@@ -145,21 +154,22 @@ def render(T):
 
     # ── Bot processes (one row each) ──
     rw3 = (BW - 28 - 16) // 3
-    for y, (name, port) in zip(ROW[:2], [('Charlie', '7885'), ('Bob', '7887')]):
+    for y, (name, port, face) in zip(ROW[:2], [('Charlie', '7885', ('fluent3d', '1f60e')), ('Bob', '7887', ('redpanda', '1f60a'))]):
         box(BX, y, BW, RH, stroke_w=2)
-        text(BX + 14, y + 26, name, 17, 800, family=SYNE, spacing=-0.3)
-        text(BX + 14, y + 42, f'bot process · port {port}', 11, fill=T['soft'])
-        row(BX + 14, y + 50, rw3, 'Local API', 'tools, status, relay', 34)
-        row(BX + 14 + rw3 + 8, y + 50, rw3, 'Panel', 'hidden; shown on stage', 34)
-        row(BX + 14 + 2 * (rw3 + 8), y + 50, rw3, 'Call view', 'the meeting itself', 34)
+        emoji(face[0], face[1], BX + 14, y + 12, 34)
+        text(BX + 56, y + 27, name, 17, 800, family=SYNE, spacing=-0.3)
+        text(BX + 56, y + 43, f'bot process · port {port}', 11, fill=T['soft'])
+        row(BX + 14, y + 58, rw3, 'Local API', 'tools, status, relay', 34)
+        row(BX + 14 + rw3 + 8, y + 58, rw3, 'Panel', 'hidden; shown on stage', 34)
+        row(BX + 14 + 2 * (rw3 + 8), y + 58, rw3, 'Call view', 'the meeting itself', 34)
     PANEL_X = BX + 14 + rw3 + 8 + rw3 // 2  # centre of the Panel row
     # Other bots straddle the app's edge: a bot process, but not the app's child.
     y = ROW[2]
     box(BX, y, BW, RH, planned=True)
     text(BX + 14, y + 26, 'Other bots', 17, 800, family=SYNE, fill=T['planned_text'], spacing=-0.3)
-    text(BX + 14, y + 42, 'test fleet, or started by hand', 11, fill=T['planned_text'])
-    text(BX + 14, y + 62, "Still a bot process, but not the app's child. The app finds it by scanning", 11, fill=T['planned_text'])
-    text(BX + 14, y + 78, 'ports and stops it over HTTP.', 11, fill=T['planned_text'])
+    text(BX + 14, y + 42, 'started by hand, e.g. --profile=codex', 11, fill=T['planned_text'])
+    text(BX + 14, y + 66, "Still a bot process, but not the app's child. The app finds it by scanning", 11, fill=T['planned_text'])
+    text(BX + 14, y + 82, 'ports and stops it over HTTP.', 11, fill=T['planned_text'])
 
     # main process → bots: the parent/child tree down the right gutter
     wire([(GUT, AB), (GUT, ROW[1] + 18)], 'owner', end=False)
@@ -179,12 +189,15 @@ def render(T):
 
     # ── Agent sessions ──
     eyebrow(56, 330, 'AGENT SESSIONS', 'one per bot in a call')
-    for (y, who, app_name, ico, port) in [(ROW[0], "Charlie's agent", 'Claude Code', 'Claude', '7885'), (ROW[1], "Bob's agent", 'Codex', 'Codex', '7887')]:
+    for (y, who, app_name, ico, port, trigger) in [(ROW[0], "Charlie's agent", 'Claude Code', 'Claude', '7885', '/join-call'), (ROW[1], "Bob's agent", 'Codex', 'Codex', '7887', '"join my call"')]:
         box(SX, y, SW, RH, stroke_w=2)
         icon(ico, SX + 14, y + 12)
         text(SX + 50, y + 27, who, 15, 600)
         text(SX + 50, y + 43, f'{app_name} · opened by its bot', 10.5, fill=T['soft'])
         row(SX + 14, y + 50, SW - 28, 'MCP server', f'its stdio child · pinned to {port}', 34)
+        # how the human kicks it off: a skill in Claude Code, plain language elsewhere
+        text(SX + 14, y + 97, trigger, 10.5, 700, fill=T['eyebrow'], family=MONO)
+        text(SX + SW - 14, y + 97, 'calls join_call', 9.5, fill=T['soft'], anchor='end')
         # a session's MCP server talks to its own bot's local API
         wire([(SX + SW, y + 67), (BX, y + 67)], 'http')
         label((SX + SW + BX) / 2, y + 60, 'HTTP + token')
@@ -233,7 +246,7 @@ def render(T):
     text(PX + 44, ky + 24, 'beyond it: the internet', 10.5, fill=T['soft'])
 
     # ── Footer ──
-    text(60, 768, "A bot that crashes takes nothing else down. The app sees the exit and its reason; if the app goes away, its bots finish their calls and quit.", 12, fill=T['soft'])
+    text(60, 802, "A bot that crashes takes nothing else down. The app sees the exit and its reason; if the app goes away, its bots finish their calls and quit.", 12, fill=T['soft'])
 
     a('</svg>')
     return '\n'.join(o)

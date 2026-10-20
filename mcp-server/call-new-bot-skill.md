@@ -114,8 +114,17 @@ that never answers to itself, but propose something sayable in the first place.
 
 ## Step 3: Create it
 
+Find a running bot to send the request to. Ask the app's directory first: bots
+are no longer guaranteed to be on port 7865 (the app runs them on their own ports,
+in the background):
+
 ```
-curl -s -X POST "http://127.0.0.1:${VIBECONF_LOCAL_PORT:-7865}/api/adopt-session-as-bot" \
+PORT=$(curl -sf -m 2 http://127.0.0.1:7864/api/instances | jq -r '.instances[0].port // empty' 2>/dev/null)
+PORT=${PORT:-${VIBECONF_LOCAL_PORT:-7865}}
+```
+
+```
+curl -s -X POST "http://127.0.0.1:${PORT}/api/adopt-session-as-bot" \
   -H 'Content-Type: application/json' \
   -d "$(jq -nc --arg w "$(pwd)" --arg s "$CLAUDE_CODE_SESSION_ID" --arg b "<bot name>" --arg t "<call, or empty>" \
         '{workdir:$w, session:$s, botName:$b} + (if $t == "" then {} else {target:$t} end)')"

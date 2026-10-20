@@ -135,7 +135,7 @@ function namesDiffer(a, b) {
 const { formatFitReport, formatBudget } = require('./board-fit.js');
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onJoinZoom, onJoinTeams, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onBoardFitVersion, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onJoinZoom, onJoinTeams, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onBoardFitVersion, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onJoinMeet, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -195,6 +195,7 @@ class LocalServer {
     // Start a brand-new call: create a room, send the bot in, open the human's
     // browser. Backs the /call command, mirroring the panel's "Call <bot> now".
     this.onStartCall = onStartCall || (async () => ({ ok: false, code: 'unsupported' }));
+    this.onJoinMeet = onJoinMeet || (async () => ({ ok: false, code: 'unsupported' }));
     this.onRecord = onRecord || (async () => ({ ok: false, code: 'unsupported' })); // #209
     this.onInspectDom = onInspectDom || (async () => ({ ok: false, error: 'not implemented' }));
     this.onEvalShare = onEvalShare || (async () => ({ ok: false, error: 'not implemented' }));
@@ -5589,8 +5590,12 @@ class LocalServer {
         // rather than completion because wait_for_speech blocks for up to 55s —
         // crediting it at the end would backdate the agent's liveness by a
         // whole cycle.
-        this.lastAgentActivityAt = Date.now();
-        this.agentSocketLost = false;
+        // The supervisor's window driving this bot's panel (/api/panel/*) is not
+        // the agent, so it must not count as the agent being alive.
+        if (!String(req.url || '').startsWith('/api/panel/')) {
+          this.lastAgentActivityAt = Date.now();
+          this.agentSocketLost = false;
+        }
         this._handleRequest(req, res).catch(err => {
           console.error('[local-server] Request error:', err.message);
           // A handler that already responded and THEN threw would otherwise
@@ -5722,6 +5727,11 @@ class LocalServer {
     }
 
     const url = new URL(req.url, `http://127.0.0.1:${this.port}`);
+    // #301: the supervisor's window driving this bot's panel. After the auth
+    // check above on purpose: it can do anything the bot's own window can.
+    if (this.panelRelay && url.pathname.startsWith('/api/panel/')) {
+      if (await this.panelRelay.handleRequest(req, res, url, (r) => this._readBody(r))) return;
+    }
     // Room id is any lowercase slug — the server adopts whatever id the first
     // request uses (see "Accept requests for any room ID" below). This used to
     // be locked to Meet's three-group code shape (`xxx-xxxx-xxx`), which 404'd
@@ -5755,6 +5765,7 @@ class LocalServer {
           localServerUrl: this.getLocalServerUrl(),
           localServerPort: this.port,
           localProfile: this.localProfile,
+          headless: !!this.headless, // #301: started by the app, so the app may stop it
           appVersion: this.appVersion,
           buildType: this.buildType, // 'release' (DMG) | 'source' (pnpm dev)
           lastResponseMs: this.lastResponseMs,
@@ -5806,6 +5817,38 @@ class LocalServer {
       res.writeHead(result?.ok ? 200 : 502, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(result?.ok
         ? { success: true, roomId: this.roomId || null, url: result.url || null }
+        : { success: false, code: result?.code || 'unknown', detail: result?.detail || null }));
+      return;
+    }
+
+    // Join a Meet that already exists, the way the panel's Join button does for
+    // a detected tab (#301: the supervisor's "Add"). /api/sync/<code> with
+    // action:'join' is the AGENT's join and never spawns a terminal, because the
+    // caller is the driver; here the caller is a person clicking, so the bot
+    // needs its agent. spawnAgent defaults to false to match /api/call/start,
+    // and the supervisor passes true.
+    if (url.pathname === '/api/call/join' && req.method === 'POST') {
+      let body = {};
+      try { body = JSON.parse((await this._readBody(req)) || '{}') || {}; } catch { /* keep {} */ }
+      const code = String(body.url || '').match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/)?.[1];
+      if (!code) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, code: 'bad-url' }));
+        return;
+      }
+      // Same no-op rule as the agent's join (#26): re-joining the room we are
+      // already in tears down a working session.
+      if (shouldIgnoreRejoin({ requestedRoom: code, currentRoom: this.roomId, callStatus: this.callStatus })) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, alreadyInCall: true, roomId: code }));
+        return;
+      }
+      let result;
+      try { result = await this.onJoinMeet({ url: `https://meet.google.com/${code}`, spawnAgent: body.spawnAgent === true }); }
+      catch (err) { result = { ok: false, code: 'error', detail: err.message }; }
+      res.writeHead(result?.ok ? 200 : 502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result?.ok
+        ? { success: true, roomId: code }
         : { success: false, code: result?.code || 'unknown', detail: result?.detail || null }));
       return;
     }

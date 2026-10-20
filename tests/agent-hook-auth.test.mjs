@@ -21,7 +21,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+// The machine-wide agent setup (skills, hook, MCP registration) moved from main.js to
+// agent-integration.js (#301); read both, the module first.
+const main = readFileSync(join(root, 'electron-app/agent-integration.js'), 'utf8') + '\n' + readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 const server = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
 
 // The hook ships as a template literal; work on its text.

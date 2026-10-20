@@ -1455,3 +1455,135 @@ button.join-more .ui-icon { width: 20px; height: 20px; vertical-align: -0.3em; }
 .share-log-main button { flex: 0 0 auto; margin-bottom: 0; }
 .share-log-msg { flex: 1; }
 .share-log-msg .helper-text { margin: 0; display: block; }
+
+/* #301: in the app's window the sidebar shows the vibeconferencing.com login,
+   so the panel's footer does not repeat it. */
+.hosted #userIdStatus,
+.hosted #userSignInMainBtn { display: none !important; }
+
+/* ── The panel inside the app window (#301; panel.js setupHostedLayout) ──
+   The bot no longer IS the window, so nothing sits on the artwork but the
+   inspectors: name and status above it on the cream, the art as a card the
+   shape of the bot's camera tile, then the call controls and About <bot>.
+   The sidebar is the bot picker and carries the account; About has the
+   version. A bot in its own window is unchanged. */
+.hosted .app-footer,
+.hosted .hero-precall,
+.hosted .hero-top,
+.hosted .hero-bottom { display: none !important; }
+/* The in-call row's own inspectors are on the card now. */
+.hosted .hero-incall #openBrainBtn,
+.hosted .hero-incall #botViewToggleBtn,
+.hosted .hero-incall #openTroubleshootingBtn { display: none !important; }
+.hosted #mainScreen .container { min-height: 100vh; padding-bottom: 20px; }
+
+.hosted-head { padding: 4px 0 12px; min-width: 0; }
+.hosted .hosted-head .agent-name-row { padding: 0; }
+.hosted .agent-caret { display: none; }
+.hosted button.agent-namebtn { cursor: default; padding: 0; filter: none; }
+.hosted button.agent-namebtn:hover:not(:disabled) { background: none; }
+.hosted .hosted-head .agent-name { color: var(--ink); font-size: 30px; line-height: 1.15; }
+/* The name is the headline here and has the room: a long one wraps rather
+   than shrinking or losing its end. */
+.hosted .hosted-head .agent-name { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+.hosted .hosted-head button.agent-namebtn { width: 100%; }
+.hosted-status {
+  margin-top: 3px;
+  font-family: var(--font-mono); font-size: 11px; font-weight: 500;
+  letter-spacing: .18em; text-transform: uppercase; color: var(--ink-soft);
+}
+
+/* The card: the camera tile's 16:9, so it doubles as a preview of the call. */
+.hosted .bot-hero {
+  margin: 0; aspect-ratio: 16 / 9;
+  border: 1.5px solid var(--ink); border-radius: 6px; overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.hosted .bot-hero::before,
+.hosted .bot-hero::after { display: none; }
+.hosted .agent-avatar.hero-art { padding-bottom: 0; }
+/* The camera draws the face at 0.77 of the tile's short side (page-inject). */
+.hosted .hero-art .agent-avatar-emoji { font-size: 77cqmin; }
+.hosted .hero-art .agent-avatar-emoji-img { width: 77cqmin; height: 77cqmin; }
+
+/* Inspectors on the card, like controls on a call tile: the on-art chip
+   (translucent ink, cream glyph) so they read on any artwork. */
+.card-tools { position: absolute; right: 8px; bottom: 8px; z-index: 4; display: flex; gap: 6px; }
+button.card-tool {
+  width: 32px; height: 32px; padding: 0; margin: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: rgba(74, 49, 64, 0.62); border: 1px solid rgba(0, 0, 0, 0.45);
+  color: var(--on-art); font-size: 17px; box-shadow: none;
+}
+button.card-tool:hover:not(:disabled) { background: rgba(74, 49, 64, 0.88); color: var(--on-art); }
+/* Only what can do something: Brain needs a call (before one there is no
+   activity), Troubleshoot a call or a join under way (a join stuck in a lobby
+   is when it helps most); Bot's view always works. */
+button.card-tool.tool-brain,
+button.card-tool.tool-info { display: none; }
+body[data-call-state="in-call"] button.card-tool.tool-brain,
+body[data-call-state="in-call"] button.card-tool.tool-info,
+html.joining button.card-tool.tool-info { display: inline-flex; }
+
+/* Notices below the card, in the flow, rather than across a small face. */
+.hosted .hero-notices {
+  position: static; max-height: none; overflow: visible;
+  margin-top: 10px; pointer-events: auto;
+}
+.hosted .hero-notices:empty { display: none; }
+.hosted .hero-notice { box-shadow: var(--shadow-lo); backdrop-filter: none; }
+
+/* Link field, then the two buttons stacked: the name is the headline, so the
+   labels stay short, and stacked they never truncate. The green follows the
+   field (syncCallNowBtn). */
+#hostedControls { padding: 16px 0 0; display: flex; flex-direction: column; gap: 10px; }
+#hostedControls .field { margin: 0; }
+.hosted-buttons { display: flex; flex-direction: column; gap: 8px; }
+.hosted-buttons button { width: 100%; margin: 0; padding: 10px 16px; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+body[data-call-state="in-call"] #hostedControls { display: none; }
+
+/* In a call: the call's link and Leave, where the link field and buttons were. */
+.hosted .hero-incall { padding-top: 16px; }
+.hosted .call-url-row { justify-content: flex-start; }
+.hosted .call-url { color: var(--ink-soft); text-shadow: none; }
+.hosted .call-url-copy { color: var(--ink-soft); background: none; }
+.hosted .call-url-copy:hover { background: var(--paper-lo); color: var(--ink); }
+.hosted .hero-incall .join-row { justify-content: stretch; }
+.hosted .hero-incall .join-row .primary { width: 100%; }
+.hosted .share-window-btn { margin: 0 0 8px; border-color: var(--ink); background: var(--paper); color: var(--ink); }
+
+/* About <bot>. Left-aligned throughout, so a wide window never puts a label
+   far from its value; quiet, so it never competes with the call buttons. */
+.hosted-about { margin-top: 26px; }
+.hosted-eyebrow {
+  font-family: var(--font-mono); font-size: 11px; font-weight: 700;
+  letter-spacing: .18em; text-transform: uppercase; color: var(--magenta);
+  margin-bottom: 4px;
+}
+.hosted-eyebrow::before { content: '\2726  '; color: var(--pink); }
+.about-row {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 13px;
+}
+.about-k { flex: 0 0 72px; color: var(--ink-soft); }
+/* The value column wraps inside itself (the agent's actions drop under its
+   name), so the label never ends up alone on a line. */
+.about-v { flex: 1 1 0; display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; min-width: 0; font-weight: 500; color: var(--ink); }
+.about-acts { display: inline-flex; gap: 10px; }
+button.about-act {
+  width: auto; margin: 0; padding: 0; border: none; background: none; box-shadow: none;
+  font-size: 12px; font-weight: 500; color: var(--magenta); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 3px;
+  display: inline-flex; align-items: center;
+}
+button.about-act:hover:not(:disabled) { background: none; color: var(--pink-deep); }
+button.about-play {
+  width: 26px; height: 26px; padding: 0; margin: 0; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--ink); background: var(--paper); color: var(--ink); font-size: 12px;
+}
+button.about-play:hover:not(:disabled) { background: var(--paper-lo); }
+button.hosted-edit {
+  width: auto; margin: 14px 0 0; padding: 7px 18px;
+  display: inline-flex; align-items: center;
+}

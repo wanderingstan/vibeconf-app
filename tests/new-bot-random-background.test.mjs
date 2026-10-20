@@ -25,6 +25,8 @@ const require = createRequire(import.meta.url);
 const nbb = require(join(root, 'electron-app/new-bot-background.js'));
 const Store = require(join(root, 'electron-app/store.js'));
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+// How a new bot is born moved to new-bot.js (#301), shared with the app window.
+const newBot = readFileSync(join(root, 'electron-app/new-bot.js'), 'utf8');
 
 // Mirror of main.js's startup step, driven through the real helper + Store so
 // the consume-the-marker contract is exercised end to end on disk.
@@ -85,7 +87,7 @@ test('an existing bot without the marker is left alone, and a set background is 
 });
 
 test('main.js: seedNewBotName writes the marker', () => {
-  const fn = main.slice(main.indexOf('function seedNewBotName'), main.indexOf('async function launchOrFocusProfile'));
+  const fn = newBot.slice(newBot.indexOf('function seedNewBot('));
   assert.match(fn, /seeded\[require\('\.\/new-bot-background\.js'\)\.SEED_BACKGROUND_MARKER\] = true/);
 });
 

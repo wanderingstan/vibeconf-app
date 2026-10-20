@@ -3,13 +3,69 @@
 // IPC routing, TTS, and sync.
 
 const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, dialog, Menu, net } = require('electron');
+
+// #301: `--supervisor` is a different program that happens to share this binary.
+//
+// The supervisor watches the FLEET — it lists every bot, launches them, and
+// keeps watching the calendar when no bot window is open at all (today, with
+// every window closed, zero JavaScript runs for this app and a scheduled
+// auto-join simply cannot fire).
+//
+// It returns before ANY of the rest of this file, and that is the point rather
+// than an optimisation. Everything below is built around one implicit bot —
+// module-level state, a process-global `app.setPath('userData')`, IPC handlers
+// that all mean "the bot in this process". A supervisor that ran through it
+// would come up owning a bot's userData and a bot's port, which is precisely
+// the state it exists to be independent of.
+//
+// Top-level `return` is legal in CommonJS (modules are function-wrapped), and is
+// the smallest branch that can guarantee "none of the below ran".
+// #301 one window: a PLAIN launch of the app (the Dock, Finder, `open -a`) opens
+// the app's window, not a bot. A launch that names a bot or a call
+// (--profile, --meet-url, --join-url, ... from the test fleet, /join-call,
+// the supervisor itself) still starts that bot as before. VIBECONF_CLASSIC=1
+// keeps the old "plain launch = the default bot in its own window".
+const BOT_LAUNCH_FLAG = /^--(profile|local-port|meet-url|join-url|bot-name|bot-view|config|dom-probe|hosted|open-settings|summoned|provider|window-x|window-y|website-url|devtools)(=|$)/;
+const plainLaunch = !process.argv.slice(1).some((a) => BOT_LAUNCH_FLAG.test(a)) && process.env.VIBECONF_CLASSIC !== '1';
+if (process.argv.includes('--supervisor') || plainLaunch) {
+  require('./supervisor-app.js').start();
+  return;
+}
+
+// #301 one-window spike: lets the supervisor's window drive this bot's panel
+// over HTTP (see panel-relay.js). Installed before any ipcMain.handle below,
+// because it records handlers as they are registered.
+// onQuit: the app stopping this bot (its reaper, or the app quitting). app.quit()
+// goes through before-quit, which marks the quit as intended, so the bot's own
+// "Quit?" confirmation does not stop it.
+// #301: WHY this bot is quitting, logged in before-quit. On 2026-10-19 a bot in
+// a live call quit four times, mid-sentence, cleanly and with no reason in its
+// log: several paths call app.quit() and none of them said so. Each now names
+// itself; anything unnamed (a signal, Dock > Quit, an OS shutdown) shows as
+// "unattributed", with what is known about the moment.
+let quitCause = null;
+function noteQuitCause(cause) { if (!quitCause) quitCause = cause; }
+const panelRelay = require('./panel-relay.js').createPanelRelay({ ipcMain, onQuit: (from) => { noteQuitCause(`the app window asked it to stop (/api/panel/quit${from ? ' from ' + from : ''})`); app.quit(); } });
+// (No signal handlers: Electron turns SIGTERM into an ordinary quit before any
+// JS handler runs, so a signal shows up below as unattributed.)
+// #301: the channel to the app window, when the app started this bot as its own
+// child (bot-parent-link.js; the app's end is bot-children.js). null for a bot
+// opened any other way. Quit requests arrive here instead of over HTTP, "show
+// me" goes back over it, and if the app goes away the bot follows it (after
+// its call, if it is in one) rather than living on with no UI.
+const parentLink = require('./bot-parent-link.js').connectToParent({
+  onQuit: (cause) => { noteQuitCause(cause); app.quit(); },
+  // localServer is declared further down; before it exists there is no call.
+  isInCall: () => { try { return require('./call-phase.js').isBusy(localServer.callStatus); } catch { return false; } },
+});
+
 const path = require('path');
 const fs = require('fs');
 const vm = require('vm');
 const Store = require('./store.js');
 const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
 const profileManager = require('./profile-manager.js');
-const { profileLaunchCommand } = require('./profile-launch.js');
+const { profileLaunchCommand, spawnArgsForProfile } = require('./profile-launch.js');
 const { stallExplainedByOwnSpeech } = require('./caption-stall-excuse.js');
 const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
@@ -70,47 +126,10 @@ function captionSource() {
   return _captionSource;
 }
 
-// How Claude Code should launch our stdio MCP server.
-//
-// It used to be the bare string 'node', which silently requires the user to
-// have Node on PATH. macOS ships none, and Claude Code's own native installer
-// (~/.local/share/claude/...) doesn't bring one — so a non-developer who does
-// everything right gets `spawn node ENOENT` and a bot that never appears.
-// This never showed up in our own testing because every machine we test on has
-// Homebrew node, and that's machine-wide: a fresh macOS *account* still sees it.
-//
-// Electron already contains a Node runtime, so use ours. ELECTRON_RUN_AS_NODE
-// makes the app binary behave exactly like `node <script>`. It costs nothing
-// (already on disk), pins a known-good version, and adds no new fragility —
-// args[0] already points inside the app bundle, so the config was always tied
-// to the app's existence.
-function mcpNodeLauncher() {
-  return {
-    command: process.execPath,
-    env: { ELECTRON_RUN_AS_NODE: '1' },
-  };
-}
-
-function bundledMcpServerRoot() {
-  return app.isPackaged
-    ? path.join(process.resourcesPath, 'mcp-server')
-    : path.join(__dirname, '..', 'mcp-server');
-}
-
-function bundledMcpServerPath() {
-  return path.join(bundledMcpServerRoot(), 'server.js');
-}
-
-function mcpServerDepsPresent(mcpServerRoot = bundledMcpServerRoot()) {
-  return app.isPackaged || (
-    fs.existsSync(path.join(mcpServerRoot, 'node_modules', '@modelcontextprotocol', 'sdk')) &&
-    fs.existsSync(path.join(mcpServerRoot, 'node_modules', 'zod')));
-}
-
-function runningFromGitWorktree() {
-  if (app.isPackaged) return false;
-  try { return fs.statSync(path.join(__dirname, '..', '.git')).isFile(); } catch { return false; }
-}
+// MCP server location and launcher, shared with the app window: agent-integration.js (#301).
+const {
+  mcpNodeLauncher, bundledMcpServerRoot, bundledMcpServerPath, mcpServerDepsPresent, runningFromGitWorktree,
+} = require('./agent-integration.js');
 
 // Let the shared board play sound unprompted. Now that the whiteboard window's
 // audio is captured into the screen share, a board pointed at a page with a
@@ -2407,6 +2426,7 @@ const localServer = new globalThis.LocalServer({
   // Profile switcher (#282): a sibling instance asked us to come forward.
   // /call → POST /api/call/start → the same path the panel button takes.
   onStartCall: (opts) => createAndJoinMeet(opts),
+  onJoinMeet: ({ url, spawnAgent }) => { joinMeetUrl(url, { spawnAgent }); return { ok: true }; }, // #301: supervisor "Add"
   onRecord: (opts) => setCallRecording(opts), // #209: start/stop call recording
 
   onFocusRequest: () => {
@@ -2415,8 +2435,10 @@ const localServer = new globalThis.LocalServer({
       mainWindow.show();
       mainWindow.focus();
     }
-    if (app.dock) app.dock.show();
-    app.focus({ steal: true });
+    // Headless: mainWindow.show above already asked the supervisor to show this
+    // bot; a Dock icon would bring back the second app it exists to remove.
+    if (app.dock && !HEADLESS) app.dock.show();
+    if (!HEADLESS) app.focus({ steal: true });
   },
   // Silence the shared surface's audio without touching the share itself.
   //
@@ -2946,6 +2968,9 @@ const localServer = new globalThis.LocalServer({
     //
     // Here rather than in each join path because this is where every route
     // converges — a new one cannot forget to defuse it.
+    // #301: when this bot was last in a call; the app lists bots most recently
+    // in a call first. Only a call counts: launching or selecting a bot does not.
+    if (status === 'in-call') markLastCall();
     if (_afterCallWorkTimer && isInCall(status)) {
       console.log('[electron] Call live again — cancelling the pending after-call teardown');
       clearTimeout(_afterCallWorkTimer);
@@ -3554,6 +3579,7 @@ const localServer = new globalThis.LocalServer({
     }
   },
 });
+localServer.panelRelay = panelRelay; // #301: /api/panel/* routes, behind the server's auth
 
 function pushAvatarEmojiOverrides(overrides = {}) {
   console.log('[local-server] Avatar emoji override:', overrides);
@@ -3937,6 +3963,12 @@ async function pushAvatarBackground(svgSource) {
 // ---------------------------------------------------------------------------
 
 let store;
+
+// Per-profile "last in a call" time (#301: the app's bot list is ordered by it).
+// Read by profile-manager.readConfigFields like the other identity fields.
+function markLastCall() {
+  try { if (store) store.set('lastCallAt', Date.now()); } catch { /* best-effort */ }
+}
 let meetAccountEmailPinned = false; // true when --meet-account-email pinned the account (#282)
 // Calendar auto-join (#299): this bot's matching events within the next 24h,
 // for the panel's "upcoming meeting" notice. Written by
@@ -4514,6 +4546,7 @@ function openAppSettings() {
   if (appSettingsWindow && !appSettingsWindow.isDestroyed()) {
     appSettingsWindow.show();
     appSettingsWindow.focus();
+    presentHeadlessWindow(appSettingsWindow);
     return;
   }
   appSettingsWindow = new BrowserWindow({
@@ -4558,6 +4591,9 @@ function openAppSettings() {
     catch { clearTimeout(timer); finish(); }
   });
   appSettingsWindow.on('closed', () => { appSettingsWindow = null; focusMainWindow(); });
+  // Hosted (#301): the click came from the app window, another process, so bring
+  // this one forward with it or the window opens behind.
+  presentHeadlessWindow(appSettingsWindow);
 }
 
 // ── About window ────────────────────────────────────────────────────────────
@@ -5586,49 +5622,6 @@ function joinMeetUrl(meetUrl, { spawnAgent = true, onboardingCall = false, calen
   }
 }
 
-// The AppleScript that lists Meet / Slack / blank tabs in Chrome, Safari and
-// Brave. Shared by the background Meet poll (startMeetDetection) and the
-// one-shot scanBrowserMeetUrls below, so the perf lessons recorded in
-// startMeetDetection (no System Events, batched tab reads) apply to both.
-function browserTabScanScript() {
-  const browserScanBlock = (appName) => `
-if application "${appName}" is running then
-  try
-    tell application "${appName}"
-      repeat with w in windows
-        try
-          set tabURLs to URL of tabs of w
-          set tabTitles to title of tabs of w
-          repeat with i from 1 to count of tabURLs
-            try
-              set tabURL to (item i of tabURLs) as text
-              set tabTitle to ""
-              try
-                set tabTitle to (item i of tabTitles) as text
-              end try
-              if tabURL starts with "https://meet.google.com/" then
-                set allURLs to allURLs & "MEET:" & tabURL & linefeed
-              else if tabURL starts with "https://app.slack.com/client/" then
-                set allURLs to allURLs & "SLACK:" & tabURL & "|||" & tabTitle & linefeed
-              else if tabURL is "about:blank" then
-                set allURLs to allURLs & "BLANK:" & tabTitle & linefeed
-              end if
-            end try
-          end repeat
-        end try
-      end repeat
-    end tell
-  end try
-end if`;
-  const appleScript = `
-set allURLs to ""
-${browserScanBlock('Google Chrome')}
-${browserScanBlock('Safari')}
-${browserScanBlock('Brave Browser')}
-allURLs`;
-  return appleScript;
-}
-
 // One-shot scan for Meet URLs open in the user's browser, for /call-new-bot.
 // The background poll can't answer this: it deliberately stops while THIS
 // instance is in a call, which is exactly when someone summons a second bot.
@@ -5637,17 +5630,15 @@ allURLs`;
 // a reason to refuse that.
 function scanBrowserMeetUrls({ timeoutMs = 8000 } = {}) {
   if (process.platform !== 'darwin') return Promise.resolve([]);
-  const { execFile } = require('child_process');
-  return new Promise((resolve) => {
-    execFile('osascript', ['-e', browserTabScanScript()], { timeout: timeoutMs }, (err, stdout) => {
-      if (err) {
-        console.log('[call-new-bot] browser tab scan failed:', (err.killed ? 'timeout' : err.message || '').slice(0, 120));
-        resolve([]);
-        return;
-      }
-      resolve(String(stdout || '').split('\n').map((l) => l.trim())
-        .filter((l) => l.startsWith('MEET:')).map((l) => l.slice(5)));
-    });
+  // The same scan the background poll and the supervisor use (#301), so the
+  // perf lessons recorded in browser-call-scan.js apply here too.
+  const { scanBrowsers } = require('./browser-call-scan.js');
+  return scanBrowsers({ timeoutMs }).then((scan) => {
+    if (!scan.ok) {
+      console.log('[call-new-bot] browser tab scan failed:', String(scan.failKey || '').slice(0, 120));
+      return [];
+    }
+    return scan.meetUrls;
   });
 }
 
@@ -6629,6 +6620,20 @@ function parseCLIArgs() {
 }
 
 const cliArgs = parseCLIArgs();
+// #301 one window: a bot started by the supervisor runs HEADLESS. Its UI is the
+// panel on the supervisor's stage (panel-relay.js), so its own window is built
+// as usual (everything that reads mainWindow keeps working) but never shown,
+// and it has no Dock icon or taskbar entry. Anything that would bring the
+// window forward instead asks the supervisor to select this bot; with no
+// supervisor answering, the bot falls back to showing its own window, so it
+// can never become unreachable. See makeHeadless.
+// The launch flag is --hosted, NOT --headless: Chromium has its own --headless
+// switch, Electron passes app arguments through to it, and under it nothing is
+// composited to screen. Pages still render and capture, so the bot worked, but
+// every window it opened for the user (Bot's view, Brain, Troubleshooting)
+// came up blank. Found 2026-10-18 by elimination; see tests/panel-relay.
+const HEADLESS = cliArgs.hosted === 'true';
+localServer.headless = HEADLESS; // reported in status, so the reaper only stops the app's own bots
 // --dom-probe=1 | --dom-probe='<css selector>' (dom-probe.js): a research tool
 // for finding a calling app's hidden signals, e.g. Teams' speaking ring (#847).
 // Passed on as VIBECONF_DOM_PROBE, which each provider's preload reads at load;
@@ -7575,6 +7580,27 @@ function clearBroadcastError(key) {
 // Track every Terminal window we open so we can close them all on quit —
 // otherwise repeated testing leaves a pile of orphaned windows.
 let claudeTerminalWindowIds = [];
+// Terminal windows opened from the panel's "Open terminal" (chat-session:open).
+// Kept apart from the call's: leaving a call closes its terminal, and must not
+// close one you opened yourself.
+let chatTerminalWindowIds = [];
+
+// Which of the agent terminals this bot opened are still open, newest first.
+// Asks Terminal only if it is running (a `tell` would launch it) and only if
+// there is anything to ask about, so an idle bot costs nothing.
+function openAgentTerminalIds() {
+  const known = [...chatTerminalWindowIds, ...claudeTerminalWindowIds].reverse();
+  if (process.platform !== 'darwin' || !known.length) return Promise.resolve([]);
+  const script = 'if application "Terminal" is running then\n  tell application "Terminal" to return id of windows\nend if\nreturn ""';
+  return new Promise((resolve) => {
+    require('child_process').execFile('osascript', ['-e', script], (err, stdout) => {
+      if (err) return resolve([]);
+      const open = new Set(String(stdout || '').split(/[,\s]+/).filter(Boolean));
+      chatTerminalWindowIds = chatTerminalWindowIds.filter((id) => open.has(id));
+      resolve(known.filter((id) => open.has(String(id))).map(String));
+    });
+  });
+}
 
 // #305: make sure this profile has a dedicated, TRUSTED working dir and return
 // its path. Creates …/<userData>/agent/, seeds .claude/settings.local.json with
@@ -8254,22 +8280,28 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
         Object.assign(inherited, botMcp.mcpServers || {});
       } catch { /* none — the common case */ }
 
+      // #301: only hand the agent a server that can start (chooseAgentMcpServer).
+      const fallback = inherited.vibeconferencing;
+      const agentMcp = require('./agent-integration.js').chooseAgentMcpServer({
+        ownPath: mcpServerPath,
+        ownOk: fs.existsSync(mcpServerPath) && mcpServerDepsPresent(path.dirname(mcpServerPath)),
+        launcher: mcpNodeLauncher(),
+        inherited: fallback,
+        fallbackOk: !!(fallback && Array.isArray(fallback.args) && fallback.args[0] && fs.existsSync(fallback.args[0])),
+        botName,
+        port: localServer.port,
+      });
+      if (agentMcp.warning) {
+        console.error('[electron]', agentMcp.warning);
+        try { broadcastError(agentMcp.warning); } catch { /* panel not up */ }
+      }
       const cfg = {
         mcpServers: {
           ...inherited,
           // LAST, so it always wins. This entry is the entire reason the file
           // exists: the user-scoped one carries a fallback port pointing at the
           // PRIMARY app, so an unpinned session would drive the wrong bot.
-          vibeconferencing: {
-            command: mcpNodeLauncher().command,
-            args: [mcpServerPath],
-            env: {
-              ...mcpNodeLauncher().env,
-              VIBECONF_ROOM_ID: '',
-              VIBECONF_BOT_NAME: botName,
-              VIBECONF_BASE_URL: `http://127.0.0.1:${localServer.port}`,
-            },
-          },
+          vibeconferencing: agentMcp.server,
         },
       };
       const cfgPath = path.join(app.getPath('userData'), 'mcp-config.json');
@@ -9011,6 +9043,7 @@ function updateSpeakingState(name, speaking) {
 if (isDefaultInstance) {
   const gotTheLock = app.requestSingleInstanceLock();
   if (!gotTheLock) {
+    if (parentLink) parentLink.duplicate();
     // Reinstalling/updating the app does NOT kill an already-running process —
     // it just overwrites the .app bundle. That old process keeps the lock and
     // keeps serving on DEFAULT_PORT, so a "fresh" relaunch silently quits here
@@ -9045,196 +9078,40 @@ if (isDefaultInstance) {
     }
   });
 } else {
-  console.log('[electron] Allowing separate app instance for profile:', appProfile);
+  // #301: one copy per NAMED bot too. Electron's lock is keyed to the userData
+  // directory, which each profile has its own of (set above), so this is "one
+  // process per bot", never "one bot at a time": different bots still run side
+  // by side. Without it a second launch of the same bot took the next port and
+  // both kept running, the stale one unseen, answering on a port nobody
+  // expected (2026-10-18: an app window stuck on a leftover copy showed a blank
+  // Bot's view).
+  if (!app.requestSingleInstanceLock()) {
+    console.log(`[electron] Bot "${appProfile}" is already running in another process; quitting this copy.`);
+    // Started by the app window: say so, so this exit is not reported as a bot
+    // dying (the running copy shows itself via second-instance).
+    if (parentLink) parentLink.duplicate();
+    noteQuitCause('a copy of this bot was already running');
+    app.quit();
+  } else {
+    console.log('[electron] Allowing separate app instance for profile:', appProfile);
+    // A second launch of this bot asks the running copy to show itself. For a
+    // hidden bot, mainWindow.show() is redirected to the app window
+    // (makeHeadless), which selects it.
+    app.on('second-instance', () => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+      }
+    });
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Auto-install MCP config + Claude skill on first launch
 // ---------------------------------------------------------------------------
 
-// Agent-activity hook: a tiny PostToolUse hook, scoped to mcp__vibeconferencing__*
-// tools, that reports the DRIVING session's transcript path to this app's local
-// server. Scoping to our own MCP tools means only the session actually driving a
-// bot reports (no cross-session noise), and it works for BOTH launch paths
-// (app-spawned OR an existing session that ran /join-call). The app tails that
-// transcript onto the debug overlay (gated by the debugOverlay toggle).
-//
-// It also warns in-terminal when a bot joins a call on Fable (#responsiveness
-// audit: Fable averages ~17s stop→audio vs ~8s for Sonnet/Opus, almost entirely
-// think time) — via the join_call tool call itself, so it fires exactly once
-// per join, for whoever's actually watching that terminal.
-//
-// A SECOND hook — Notification, not tool-scoped — rides the same script and
-// reports permission prompts / idle nudges to /api/agent-notification, so the
-// brain panel can show "waiting on you" instead of the silence an unhandled
-// prompt produces today (see agent-spawn.js's headlessBlockedReason comment
-// on why that silence is "the single worst failure shape in this app").
-const AGENT_HOOK_CONTENT = `#!/usr/bin/env node
-// Auto-installed by Vibeconferencing — reports the Claude session's transcript
-// path to the local bot server for the debug-overlay agent-activity tail,
-// forwards Notification events (permission prompts, idle nudges), and warns
-// (once per join_call) when the joining model is Fable.
-// Never blocks or breaks the agent: swallows all errors, exits 0 fast.
-const http = require('http');
-const fs = require('fs');
-// process.exit() can truncate a stdout write to a pipe that hasn't flushed yet
-// — a real Node gotcha, not hypothetical. Every exit path funnels through
-// done(), which waits on this if maybeWarnSlowModel started a write.
-let pendingWrite = null;
-let raw = '';
-process.stdin.on('data', (c) => { raw += c; });
-process.stdin.on('end', () => {
-  let d = {};
-  try { d = JSON.parse(raw); } catch (e) {}
-  maybeWarnSlowModel(d);
-  const port = process.env.VIBECONF_LOCAL_PORT || '7865';
-  // #201 made the control API require a bearer token, and this hook was not
-  // updated — so every POST here 401'd from Aug 1 and the agent session was
-  // never bound. Nothing surfaced it: the hook swallows all errors by design,
-  // and a hook that silently stops working looks exactly like a hook that has
-  // nothing to report. The visible symptom was the avatar never reaching
-  // 🧑‍💻 working (#339), because that state is driven entirely by this feed.
-  //
-  // Same 0600 file the MCP server reads, keyed by port.
-  let token = '';
-  try {
-    token = fs.readFileSync(
-      require('path').join(require('os').homedir(), '.vibeconferencing', 'local-tokens', port + '.token'),
-      'utf8').trim();
-  } catch (e) { /* no token file — server may be running with auth off */ }
-
-  if (d.hook_event_name === 'Notification') {
-    const body = JSON.stringify({ sessionId: d.session_id, message: d.message });
-    return postJson('/api/agent-notification', body, port, token);
-  }
-  const transcriptPath = d.transcript_path;
-  if (!transcriptPath) return done();
-  const body = JSON.stringify({ sessionId: d.session_id, transcriptPath });
-  postJson('/api/agent-session', body, port, token);
-});
-
-function postJson(urlPath, body, port, token) {
-  const headers = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) };
-  if (token) headers.authorization = 'Bearer ' + token;
-  const req = http.request({
-    host: '127.0.0.1', port, path: urlPath, method: 'POST',
-    headers,
-    timeout: 500,
-  }, (res) => { res.resume(); res.on('end', done); });
-  req.on('error', done);
-  req.on('timeout', () => { req.destroy(); done(); });
-  req.write(body); req.end();
-}
-
-// A PostToolUse hook's stdout JSON can carry a systemMessage shown to the user
-// in-terminal (not fed to the model, and non-blocking — the tool already ran).
-// Only checked on join_call itself, so this fires once per join, not once per
-// tool call.
-function maybeWarnSlowModel(d) {
-  try {
-    if (d.tool_name !== 'mcp__vibeconferencing__join_call') return;
-    const model = lastRealModel(d.transcript_path);
-    if (model && model.toLowerCase().includes('fable')) {
-      pendingWrite = new Promise((resolve) => {
-        process.stdout.write(JSON.stringify({
-          systemMessage: '⚠️ Joining on ' + model + ' — response latency tends to run much higher than Sonnet/Opus (~17s vs ~8s avg in our audits), almost entirely model think time. Switch with /model if responsiveness matters here.',
-        }), resolve);
-      });
-    }
-  } catch (e) { /* never let a warning attempt block the join */ }
-}
-
-// The model on the most recent real (non-<synthetic>) assistant turn, read
-// from the tail of the transcript. The turn that IS this join_call call is
-// always the last one at this point, so a small tail read is enough.
-function lastRealModel(transcriptPath) {
-  if (!transcriptPath) return null;
-  const size = fs.statSync(transcriptPath).size;
-  const tailBytes = Math.min(size, 65536);
-  const fd = fs.openSync(transcriptPath, 'r');
-  const buf = Buffer.alloc(tailBytes);
-  fs.readSync(fd, buf, 0, tailBytes, size - tailBytes);
-  fs.closeSync(fd);
-  const lines = buf.toString('utf-8').split('\\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (!lines[i].trim()) continue;
-    let entry; try { entry = JSON.parse(lines[i]); } catch (e) { continue; }
-    const model = entry && entry.type === 'assistant' && entry.message && entry.message.model;
-    if (model && model !== '<synthetic>') return model;
-  }
-  return null;
-}
-
-function done() {
-  if (pendingWrite) { pendingWrite.then(() => process.exit(0)); return; }
-  process.exit(0);
-}
-setTimeout(done, 1500); // never hang the agent
-`;
-
-function ensureAgentActivityHook() {
-  const home = process.env.HOME || process.env.USERPROFILE;
-  const claudeDir = path.join(home, '.claude');
-  const hookPath = path.join(claudeDir, 'vibeconf-agent-hook.cjs');
-  const settingsPath = path.join(claudeDir, 'settings.json');
-  try {
-    fs.mkdirSync(claudeDir, { recursive: true });
-    // Write the hook file only when its content differs (avoid needless churn).
-    let existing = '';
-    try { existing = fs.readFileSync(hookPath, 'utf-8'); } catch { /* missing */ }
-    if (existing !== AGENT_HOOK_CONTENT) fs.writeFileSync(hookPath, AGENT_HOOK_CONTENT);
-
-    // No port baked into the command: the hook reads VIBECONF_LOCAL_PORT from
-    // its inherited env (app-spawned sessions set it to THEIR bot's port — see
-    // launchClaudeTerminal) and falls back to 7865 (the primary app) for an
-    // existing session that ran /join-call. This is why the same global hook
-    // works for every bot — the port comes from the session, not the command.
-    const desiredCmd = `node "${hookPath}"`;
-    let settings = {};
-    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8')); } catch { /* none yet */ }
-    if (!settings.hooks) settings.hooks = {};
-    // Is our entry already present with the right command? (idempotent)
-    const isOurs = (e) => (e.hooks || []).some((h) => typeof h.command === 'string' && h.command.includes('vibeconf-agent-hook'));
-
-    // Checked independently (not one early-return after the first match) so an
-    // existing install missing just the newer Notification hook still gets it
-    // added on the next launch, instead of the PostToolUse match short-circuiting
-    // before Notification is ever looked at.
-    let changed = false;
-
-    if (!Array.isArray(settings.hooks.PostToolUse)) settings.hooks.PostToolUse = [];
-    const toolCurrent = settings.hooks.PostToolUse.find(isOurs);
-    if (!toolCurrent || toolCurrent.matcher !== 'mcp__vibeconferencing__.*' || toolCurrent.hooks?.[0]?.command !== desiredCmd) {
-      settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter((e) => !isOurs(e));
-      settings.hooks.PostToolUse.push({
-        matcher: 'mcp__vibeconferencing__.*',
-        hooks: [{ type: 'command', command: desiredCmd }],
-      });
-      changed = true;
-    }
-
-    // Notification — permission prompts / idle nudges, so the brain panel can
-    // show a session as waiting-on-you instead of just quiet. No matcher: this
-    // fires per-notification, not per-tool, and every notification is worth
-    // forwarding — the server (not this hook) decides what to do with it.
-    if (!Array.isArray(settings.hooks.Notification)) settings.hooks.Notification = [];
-    const notifCurrent = settings.hooks.Notification.find(isOurs);
-    if (!notifCurrent || notifCurrent.hooks?.[0]?.command !== desiredCmd) {
-      settings.hooks.Notification = settings.hooks.Notification.filter((e) => !isOurs(e));
-      settings.hooks.Notification.push({
-        hooks: [{ type: 'command', command: desiredCmd }],
-      });
-      changed = true;
-    }
-
-    if (changed) {
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-      console.log('[electron] Installed agent-activity PostToolUse + Notification hooks (port from session env, default 7865)');
-    }
-  } catch (err) {
-    console.warn('[electron] Failed to install agent-activity hook:', err.message);
-  }
-}
+const { AGENT_HOOK_CONTENT, ensureAgentActivityHook } = require('./agent-integration.js');
 
 function removeAgentActivityHook() {
   const home = process.env.HOME || process.env.USERPROFILE;
@@ -9260,252 +9137,11 @@ function removeAgentActivityHook() {
   try { fs.rmSync(hookPath, { force: true }); } catch { /* ignore */ }
 }
 
+// The machine-wide agent setup lives in agent-integration.js (#301). This keeps
+// the old call shape for the default bot (classic mode) and the menu's
+// "Install Claude Integration".
 function ensureClaudeIntegration() {
-  const home = process.env.HOME || process.env.USERPROFILE;
-  const claudeDir = path.join(home, '.claude');
-  const claudeJsonPath = path.join(home, '.claude.json');
-  const skillDir = path.join(claudeDir, 'skills', 'join-call');
-  const skillPath = path.join(skillDir, 'SKILL.md');
-
-  // Determine paths based on whether we're packaged or in dev
-  const isPackaged = app.isPackaged;
-  const mcpServerRoot = bundledMcpServerRoot();
-  const mcpServerPath = bundledMcpServerPath();
-  const appLaunchCmd = isPackaged
-    ? 'open -a Vibeconferencing'
-    : `cd ${__dirname} && npx electron .`;
-
-  // ~/.claude.json is durable config; only point it at a server that can
-  // actually start. Packaged builds get prod deps via beforePack; a fresh
-  // source checkout has none until someone installs them in mcp-server/.
-  const serverEntryExists = fs.existsSync(mcpServerPath);
-  // The server needs BOTH the MCP SDK and zod to boot — check both, not just the SDK.
-  const serverDepsPresent = mcpServerDepsPresent(mcpServerRoot);
-
-  // A linked git worktree (`.git` is a file, not a dir) is a removable
-  // checkout — repointing durable config at one strands the entry when the
-  // worktree goes away.
-  const isTempWorktree = runningFromGitWorktree();
-
-  let changed = false;
-
-  // --- Ensure global MCP config in ~/.claude.json ---
-  // Read defensively: a missing file is fine (we create it), but a present-but-
-  // unreadable/malformed file must NOT be rewritten from {} — that would erase
-  // every other MCP server the user has. See claude-config.js.
-  const { readClaudeConfigSafe, atomicWriteJson } = require('./claude-config.js');
-  const { config: claudeJson, readable: configReadable, mtimeMs: claudeMtimeMs } = readClaudeConfigSafe(claudeJsonPath);
-  if (!configReadable) {
-    console.warn('[electron] ~/.claude.json exists but is unreadable/malformed —',
-      'leaving MCP config untouched to avoid clobbering other servers');
-  }
-
-  if (!claudeJson.mcpServers) claudeJson.mcpServers = {};
-
-  // Always pin the global config at the stable fallback port, NOT the writing
-  // instance's own port — this entry is app-level and must point bare-terminal
-  // `claude` at a fixed target regardless of who installs it. (On join_call the
-  // MCP server re-binds by profile name anyway; this is just the default target.)
-  const localBaseUrl = `http://127.0.0.1:${DEFAULT_PORT}`;
-  const configuredBotName = resolvedBotName();
-  const currentMcp = claudeJson.mcpServers.vibeconferencing;
-  const nodeLauncher = mcpNodeLauncher();
-  // `command` is compared too, so installs written by an older build (which
-  // hardcoded 'node') get repaired on next launch instead of staying broken for
-  // exactly the users who can't diagnose it.
-  const needsUpdate = !currentMcp ||
-    currentMcp.command !== nodeLauncher.command ||
-    currentMcp.env?.VIBECONF_BASE_URL !== localBaseUrl ||
-    currentMcp.env?.VIBECONF_BOT_NAME !== configuredBotName ||
-    currentMcp.args?.[0] !== mcpServerPath;
-  const existingServerOk = !!currentMcp?.args?.[0] && fs.existsSync(currentMcp.args[0]);
-
-  if (!configReadable) {
-    /* warned above — never rewrite an unreadable/malformed config from {} */
-  } else if (!serverEntryExists) {
-    console.warn('[electron] MCP server entrypoint missing at', mcpServerPath,
-      '— leaving MCP config untouched');
-  } else if (!serverDepsPresent) {
-    console.warn('[electron] mcp-server deps not installed (no node_modules/@modelcontextprotocol/sdk).',
-      'Run `npm install` (or pnpm) in', mcpServerRoot, '— leaving MCP config untouched');
-  } else if (isTempWorktree && existingServerOk && currentMcp.args[0] !== mcpServerPath) {
-    console.warn('[electron] running from a git worktree — keeping existing MCP server path',
-      currentMcp.args[0], 'instead of repointing durable config at', mcpServerPath);
-  } else if (needsUpdate) {
-    claudeJson.mcpServers.vibeconferencing = {
-      command: nodeLauncher.command,
-      args: [mcpServerPath],
-      env: {
-        ...nodeLauncher.env,
-        VIBECONF_ROOM_ID: '',
-        VIBECONF_BOT_NAME: configuredBotName,
-        VIBECONF_BASE_URL: localBaseUrl,
-      },
-    };
-    atomicWriteJson(claudeJsonPath, claudeJson, { expectedMtimeMs: claudeMtimeMs });
-    console.log('[electron] Updated MCP config → local server at', localBaseUrl, 'botName:', configuredBotName);
-    changed = true;
-  } else {
-    console.log('[electron] MCP config already pointing to local server');
-  }
-
-  // --- Ensure global skill in ~/.claude/skills/join-call/ ---
-  // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '70';  // Bump this when updating the skill content below
-  const versionFile = path.join(skillDir, '.version');
-  let installedVersion = '';
-  try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
-
-  const skillSourcePath = path.join(mcpServerRoot, 'join-call-skill.md');
-  if (installedVersion !== SKILL_VERSION && !fs.existsSync(skillSourcePath)) {
-    console.warn('[electron] join-call skill source missing at', skillSourcePath, '— skipping skill install');
-  } else if (installedVersion !== SKILL_VERSION) {
-    fs.mkdirSync(skillDir, { recursive: true });
-    const skillContent = fs.readFileSync(skillSourcePath, 'utf-8');
-    fs.writeFileSync(skillPath, skillContent);
-    fs.writeFileSync(versionFile, SKILL_VERSION);
-    console.log(`[electron] Installed/updated skill v${SKILL_VERSION} at ${skillPath}`);
-    changed = true;
-  } else {
-    console.log('[electron] Skill v%s already installed', SKILL_VERSION);
-  }
-
-  // --- Ensure global skill in ~/.claude/skills/call/ ---
-  // /call starts a BRAND-NEW call (the command form of the panel's "Call <bot>
-  // now"); /join-call puts the bot into one that already exists. Same version
-  // gate, its own directory — Claude Code takes one skill per directory.
-  try {
-    const callSkillDir = path.join(claudeDir, 'skills', 'call');
-    const callVersionFile = path.join(callSkillDir, '.version');
-    let callInstalled = '';
-    try { callInstalled = fs.readFileSync(callVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
-    if (callInstalled !== SKILL_VERSION) {
-      fs.mkdirSync(callSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(callSkillDir, 'SKILL.md'), fs.readFileSync(
-        isPackaged
-          ? path.join(process.resourcesPath, 'mcp-server', 'call-skill.md')
-          : path.join(__dirname, '..', 'mcp-server', 'call-skill.md'),
-        'utf-8',
-      ));
-      fs.writeFileSync(callVersionFile, SKILL_VERSION);
-      console.log(`[electron] Installed/updated /call skill v${SKILL_VERSION}`);
-      changed = true;
-    }
-  } catch (err) {
-    console.warn('[electron] /call skill install failed:', err.message);
-  }
-
-  // --- Remove the old ~/.claude/skills/realtime-call/ ---
-  // /realtime-call was a stopgap: a separate command for a bot whose voice
-  // belongs to the realtime model. The mode is a property of the BOT, not of
-  // how you start it, so /join-call now branches on its realtimeVoice
-  // preference and answers with a completely different operating prompt.
-  //
-  // Deleted rather than left behind. A slash command that still appears in the
-  // list, still installs, and quietly does the wrong thing is worse than one
-  // that is gone: it would join with the realtime prompt whatever the bot is
-  // actually set to.
-  try {
-    const staleRtSkill = path.join(claudeDir, 'skills', 'realtime-call');
-    if (fs.existsSync(staleRtSkill)) {
-      fs.rmSync(staleRtSkill, { recursive: true, force: true });
-      console.log('[electron] Removed the old /realtime-call skill (superseded by /join-call)');
-      changed = true;
-    }
-  } catch (err) {
-    console.warn('[electron] could not remove the old /realtime-call skill:', err.message);
-  }
-
-  // --- Ensure global skill in ~/.claude/skills/call-new-bot/ ---
-  // /call-new-bot turns the CALLER's own Claude session into a bot: it creates a
-  // profile seeded with that session's workdir + name, so the new bot resumes it
-  // rather than starting fresh. The inverse of every other path here — normally a
-  // bot gets a session; this gives a session a bot. Same version gate, own
-  // directory (Claude Code takes one skill per directory).
-  try {
-    const newBotSkillDir = path.join(claudeDir, 'skills', 'call-new-bot');
-    const newBotVersionFile = path.join(newBotSkillDir, '.version');
-    let newBotInstalled = '';
-    try { newBotInstalled = fs.readFileSync(newBotVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
-    if (newBotInstalled !== SKILL_VERSION) {
-      fs.mkdirSync(newBotSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(newBotSkillDir, 'SKILL.md'), fs.readFileSync(
-        isPackaged
-          ? path.join(process.resourcesPath, 'mcp-server', 'call-new-bot-skill.md')
-          : path.join(__dirname, '..', 'mcp-server', 'call-new-bot-skill.md'),
-        'utf-8',
-      ));
-      fs.writeFileSync(newBotVersionFile, SKILL_VERSION);
-      console.log(`[electron] Installed/updated /call-new-bot skill v${SKILL_VERSION}`);
-      changed = true;
-    }
-  } catch (err) {
-    console.warn('[electron] /call-new-bot skill install failed:', err.message);
-  }
-
-  // --- Ensure global skill in ~/.claude/skills/onboarding-call/ ---
-  // /onboarding-call is /call's guided-setup sibling: same "start a brand-new
-  // call" mechanics, but the agent runs a scripted walkthrough (name, voice,
-  // emoji, whiteboard style, skills, after-call routine) instead of a normal
-  // conversation. Triggered by the panel's "Setup" button (setupCallBtn),
-  // which passes onboardingCall through createAndJoinMeet → launchClaudeTerminal
-  // / launchClaudeHeadless → buildAgentArgs, picking this slash command over
-  // /join-call. Same version gate as the other two, own directory.
-  try {
-    const onboardingSkillDir = path.join(claudeDir, 'skills', 'onboarding-call');
-    const onboardingVersionFile = path.join(onboardingSkillDir, '.version');
-    let onboardingInstalled = '';
-    try { onboardingInstalled = fs.readFileSync(onboardingVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
-    if (onboardingInstalled !== SKILL_VERSION) {
-      fs.mkdirSync(onboardingSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(onboardingSkillDir, 'SKILL.md'), fs.readFileSync(
-        isPackaged
-          ? path.join(process.resourcesPath, 'mcp-server', 'onboarding-call-skill.md')
-          : path.join(__dirname, '..', 'mcp-server', 'onboarding-call-skill.md'),
-        'utf-8',
-      ));
-      fs.writeFileSync(onboardingVersionFile, SKILL_VERSION);
-      console.log(`[electron] Installed/updated /onboarding-call skill v${SKILL_VERSION}`);
-      changed = true;
-    }
-  } catch (err) {
-    console.warn('[electron] /onboarding-call skill install failed:', err.message);
-  }
-
-  // --- Ensure global skill in ~/.claude/skills/emoji-set/ ---
-  // /emoji-set generates a themed avatar image set (nanobanana) plus a matching
-  // call background, and points a running bot at it via the `dir:`/`file:`
-  // preference forms. Same version gate as the other skills, own directory.
-  try {
-    const emojiSetSkillDir = path.join(claudeDir, 'skills', 'emoji-set');
-    const emojiSetVersionFile = path.join(emojiSetSkillDir, '.version');
-    let emojiSetInstalled = '';
-    try { emojiSetInstalled = fs.readFileSync(emojiSetVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
-    if (emojiSetInstalled !== SKILL_VERSION) {
-      fs.mkdirSync(emojiSetSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(emojiSetSkillDir, 'SKILL.md'), fs.readFileSync(
-        isPackaged
-          ? path.join(process.resourcesPath, 'mcp-server', 'emoji-set-skill.md')
-          : path.join(__dirname, '..', 'mcp-server', 'emoji-set-skill.md'),
-        'utf-8',
-      ));
-      fs.writeFileSync(emojiSetVersionFile, SKILL_VERSION);
-      console.log(`[electron] Installed/updated /emoji-set skill v${SKILL_VERSION}`);
-      changed = true;
-    }
-  } catch (err) {
-    console.warn('[electron] /emoji-set skill install failed:', err.message);
-  }
-
-  // Agent-activity overlay hook (independent of the MCP/skill version bumps).
-  // Port-agnostic: app-spawned sessions inject VIBECONF_LOCAL_PORT themselves.
-  ensureAgentActivityHook();
-
-  if (changed) {
-    console.log('[electron] Claude integration installed. Restart Claude Code to pick up MCP changes.');
-  }
-
-  return changed;
+  return require('./agent-integration.js').ensureClaudeIntegration({ defaultPort: DEFAULT_PORT, botName: resolvedBotName() });
 }
 
 // ---------------------------------------------------------------------------
@@ -9639,7 +9275,49 @@ function isCodexIntegrationInstalled() {
   return readable && !!currentCodexMcpServerPath(content);
 }
 
+// #301: a bot running means the supervisor is running. That is the whole
+// guarantee — not that the supervisor lives forever (closing its window quits
+// it, which is the user's call), but that it is never absent while there are
+// bots to coordinate.
+//
+// Fire-and-forget, and deliberately not awaited: a bot must never be slower to
+// appear because the coordinator is slow, and everything the bot itself does
+// works whether or not one is up. A launch that races another bot's launch is
+// resolved by the supervisor's own single-instance lock, not here.
+async function ensureSupervisorRunning() {
+  try {
+    const { supervisorIsRunning } = require('./profile-launch.js');
+    const { supervisorUrl } = require('./supervisor-port.js');
+    if (await supervisorIsRunning({ url: supervisorUrl() })) return;
+
+    const { execFile } = require('child_process');
+    console.log('[electron] No supervisor answering — starting one.');
+    // Same per-platform argv as a bot launch (#746): open(1) only on macOS.
+    const { cmd, argv, detached } = profileLaunchCommand({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      exePath: app.getPath('exe'),
+      appPath: app.isPackaged ? null : app.getAppPath(),
+      // In the background: this bot was started by hand (its own window), so
+      // the app's window stays out of the way until someone asks for it.
+      args: ['--supervisor', '--background'],
+    });
+    const onError = (err) => { if (err) console.warn('[electron] could not start the supervisor:', err.message); };
+    const child = detached
+      ? execFile(cmd, argv, { detached: true, stdio: 'ignore' })
+      : execFile(cmd, argv, onError);
+    child.on('error', onError);
+    if (detached) child.unref();
+  } catch (err) {
+    // A bot that cannot start a supervisor is still a working bot. Say so and
+    // carry on — this must never be the reason a call does not happen.
+    console.warn('[electron] ensureSupervisorRunning failed (continuing):', err.message);
+  }
+}
+
 app.whenReady().then(async () => {
+  ensureSupervisorRunning();
+
   // P2: force plain system DNS (no DoH). Chromium's built-in resolver does Secure DNS by
   // default, which can't resolve LiveKit's dynamic media/TURN hosts (*.host/.turn.livekit.cloud)
   // → -105 in WebRTC → the Runway avatar video never connects. The OS resolver handles them, so
@@ -9877,6 +9555,9 @@ app.whenReady().then(async () => {
     console.log('[electron] Requested local server port:', explicitLocalPort);
   }
   await localServer.start();
+  // Tell the app that started us where we listen, so it can match this child
+  // to the bot its port scan finds (see bot-children.js).
+  if (parentLink) parentLink.hello(localServer.port);
 
   // Remote log shipping (opt-in via `remoteLogging` pref). Build a stable
   // instanceId from hostname + profile so the same bot is recognizable across
@@ -9930,6 +9611,10 @@ app.whenReady().then(async () => {
   // files; named instances skip it (and self-pin their own --mcp-config instead).
   if (!isDefaultInstance) {
     console.log('[electron] Skipping global agent integration for named profile:', appProfile);
+  } else if (HEADLESS) {
+    // #301: running inside the app window, which installs it (supervisor-app.js
+    // installAgentIntegration) as the single writer.
+    console.log('[electron] Skipping global agent integration: the app window installs it');
   } else if (prefValue('agentBackend') === 'codex') {
     if (store.get('codexIntegrationRemoved') === true) {
       console.log('[electron] Codex integration NOT installed (user uninstalled it - leave-no-trace flag set)');
@@ -10075,6 +9760,8 @@ app.whenReady().then(async () => {
     app.dock.setIcon(icon);
   }
 
+  // Headless (#301): no Dock icon; this bot's UI is the supervisor's window.
+  if (HEADLESS && app.dock) app.dock.hide();
   createMainWindow();
   setupIPC();
 
@@ -10158,28 +9845,40 @@ app.whenReady().then(async () => {
     // once this runs the Automation decision has been put to the user either
     // way, and the wizard can read the real status instead of assuming unknown.
     if (process.platform === 'darwin') { try { store.set('automationProbed', true); } catch { /* ignore */ } }
-    const { execFile } = require('child_process');
+    // The scan itself (AppleScript over Chrome/Safari/Brave, and the parsing of
+    // what it prints) lives in browser-call-scan.js, shared with the supervisor.
+    const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
+    const { supervisorUrl } = require('./supervisor-port.js');
     let pollInFlight = false;
-
-    // Note: Firefox is not supported — it has no AppleScript tab API.
-    //
-    // PERF (Stan, 2026-07-05 — polls timed out on EVERY tick, so detection
-    // silently never fired). Two independent fixes, both needed:
-    //   1. NO System Events. The old `tell application "System Events" …
-    //      exists process` preamble alone measured 16.8s on a busy machine —
-    //      the whole 8s budget gone before touching a browser. The
-    //      `application "X" is running` form asks launchd directly (fast) and,
-    //      critically, does NOT launch the app the way a bare `tell
-    //      application` would.
-    //   2. BATCHED tab reads: `URL of tabs of w` is one Apple Event per
-    //      window vs two per TAB. ~48 tabs measured 0.25s batched vs 8s+
-    //      per-tab.
-    // Per-window try blocks skip a misbehaving window without aborting the
-    // whole scan; the per-item try skips tabs whose URL is `missing value`
-    // (empty Safari tabs).
-    const appleScript = browserTabScanScript();
+    // Which source the last poll used, so a switch is logged once, not per tick.
+    let lastScanSource = null;
 
     console.log('[electron] Meet/Slack detection started');
+
+    // #301: the supervisor is the machine's one browser scanner. Ask it first,
+    // and scan ourselves only when it is not answering (not started yet, an
+    // older build without the endpoint, or its own scan failing, which it
+    // reports as scanning:false). Its answer has the same shape as our own
+    // scan, so everything below is unchanged except the pop-up: the supervisor
+    // already showed that once for the whole fleet.
+    async function scanViaSupervisor() {
+      try {
+        const res = await fetch(`${supervisorUrl()}/api/detected-calls`, { signal: AbortSignal.timeout(800) });
+        if (!res.ok) return null;
+        const body = await res.json();
+        if (!body || body.ok !== true || body.scanning !== true) return null;
+        return {
+          ok: true,
+          meetUrls: Array.isArray(body.meetUrls) ? body.meetUrls : [],
+          slackHuddleUrl: body.slackHuddleUrl || null,
+          slackAmbiguous: null,
+          elapsedMs: 0,
+          fromSupervisor: true,
+        };
+      } catch {
+        return null;
+      }
+    }
 
     function pollForMeet() {
       if (currentMeetUrl || pollInFlight) return;
@@ -10190,12 +9889,22 @@ app.whenReady().then(async () => {
       if (localServer.callStatus === 'in-call') return;
       pollInFlight = true;
 
-      const pollStart = Date.now();
-      execFile('osascript', ['-e', appleScript], { timeout: 8000 }, (err, stdout, stderr) => {
+      (async () => {
+        const viaSupervisor = await scanViaSupervisor();
+        const source = viaSupervisor ? 'supervisor' : 'self';
+        if (source !== lastScanSource) {
+          console.log(`[electron] Meet/Slack detection: ${viaSupervisor ? "using the supervisor's scan" : 'scanning the browser ourselves (no supervisor answering)'}`);
+          lastScanSource = source;
+        }
+        return viaSupervisor || scanBrowsers();
+      })().then((scan) => {
         pollInFlight = false;
-        const elapsed = ((Date.now() - pollStart) / 1000).toFixed(1);
-        if (err) {
-          const stderrMsg = stderr?.trim() || '';
+        const elapsed = (scan.elapsedMs / 1000).toFixed(1);
+        // The supervisor already told the user about this tab; a bot repeating
+        // it is the duplicate pop-up #301 set out to remove.
+        const notify = !scan.fromSupervisor;
+        if (!scan.ok) {
+          const stderrMsg = scan.stderr || '';
           // Log a given failure ONCE, not every 5 seconds. These conditions are
           // persistent by nature — a denied Automation permission, a missing
           // binary, a browser that hangs the scan — so repeating the same line
@@ -10203,17 +9912,16 @@ app.whenReady().then(async () => {
           // shares. Keyed by message so a DIFFERENT failure still gets through,
           // and re-armed on the next success below, so a recurrence after a
           // recovery is still reported.
-          const failKey = stderrMsg || (err.killed ? 'timeout' : err.message?.slice(0, 80)) || 'unknown';
+          const failKey = scan.failKey;
           if (failKey !== lastMeetPollFailure) {
             lastMeetPollFailure = failKey;
             console.log(`[electron] Meet poll failed (${elapsed}s):`, failKey, '— further identical failures suppressed');
           }
-          // -1743 = errAEEventNotPermitted: the user hasn't granted Automation
-          // permission to control the browser. macOS won't re-prompt once it's
-          // been denied/dismissed, so the poll fails silently forever and Meet
-          // detection just never works (Seth's case). Surface it once with a
-          // path to fix it.
-          const notAuthorized = stderrMsg.includes('-1743') || /not authorized to send apple events/i.test(stderrMsg);
+          // The user hasn't granted Automation permission to control the
+          // browser. macOS won't re-prompt once it's been denied/dismissed, so
+          // the poll fails silently forever and Meet detection just never works
+          // (Seth's case). Surface it once with a path to fix it.
+          const notAuthorized = isAutomationDenied(stderrMsg);
           if (notAuthorized && !automationPromptShown) {
             automationPromptShown = true;
             dialog.showMessageBox({
@@ -10249,37 +9957,14 @@ app.whenReady().then(async () => {
           lastMeetPollFailure = null;
         }
 
-        const lines = (stdout || '').trim().split('\n').map((l) => l.trim()).filter(Boolean);
-        const urls = lines.filter((l) => l.startsWith('MEET:')).map((l) => l.slice(5))
-          .filter((u) => /meet\.google\.com\/[a-z]+-[a-z]+-[a-z]+/.test(u));
+        const urls = scan.meetUrls;
         const meetUrl = urls[0] || null;
-
-        // Slack huddle: a live browser huddle shows up as an about:blank window
-        // (the huddle popup, whose TITLE carries the workspace) alongside a
-        // workspace tab that carries the team/channel. With MULTIPLE Slack tabs
-        // open we must pick the one actually IN the huddle, not just the first —
-        // so match the huddle popup's workspace to the right tab's title.
-        const slackTabs = lines.filter((l) => l.startsWith('SLACK:')).map((l) => {
-          const [url, ...rest] = l.slice(6).split('|||');
-          return { url, title: (rest.join('|||') || '').trim() };
-        }).filter((t) => /app\.slack\.com\/client\/[^/]+\/[^/?#]+/.test(t.url));
-        const blankTitles = lines.filter((l) => l.startsWith('BLANK:')).map((l) => l.slice(6).trim());
-        const huddleTitle = blankTitles.find((t) => /^Huddle:/i.test(t));
-        let slackHuddleUrl = null;
-        if (huddleTitle) {
-          // "Huddle: #channel - Workspace - Slack 🎤" → workspace is the 2nd
-          // " - " segment; match the Slack tab whose title names that workspace.
-          const ws = (huddleTitle.split(' - ')[1] || '').trim();
-          const match = ws && slackTabs.find((t) => t.title.includes(ws));
-          slackHuddleUrl = (match && match.url) || (slackTabs.length === 1 ? slackTabs[0].url : null);
-          if (slackTabs.length > 1 && !match) {
-            console.warn('[electron] Slack huddle "' + huddleTitle + '": ' + slackTabs.length +
-              ' Slack tabs, none matched workspace "' + ws + '" — not auto-selecting. Tabs:',
-              JSON.stringify(slackTabs.map((t) => t.title)));
-          }
-        } else if (blankTitles.length && slackTabs.length === 1) {
-          // A blank (huddle) window + exactly one Slack tab → unambiguous.
-          slackHuddleUrl = slackTabs[0].url;
+        const slackHuddleUrl = scan.slackHuddleUrl;
+        if (scan.slackAmbiguous) {
+          const amb = scan.slackAmbiguous;
+          console.warn('[electron] Slack huddle "' + amb.huddleTitle + '": ' + amb.tabTitles.length +
+            ' Slack tabs, none matched workspace "' + amb.workspace + '" — not auto-selecting. Tabs:',
+            JSON.stringify(amb.tabTitles));
         }
 
         // Forward all detected Meet URLs + any Slack huddle to local server for MCP access
@@ -10291,7 +9976,7 @@ app.whenReady().then(async () => {
           console.log('[electron] Slack huddle detected:', slackHuddleUrl);
           broadcastToRenderers('slack-huddle-detected', { url: slackHuddleUrl });
           const { Notification } = require('electron');
-          if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
+          if (notify && Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
             const n = new Notification({
               title: 'Slack Huddle Detected',
               body: 'Found a Slack huddle in your browser. Open Vibeconferencing to connect your bot.',
@@ -10312,7 +9997,7 @@ app.whenReady().then(async () => {
           broadcastToRenderers('meet-detected', { url: meetUrl, meetCode });
           // Show macOS notification
           const { Notification } = require('electron');
-          if (Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
+          if (notify && Notification.isSupported() && !SUPPRESS_NOTIFICATIONS) {
             const notification = new Notification({
               title: 'Google Meet Detected',
               body: `Found call: ${meetCode}. Click Join in Vibeconferencing to connect your bot.`,
@@ -10914,6 +10599,7 @@ function confirmQuitBeforeClose(e) {
 }
 
 app.on('window-all-closed', () => {
+  noteQuitCause('its last window closed (window-all-closed)');
   closeClaudeTerminal();
   localServer.stop();
   app.quit();
@@ -10922,6 +10608,11 @@ app.on('window-all-closed', () => {
 // Close any terminal windows we opened, synchronously, before the process
 // exits — covers Cmd-Q and other quit paths the async close would miss.
 app.on('before-quit', () => {
+  try {
+    console.log(`[electron] QUITTING: ${quitCause || 'unattributed (not one of the app\'s own quit paths: a signal, Dock > Quit, Cmd+Q, logout or shutdown)'}`
+      + ` · callStatus=${localServer && localServer.callStatus} hosted=${HEADLESS}`
+      + ` windows=${BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed()).map((w) => JSON.stringify(w.getTitle())).join(',')}`);
+  } catch { /* logging must never block a quit */ }
   // Every quit that is NOT a click on ✕ passes through here first, so this is
   // where the confirmation learns to stand down (see confirmQuitBeforeClose).
   appIsQuitting = true;
@@ -10986,6 +10677,22 @@ function createMeetView(partition, { preload = 'preload-meet.js' } = {}) {
   // "Meet home". Redirects are logged separately from the final landing
   // because the interesting hop (meeting → accounts.google.com) is exactly the
   // one that is gone by the time anything else looks.
+  // #301: the Meet page going away mid-call used to be silent. On 2026-10-18 a
+  // headless bot's view was destroyed in a live call (its recorder flushed,
+  // then nothing) while the app kept reporting in-call for good. Say so,
+  // with where the view was, and stop claiming to be in a call that is gone.
+  // A view replaced on purpose (a fresh join, a provider swap) is no longer
+  // meetView by then, so it does not trip this.
+  view.webContents.once('destroyed', () => {
+    if (meetView !== view) return;
+    const status = localServer && localServer.callStatus;
+    console.error(`[electron] Meet view DESTROYED while ${status} (botViewState=${botViewState}, headless=${HEADLESS}, `
+      + `popout=${!!(meetPopoutWindow && !meetPopoutWindow.isDestroyed())}, hiddenHost=${!!(meetHiddenWindow && !meetHiddenWindow.isDestroyed())})`);
+    if (status && status !== 'idle') {
+      try { localServer.addError('The bot\'s call page closed unexpectedly, so it has left the call.'); } catch { /* best-effort */ }
+      try { localServer.setCallStatus('idle'); } catch { /* best-effort */ }
+    }
+  });
   view.webContents.on('did-redirect-navigation', (_e, url, _isInPlace, isMainFrame) => {
     if (isMainFrame) console.log('[electron] Meet view redirected →', url);
   });
@@ -11064,6 +10771,9 @@ let mainWindowShown = false;
 let _showMainWindowFallback = null;
 function showMainWindowOnce() {
   if (mainWindowShown) return;
+  // Headless: the supervisor's window shows this bot; showing ours would only
+  // ask it to (re)select us. See makeHeadless.
+  if (HEADLESS) { mainWindowShown = true; return; }
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindowShown = true;
   clearTimeout(_showMainWindowFallback);
@@ -11548,6 +11258,7 @@ function setBotViewState(state) {
     };
     fit();
     win.on('resize', fit);
+    presentHeadlessWindow(win);
     // Survive teardown: detach the view before the window dies so the call lives,
     // then re-dock. Covers both the toggle and the user closing the window.
     // The resize listener comes off FIRST — otherwise a resize event fired
@@ -11937,6 +11648,59 @@ function hasHiddenTitleBar() {
   return process.platform === 'darwin';
 }
 
+// Redirect "bring this window forward" to the supervisor's window. One
+// interception for the ~20 places that show, focus or restore mainWindow
+// (notification clicks, /api/focus, a second launch, join flows), rather than
+// a headless check at each.
+// A window a headless bot opens for the user (Bot's view, Brain,
+// Troubleshooting) brings the bot app forward with it. The click came from the
+// app window, another process, so this bot is not the active app, and its new
+// window could open behind the app's (it took two clicks to find).
+function presentHeadlessWindow(win) {
+  if (!HEADLESS || !win || win.isDestroyed()) return;
+  try { app.focus({ steal: true }); } catch { /* not on this platform */ }
+  try { win.show(); win.focus(); } catch { /* gone */ }
+}
+
+function makeHeadless(win) {
+  const real = {
+    show: win.show.bind(win),
+    focus: win.focus.bind(win),
+  };
+  let presenting = false;
+  let lastSelectAt = 0;
+  const presentInShell = () => {
+    if (presenting) return;
+    // Started by the app: ask it over our channel. No port, no token, and no
+    // chance of reaching some other app window than the one that owns us.
+    // show() and focus() usually come as a pair: one request for both.
+    if (parentLink && Date.now() - lastSelectAt < 1000) return;
+    if (parentLink && parentLink.select()) { lastSelectAt = Date.now(); return; }
+    presenting = true;
+    (async () => {
+      try {
+        const { supervisorUrl } = require('./supervisor-port.js');
+        const res = await fetch(`${supervisorUrl()}/api/select?profile=${encodeURIComponent(appProfile)}`, {
+          method: 'POST', signal: AbortSignal.timeout(5000),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body.ok === false) throw new Error(body.error || `HTTP ${res.status}`);
+      } catch (err) {
+        console.log(`[electron] headless: no supervisor to show this bot in (${err.message}); showing its own window`);
+        if (app.dock) app.dock.show();
+        real.show();
+        real.focus();
+      } finally {
+        presenting = false;
+      }
+    })();
+  };
+  win.show = presentInShell;
+  win.showInactive = presentInShell;
+  win.focus = presentInShell;
+  win.restore = presentInShell;
+}
+
 function createMainWindow() {
   // Optional explicit window placement from CLI (--window-x/-y/-w/-h), used by
   // the multi-bot test launcher to tile windows in a grid. Setting x/y at
@@ -11983,12 +11747,17 @@ function createMainWindow() {
     minHeight: MIN_WINDOW_HEIGHT,
     title: 'Vibeconferencing',
     icon: path.join(__dirname, 'icon.png'),
+    // Headless (#301): no taskbar entry on Windows/Linux, the counterpart of the
+    // hidden Dock icon on macOS.
+    skipTaskbar: HEADLESS,
     webPreferences: {
       // Main window itself doesn't load content — views do
       nodeIntegration: false,
       contextIsolation: true,
     },
   });
+
+  if (HEADLESS) makeHeadless(mainWindow);
 
   // --- Panel sidebar (left) ---
   panelView = new BrowserView({
@@ -12013,6 +11782,7 @@ function createMainWindow() {
   // NOT the 'screen' param: that one marks a POP-OUT window (IS_POPOUT_WINDOW),
   // which would suppress this panel's height reporting and leave the main window
   // stuck at its startup size.
+  panelRelay.attachPanel(panelView.webContents); // #301: tee pushes to the supervisor's window
   panelView.webContents.loadFile(path.join(__dirname, 'renderer', 'panel.html'),
     cliArgs['open-settings'] === 'true' ? { search: 'startScreen=settings' } : undefined);
   // The window is hidden until the panel reports its height (showMainWindowOnce).
@@ -12464,6 +12234,22 @@ function createMainWindow() {
   function refreshAppMenu() {
     Menu.setApplicationMenu(Menu.buildFromTemplate(buildAppMenuTemplate()));
   }
+  // #301: the app window's Bot menu is THIS menu, for whichever bot is
+  // selected: it lists these items over the panel relay and runs them by
+  // label, so the two menus cannot drift apart.
+  const botSubmenu = () => (buildAppMenuTemplate().find((m) => m.label === 'Bot') || {}).submenu || [];
+  // createMainWindow can run again; a second ipcMain.handle would throw.
+  ipcMain.removeHandler('bot-menu-items');
+  ipcMain.removeHandler('bot-menu-click');
+  ipcMain.handle('bot-menu-items', () => botSubmenu().map((i) => (i.type === 'separator'
+    ? { type: 'separator' }
+    : { label: i.label, accelerator: i.accelerator || null, enabled: i.enabled !== false })));
+  ipcMain.handle('bot-menu-click', (_event, label) => {
+    const item = botSubmenu().find((i) => i.label === label);
+    if (!item || typeof item.click !== 'function' || item.enabled === false) return { ok: false };
+    item.click();
+    return { ok: true };
+  });
   refreshAppMenuRef = refreshAppMenu;
   refreshAppMenu();
 
@@ -13337,6 +13123,7 @@ function setupIPC() {
     if (brainWindow && !brainWindow.isDestroyed()) {
       brainWindow.show();
       brainWindow.focus();
+      presentHeadlessWindow(brainWindow);
       return { ok: true };
     }
     const win = new BrowserWindow({
@@ -13353,6 +13140,7 @@ function setupIPC() {
     brainWindow = win;
     win.on('closed', () => { brainWindow = null; focusMainWindow(); });
     win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=brain' });
+    presentHeadlessWindow(win);
     return { ok: true };
   }
   ipcMain.handle('open-brain-window', () => openBrainWindow());
@@ -13362,6 +13150,7 @@ function setupIPC() {
     if (troubleshootingWindow && !troubleshootingWindow.isDestroyed()) {
       troubleshootingWindow.show();
       troubleshootingWindow.focus();
+      presentHeadlessWindow(troubleshootingWindow);
       return { ok: true };
     }
     const win = new BrowserWindow({
@@ -13382,6 +13171,7 @@ function setupIPC() {
     troubleshootingWindow = win;
     win.on('closed', () => { troubleshootingWindow = null; focusMainWindow(); });
     win.loadFile(path.join(__dirname, 'renderer', 'panel.html'), { search: 'screen=troubleshooting' });
+    presentHeadlessWindow(win);
     return { ok: true };
   }
   ipcMain.handle('open-troubleshooting-window', () => openTroubleshootingWindow());
@@ -13643,15 +13433,33 @@ function setupIPC() {
     // AppleScript quoting layer put back on for `do script "…"`.
     const escaped = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const script = require('./launch-command.js').buildTerminalLaunchScript(escaped);
-    require('child_process').execFile('osascript', ['-e', script], (err) => {
+    require('child_process').execFile('osascript', ['-e', script], (err, stdout) => {
       if (err) {
         // Same recovery as the agent launcher: if Terminal will not play, the
         // user still gets the command rather than nothing.
         console.warn('[chat-session] osascript failed:', err.message);
         try { require('electron').clipboard.writeText(command); } catch { /* noop */ }
+        return;
       }
+      // Remembered so "Show terminal" can bring it back (chat-session:status).
+      const id = (stdout || '').trim();
+      if (/^\d+$/.test(id) && !chatTerminalWindowIds.includes(id)) chatTerminalWindowIds.push(id);
     });
     return { ok: true, command };
+  });
+
+  // Is this bot's agent session open in a Terminal window it opened (for a
+  // call, or from "Open terminal")? The hosted pane says "Show terminal" then,
+  // and brings that window forward rather than opening another (#301). macOS
+  // only; elsewhere the answer is always "no", which just means "Open".
+  ipcMain.handle('chat-session:status', async () => ({ running: (await openAgentTerminalIds()).length > 0 }));
+  ipcMain.handle('chat-session:show', async () => {
+    const [id] = await openAgentTerminalIds();
+    if (!id) return { ok: false };
+    const script = `tell application "Terminal"\n  set index of window id ${id} to 1\n  activate\nend tell`;
+    return new Promise((resolve) => {
+      require('child_process').execFile('osascript', ['-e', script], (err) => resolve({ ok: !err }));
+    });
   });
 
   ipcMain.handle('onboarding:verify-claude', () => {
@@ -13866,124 +13674,20 @@ function setupIPC() {
     };
   });
 
-  // Launch (or focus, if already running) the instance for a profile. Creating
-  // a new profile is just launching a never-seen name — the dir is created by
-  // that instance at startup.
+  // How a new bot is born lives in new-bot.js, shared with the app window's
+  // sidebar (#301); these keep the names the rest of this block uses.
+  function nextBotProfileName() {
+    return require('./new-bot.js').nextBotProfileName(PROFILES_ROOT);
+  }
+  function seedNewBotName(profileName, adopt = null) {
+    require('./new-bot.js').seedNewBot(PROFILES_ROOT, profileName, { adopt });
+  }
+
   // Launch the target profile's instance, or focus it if already running. Does
   // NOT touch the current window — callers decide: switch-profile closes the
   // current window afterward (switch in place, #379); open-profile-window leaves
   // it open (the additive "new window" path). Returns `runningKey` so a switch
   // caller can poll for the target coming up before it closes itself.
-  // bot2, bot3, … — the first free one.
-  //
-  // Numbered rather than "Untitled": these are directory names, so they must
-  // survive [A-Za-z0-9._-] and be short enough to read in a window title. The
-  // default profile keeps its own name, so counting starts at 2 the way Chrome's
-  // "Person 2" does.
-  //
-  // Picks the first GAP, not max+1: deleting bot3 and adding a bot should reuse
-  // bot3 rather than creep to bot4 forever. Bounded so a pathological profile
-  // list cannot spin.
-  function nextBotProfileName() {
-    const taken = new Set(profileManager.listProfiles(PROFILES_ROOT).map((p) => String(p.name).toLowerCase()));
-    for (let i = 2; i < 1000; i++) {
-      const candidate = `bot${i}`;
-      if (!taken.has(candidate)) return candidate;
-    }
-    return `bot${Date.now()}`; // absurd, but never collides
-  }
-
-  // Give the new bot an actual NAME, not just a directory.
-  //
-  // "bot3" is a folder, and without this the bot would introduce itself as
-  // "Unnamed bot" — a worse first impression than any random name, and one the
-  // user then has to fix before the thing is usable. Drawn from the same pool
-  // the spinner uses, so a new bot arrives as Pepper or Twiki and can be renamed
-  // on the Settings page it opens on, or in the guided setup call.
-  //
-  // Written to the profile's config BEFORE launch rather than passed as
-  // --bot-name: a launch flag is an override with its own provenance tag
-  // ("Alice [launch name]") that does not persist, and this needs to be the
-  // bot's real, stored name.
-  //
-  // Names already in use are excluded, so two bots on one machine don't collide
-  // — which would make MCP routing by name ambiguous, not just confusing.
-  //
-  // `adopt` (optional) turns this into ADOPTING AN EXISTING SESSION rather than
-  // creating a blank bot: { workdir, session, botName }. A power user may have a
-  // Claude session with months of accumulated context, and the interesting move
-  // is to give THAT a face rather than start a bot from nothing. Seeding
-  // claudeWorkDir + agentSession here is what makes the new profile resume that
-  // session instead of opening a fresh one in its own agent dir.
-  //
-  // Seeded at creation for the same reason the name is: these have to be the
-  // bot's real stored settings before its first launch, not launch-time
-  // overrides. The bot's very first act is resuming the session, so there is no
-  // later moment to apply them.
-  function seedNewBotName(profileName, adopt = null) {
-    try {
-      const { randomBotName } = require('./bot-names.js');
-      const taken = takenBotNames();
-      // The AGENT dir, not the profile dir. The per-profile store has lived at
-      // <profile>/agent/config.json since #305 (the agent's working directory
-      // has to be a trusted Claude workspace, and the config moved in with it).
-      // Seeding the pre-#305 loose path still WORKED — verified — but only
-      // because the legacy migration copies it across on first launch, and that
-      // migration exists to rescue old installs, not to be load-bearing for new
-      // ones. Someone will delete it one day and new bots would quietly go back
-      // to "Unnamed bot".
-      //
-      // It also left a second config.json that LOOKS authoritative and holds the
-      // original name forever: bot8 read "Diego" long after being renamed
-      // Taylor, which cost a real debugging detour.
-      const dir = require('./agent-workdir.js').agentDirFor(path.join(PROFILES_ROOT, profileName));
-      fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, 'config.json');
-      // Never clobber: a reused directory name (first-gap allocation) might
-      // still hold a config the user cares about.
-      let existing = {};
-      try { existing = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch { /* new */ }
-      if (existing.botName) return;
-      // An adopted session names itself where it can. The session's own name is
-      // the user's word for this thing already, so it beats a random one — but
-      // only if it can survive a call, which is a real constraint and not a
-      // stylistic one: the bot has to notice its name through Meet's captions.
-      // "pr-482-refactor" fails that badly (digits nobody says aloud), so it
-      // falls back to the random pool rather than shipping a name that cannot
-      // be addressed.
-      const { isAddressableBotName } = require('./addressable-name.js');
-      const adopted = adopt && isAddressableBotName(adopt.botName) ? adopt.botName.trim() : null;
-      const botName = adopted || randomBotName({ taken });
-      // onboardingCallComplete defaults to true (preferences-schema.js) so
-      // pre-existing profiles read as already onboarded with no migration
-      // needed — which means a genuinely NEW bot has to say otherwise
-      // explicitly, right here, at the one moment it's actually created.
-      const seeded = { ...existing, botName, onboardingCallComplete: false };
-      // The new instance's startup sees this config.json and so does NOT treat
-      // the profile as brand new; this marker is what tells it to seed a random
-      // background preset (consumed on that first launch, see
-      // new-bot-background.js).
-      seeded[require('./new-bot-background.js').SEED_BACKGROUND_MARKER] = true;
-      if (adopt && adopt.workdir) seeded.claudeWorkDir = adopt.workdir;
-      if (adopt && adopt.session) {
-        seeded.agentSession = adopt.session;
-        // Adopting IS taking the session field over. Left on auto, the first
-        // launch rewrites a name ref to the bot's own name (planAgentSession)
-        // and starts a fresh session: Ravi came up blank that way. An id ref is
-        // already safe, but a name ref from an older skill or a direct API
-        // call is not.
-        seeded.agentSessionAuto = false;
-      }
-      fs.writeFileSync(file, JSON.stringify(seeded, null, 2));
-      console.log('[electron] New bot', profileName, 'named', botName,
-        adopt ? `(adopting session ${JSON.stringify(adopt.session)} in ${adopt.workdir})` : '');
-    } catch (err) {
-      // Non-fatal: an unnamed bot is still a working bot, and the Settings page
-      // it opens on is exactly where that gets fixed.
-      console.warn('[electron] could not seed a name for', profileName, '—', err.message);
-    }
-  }
-
   // extraArgs: further --flags for a FRESH launch only (a running profile is
   // focused, never relaunched — so they can't move a bot out of its call).
   async function launchOrFocusProfile(name, { openSettings = false, extraArgs = [] } = {}) {
@@ -14013,16 +13717,14 @@ function setupIPC() {
     // Otherwise launch a fresh instance. The default takes no --profile (and the
     // default port); a named profile gets its stable registry port.
     let port = null;
-    let args = [];
     if (!isDefault) {
       try { port = profileManager.portForProfile(BASE_USER_DATA, name); }
       catch (err) { return { ok: false, error: err.message }; }
-      args = [`--profile=${name}`, `--local-port=${port}`];
     }
-    // A newly created bot lands on Settings rather than "Call now" — it has no
-    // name, voice or face yet, so that page IS its next step.
-    if (openSettings) args = [...args, '--open-settings=true'];
-    if (extraArgs.length) args = [...args, ...extraArgs];
+    // Built by profile-launch.js, which the SUPERVISOR also uses (#301). Two
+    // copies of "how a bot is started" is how one caller ends up launching a bot
+    // on the wrong port because the other was the one that got updated.
+    let args = [];
 
     // #379: open the new profile window where THIS one is, not centered. The main
     // window honors --window-x/y (createMainWindow, as the test launcher uses),
@@ -14031,12 +13733,18 @@ function setupIPC() {
     // POSITION ONLY. Size isn't ours to hand over: the window is a fixed-width
     // column with a content-derived height, and createMainWindow ignores
     // --window-w/-h for exactly that reason.
+    let windowPos = null;
     try {
       if (mainWindow && !mainWindow.isDestroyed()) {
         const b = mainWindow.getBounds();
-        args = [...args, `--window-x=${b.x}`, `--window-y=${b.y}`];
+        windowPos = { x: b.x, y: b.y };
       }
     } catch { /* ignore — fall back to Electron's default centering */ }
+    try {
+      args = spawnArgsForProfile({ name, isDefault, port, openSettings, windowPos });
+    } catch (err) { return { ok: false, error: err.message }; }
+    // #822: e.g. --join-url for a bot summoned into a call already in progress.
+    if (extraArgs.length) args = [...args, ...extraArgs];
 
     const { execFile } = require('child_process');
     // #746: the spawn failure arrives asynchronously, LONG after we have returned
@@ -14110,6 +13818,7 @@ function setupIPC() {
     }
     // Target is up. Each profile is its own process, so closing this instance IS
     // the switch. Quit shortly after the IPC resolves so the renderer settles.
+    noteQuitCause(`switched to another bot (switch-profile → ${r.runningKey || '?'})`);
     setTimeout(() => app.quit(), 200);
     return { ok: true, switched: true, port: r.port };
   });

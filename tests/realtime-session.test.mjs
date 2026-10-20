@@ -361,7 +361,8 @@ test('the stopgap command is gone, not just unused', () => {
   // worse than one that is absent: it would join with the realtime prompt
   // whatever the bot is actually set to.
   assert.equal(existsSync(join(root, 'mcp-server/realtime-call-skill.md')), false);
-  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  // Skills are installed by agent-integration.js now (#301); read it with main.js.
+  const main = readFileSync(join(root, 'electron-app/agent-integration.js'), 'utf8') + '\n' + readFileSync(join(root, 'electron-app/main.js'), 'utf8');
   assert.doesNotMatch(main, /realtime-call-skill\.md/);
   // And copies already on disk are removed rather than left behind.
   assert.match(main, /skills', 'realtime-call'/);

@@ -21,6 +21,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const { PREFERENCES } = require('../electron-app/preferences-schema.js');
 const { isAppLevel } = require('../electron-app/config-scope.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+// How a new bot is born moved to new-bot.js (#301), shared with the app window.
+const newBot = readFileSync(join(root, 'electron-app/new-bot.js'), 'utf8');
 const joinSkill = readFileSync(join(root, 'mcp-server/join-call-skill.md'), 'utf8');
 const callSkill = readFileSync(join(root, 'mcp-server/call-skill.md'), 'utf8');
 const onboardingSkill = readFileSync(join(root, 'mcp-server/onboarding-call-skill.md'), 'utf8');
@@ -126,7 +128,7 @@ test('a bot created via the "New bot" button is explicitly stamped false at crea
   // profile already have a real botName?" can NEVER be used to detect
   // freshness from the profile's own startup path; freshness has to be
   // recorded here, at the moment of creation, or nowhere reliable at all.
-  const fn = main.slice(main.indexOf('function seedNewBotName'), main.indexOf('async function launchOrFocusProfile'));
+  const fn = newBot.slice(newBot.indexOf('function seedNewBot('));
   assert.match(fn, /onboardingCallComplete: false/);
   // Must land in the SAME write as the name — a separate write could fail
   // independently and leave a bot named but not marked fresh.

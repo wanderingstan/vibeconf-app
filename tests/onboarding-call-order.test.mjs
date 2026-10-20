@@ -12,7 +12,9 @@ import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const skill = readFileSync(join(root, 'mcp-server/onboarding-call-skill.md'), 'utf8');
-const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+// The machine-wide agent setup (skills, hook, MCP registration) moved from main.js to
+// agent-integration.js (#301); read both, the module first.
+const main = readFileSync(join(root, 'electron-app/agent-integration.js'), 'utf8') + '\n' + readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
 const idx = (s) => {
   const i = skill.indexOf(s);

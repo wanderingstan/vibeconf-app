@@ -2,6 +2,15 @@
 // Adapted from popup.js — uses window.electronAPI instead of chrome.* APIs.
 
 const api = window.electronAPI;
+// #301: shown inside the app's window, which has its own account line, so the
+// app-level login is left out of this panel's footer (panel.css, .hosted).
+const HOSTED = !!(api && api.hosted);
+if (HOSTED) document.documentElement.classList.add('hosted');
+// The app window's separate "Call <bot> now" (setupHostedLayout, at the end).
+// Declared up here because updateJoinBtnState can run before the script gets there.
+let callNowBtn = null;
+// A join under way per the bot's call status (see syncJoiningFlag).
+let joiningStatus = false;
 
 // The user's hour-cycle preference, resolved by main (a renderer cannot read
 // macOS's AppleICUForce24HourTime itself). Null until it arrives; formatTime
@@ -724,13 +733,14 @@ function faceAnimationAllowed() {
   // them, and a hidden panel shouldn't burn timers.
   if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return false;
   if (liveFaceEmoji) return false; // the real face is on screen — don't animate over it
+  if (surpriseEmoji) return false; // someone just clicked for a face: let it stay
   return document.visibilityState !== 'hidden';
 }
 
 // The face to show when nothing is playing: the bot's real one in a call, else
 // the resting portrait.
 function baseFaceEmoji() {
-  return liveFaceEmoji || RESTING_EMOJI;
+  return liveFaceEmoji || surpriseEmoji || RESTING_EMOJI;
 }
 
 async function paintFace(emoji) {
@@ -791,6 +801,73 @@ function startBlinking(emojiSet) {
   emojiUriFor(emojiSet, MOOD_EASE_EMOJI);
   scheduleBlink();
   scheduleMood();
+}
+
+// --- A face on click ---------------------------------------------------------
+// Pure fun: click the bot's picture and it pulls a random face, from every
+// face emoji there is (Unicode's Smileys & Emotion face groups; the cat and
+// monkey faces and the multi-part ZWJ faces aside). It holds for a few
+// seconds, then rests; another click picks another. Never in a call, or while
+// joining: then the face is the bot's real state, and that wins.
+const SURPRISE_FACES = [
+  // smiling
+  0x1F600, 0x1F603, 0x1F604, 0x1F601, 0x1F606, 0x1F605, 0x1F923, 0x1F602, 0x1F642, 0x1F643, 0x1FAE0, 0x1F609, 0x1F60A, 0x1F607,
+  // affection
+  0x1F970, 0x1F60D, 0x1F929, 0x1F618, 0x1F617, 0x263A, 0x1F61A, 0x1F619, 0x1F972,
+  // tongue
+  0x1F60B, 0x1F61B, 0x1F61C, 0x1F92A, 0x1F61D, 0x1F911,
+  // hand
+  0x1F917, 0x1F92D, 0x1FAE2, 0x1FAE3, 0x1F92B, 0x1F914, 0x1FAE1,
+  // neutral and skeptical
+  0x1F910, 0x1F928, 0x1F610, 0x1F611, 0x1F636, 0x1FAE5, 0x1F60F, 0x1F612, 0x1F644, 0x1F62C, 0x1F925, 0x1FAE8,
+  // sleepy
+  0x1F60C, 0x1F614, 0x1F62A, 0x1F924, 0x1F634,
+  // unwell
+  0x1F637, 0x1F912, 0x1F915, 0x1F922, 0x1F92E, 0x1F927, 0x1F975, 0x1F976, 0x1F974, 0x1F635, 0x1F92F,
+  // hat and glasses
+  0x1F920, 0x1F973, 0x1F978, 0x1F60E, 0x1F913, 0x1F9D0,
+  // concerned
+  0x1F615, 0x1FAE4, 0x1F61F, 0x1F641, 0x2639, 0x1F62E, 0x1F62F, 0x1F632, 0x1F633, 0x1F97A, 0x1F979, 0x1F626, 0x1F627,
+  0x1F628, 0x1F630, 0x1F625, 0x1F622, 0x1F62D, 0x1F631, 0x1F616, 0x1F623, 0x1F61E, 0x1F613, 0x1F629, 0x1F62B, 0x1F971,
+  // negative
+  0x1F624, 0x1F621, 0x1F620, 0x1F92C, 0x1F608, 0x1F47F, 0x1F480, 0x2620,
+  // costume
+  0x1F4A9, 0x1F921, 0x1F479, 0x1F47A, 0x1F47B, 0x1F47D, 0x1F47E, 0x1F916,
+].map((cp) => String.fromCodePoint(cp) + (cp < 0x10000 ? '\uFE0F' : '')); // ☺ ☹ ☠ want the emoji presentation
+const SURPRISE_HOLD_MS = 3500;
+let surpriseEmoji = null;
+let surpriseTimer = null;
+
+// A face this bot's emoji set can draw. An image set ships only some faces
+// (Red Panda has a few dozen), and a missing one would fall back to the OS
+// glyph, out of style with the rest; a font set or the OS draws them all.
+async function pickSurpriseFace(set) {
+  const drawsAll = set === 'native' || !!fontFamilyFromSet(set) || !!EMOJI_FONT_SETS[set];
+  for (let tries = 0; tries < 24; tries++) {
+    const face = SURPRISE_FACES[Math.floor(Math.random() * SURPRISE_FACES.length)];
+    if (face === surpriseEmoji || face === RESTING_EMOJI) continue;
+    if (drawsAll || await emojiUriFor(set, face)) return face;
+  }
+  return null;
+}
+
+async function surpriseFace() {
+  if (callActive || liveFaceEmoji || inCall || document.documentElement.classList.contains('joining')) return;
+  if (blinkSet === null) return; // the avatar has not been drawn yet
+  const face = await pickSurpriseFace(blinkSet);
+  if (!face || callActive || liveFaceEmoji) return;
+  surpriseEmoji = face;
+  // A blink or mood mid-play sees surpriseEmoji, stops, and lands on it.
+  await paintFace(face);
+  clearTimeout(surpriseTimer);
+  surpriseTimer = setTimeout(() => {
+    surpriseEmoji = null;
+    if (!facePlaying) paintFace(baseFaceEmoji());
+  }, SURPRISE_HOLD_MS);
+}
+
+if (!IS_POPOUT_WINDOW) {
+  document.getElementById('agentAvatar')?.addEventListener('click', () => { surpriseFace(); });
 }
 
 // Live face from the virtual camera (in-call). Null/absent → back to idle
@@ -1339,7 +1416,8 @@ let manualUrlEntry = false; // the user opened + themselves
 
 // "Add to call" mode = there's a URL to act on, from either source.
 function isAddToCallMode() {
-  return !!detectedCallUrl || manualUrlEntry;
+  // In the app window the link field is always there (#301): no mode to switch.
+  return HOSTED || !!detectedCallUrl || manualUrlEntry;
 }
 
 // True between pressing the call button and the call actually starting (or
@@ -1404,7 +1482,11 @@ window.addEventListener('blur', () => setOptionHeld(false));
 
 async function openChatSession() {
   try {
+    // Already open in a window this bot opened: bring it forward (#301).
+    const shown = await api.invoke('chat-session:show').catch(() => null);
+    if (shown?.ok) return;
     const r = await api.invoke('chat-session:open');
+    setTimeout(() => refreshTerminalLabel(), 2000);
     if (r && r.ok === false && r.copied) {
       // No terminal we can drive — say what we did instead, rather than
       // appearing to do nothing.
@@ -1434,6 +1516,7 @@ window.addEventListener('keydown', async (e) => {
 });
 
 function updateJoinBtnState() {
+  syncCallNowBtn();
   if (inCall) return; // in-call UI owns the button
   if (joinPhase) {
     // One label per phase, in one place. (The two routes used to disagree:
@@ -1474,7 +1557,16 @@ function updateJoinBtnState() {
   }
   joinBtn.title = 'Calls open in Chrome/Safari are detected automatically. You can also type /join-call in any Claude Code session.';
 
-  if (addMode) {
+  if (HOSTED) {
+    // In the app window the bot's name is the pane's headline, so the buttons
+    // just say what they do. Add appears only once there is a link to add the
+    // bot to (pasted, or a call detected in the browser): with none it is a
+    // button that cannot do anything. A link that is not a call disables it.
+    joinBtn.textContent = 'Add to this call';
+    const url = meetUrlInput.value.trim();
+    joinBtn.style.display = url ? '' : 'none';
+    joinBtn.disabled = !!url && !isJoinableUrl(url);
+  } else if (addMode) {
     joinBtn.textContent = `Add ${name} to call`;
     const url = meetUrlInput.value.trim();
     joinBtn.disabled = !url || !isJoinableUrl(url);
@@ -1995,6 +2087,8 @@ async function refreshProfilesCache() {
 if (profileMenuBtn && profileMenu) {
   refreshProfilesCache(); // warm the cache at load so the first open is instant
   profileMenuBtn.addEventListener('click', (e) => {
+    // In the app window the sidebar is the bot picker; the name is just a name.
+    if (HOSTED) return;
     e.stopPropagation();
     // The name doubles as the switcher, and the name stays on screen in-call —
     // so the CLICK is what gets gated now, not the control's visibility (#379:
@@ -2283,7 +2377,7 @@ function loadConfigIntoControls() {
   }
   // #340: one unified picker merging macOS + ElevenLabs + Voicebox. Pre-selects
   // from the saved provider/voice; defaults to Daniel (tts.js's real default).
-  populateUnifiedVoices(result);
+  populateUnifiedVoices(result).then(() => refreshHostedAbout()).catch(() => {});
   if (result?.claudeWorkDir) claudeWorkDirInput.value = result.claudeWorkDir;
   if (result?.agentSession) agentSessionIdInput.value = result.agentSession;
   // Before the first launch there is nothing stored yet, so show the name that
@@ -2649,6 +2743,30 @@ const CREATE_MEET_ERRORS = {
   'unknown': "Couldn't start a call.",
 };
 
+// "Call <bot> now": ask the website for a fresh Meet anyone can walk into, then
+// send the bot in. Main does the request: a renderer fetch carries an Origin the
+// backend rejects. Its own function because two buttons start a call: the
+// classic window's single button in its "Call" mode, and the app window's
+// separate "Call <bot> now" (#301, see setupHostedLayout).
+async function startFreshCall() {
+  setJoinPhase('starting'); // asking the website for a room, not joining yet
+  try {
+    const r = await api.invoke('create-and-join-meet');
+    if (r?.ok) {
+      // Main has already pointed the bot's view at the room. Put the link in
+      // the field so the in-call view can show and copy it for the human.
+      if (r.url) { meetUrlInput.value = r.url; detectedCallUrl = r.url; lastKnownCallUrl = r.url; }
+      setJoinPhase('joining');
+      // enterCallState waits for 'call-status-changed', same as a manual join.
+      return;
+    }
+    showError(CREATE_MEET_ERRORS[r?.code] || CREATE_MEET_ERRORS.unknown);
+  } catch (err) {
+    showError('Could not start a call: ' + err.message);
+  }
+  setJoinPhase(null); // restores the right label + enabled state for the mode
+}
+
 joinBtn.addEventListener('click', async (e) => {
   // Option-held is the alternate action: open the bot's session in a terminal
   // instead of calling it. Read the event rather than `optionHeld` so a click
@@ -2658,26 +2776,8 @@ joinBtn.addEventListener('click', async (e) => {
     await openChatSession();
     return;
   }
-  // "Call <bot> now" — ask the website for a fresh Meet anyone can walk into,
-  // then send the bot in. Main does the request: a renderer fetch carries an
-  // Origin the backend rejects.
   if (!isAddToCallMode()) {
-    setJoinPhase('starting'); // asking the website for a room, not joining yet
-    try {
-      const r = await api.invoke('create-and-join-meet');
-      if (r?.ok) {
-        // Main has already pointed the bot's view at the room. Put the link in
-        // the field so the in-call view can show and copy it for the human.
-        if (r.url) { meetUrlInput.value = r.url; detectedCallUrl = r.url; lastKnownCallUrl = r.url; }
-        setJoinPhase('joining');
-        // enterCallState waits for 'call-status-changed', same as a manual join.
-        return;
-      }
-      showError(CREATE_MEET_ERRORS[r?.code] || CREATE_MEET_ERRORS.unknown);
-    } catch (err) {
-      showError('Could not start a call: ' + err.message);
-    }
-    setJoinPhase(null); // restores the right label + enabled state for the mode
+    await startFreshCall();
     return;
   }
 
@@ -3751,6 +3851,23 @@ function auditionVoice(opts) {
   _voiceSetNoteTimer = setTimeout(() => { voiceSetNote.style.display = 'none'; }, 4000);
 }
 
+// The audition for the voice picked in the dropdown: what update-tts-config and
+// synth-voice-sample take for its provider. Shared by the picker and the hosted
+// pane's play button, so both say the same thing in the same voice.
+function selectedVoiceSample() {
+  const val = unifiedVoiceSelect?.value || '';
+  const sep = val.indexOf(':');
+  const kind = val.slice(0, sep);
+  const id = val.slice(sep + 1);
+  const label = unifiedVoiceSelect?.selectedOptions[0]?.textContent || '';
+  const name = label.replace(/\s*[·(].*$/, '').replace(/\s+[-–—]+\s+/g, '. ').trim();
+  const text = `Hello, my name is ${name || 'your voice assistant'}.`;
+  if (kind === 'vb') return { provider: 'voicebox', voiceboxProfileId: id, voiceboxEngine: unifiedVoiceSelect.selectedOptions[0]?.dataset.engine || 'kokoro', text };
+  if (kind === 'el') return { provider: 'elevenlabs', voiceId: id, text };
+  if (kind === 'mac') return { provider: 'macos-say', macosVoice: id, text };
+  return null;
+}
+
 unifiedVoiceSelect?.addEventListener('change', () => {
   const val = unifiedVoiceSelect.value || '';
   const sep = val.indexOf(':');
@@ -4070,6 +4187,8 @@ api.on('meet-status', (status) => {
 });
 
 api.on('call-status-changed', ({ status, provider }) => {
+  joiningStatus = status === 'navigating' || status === 'joining' || status === 'waiting-to-be-admitted';
+  syncJoiningFlag();
   // Authoritative call-state signal from the local server. Only show Leave Call
   // once we're actually in the meeting; hide it once the bot has left.
   if (status === 'in-call') {
@@ -4092,3 +4211,254 @@ api.on('call-failed', (data) => {
   exitCallState();
   if (data?.message) showError(data.message, null, data.errorAction);
 });
+
+// ── The panel inside the app window (#301) ──────────────────────────────────
+//
+// The app's window shows this panel on a 380px stage under its own sidebar, so
+// some of what the panel carries for a standalone window is either repeated
+// there (the account, the version, the bot picker) or has more room to spread
+// out. Applied only when hosted; a bot in its own window is unchanged.
+//
+//   · The meeting link field is always shown, with "Add <bot> to call" beside
+//     it, and a separate "Call <bot> now" for a fresh meeting. Detection still
+//     pre-fills the field, but no longer switches modes: links for Zoom and
+//     Teams cannot be detected, and a mode you cannot see change was confusing.
+//   · The inspectors are a labelled row at the foot of the panel, on the same
+//     rule the old rows had: Bot's view always (it was beside Call, because it
+//     is how you see where a join got stuck), Brain and Troubleshoot only in a
+//     call (they lived beside Leave). They click the existing buttons, so their
+//     behaviour stays in one place.
+//   · The name's bot-picker menu and the footer line are gone (panel.css).
+
+// Joining (from pressing Call or Add until the bot is in): Troubleshoot shows
+// from here on, since a join stuck in a lobby or on a sign-in wall is exactly
+// when its live call state helps (panel.css, html.joining).
+function syncJoiningFlag() {
+  // joinPhase is declared mid-file; this can run during startup before it is.
+  let phase = null;
+  try { phase = joinPhase; } catch { return; }
+  document.documentElement.classList.toggle('joining', !inCall && (!!phase || joiningStatus));
+}
+
+function syncCallNowBtn() {
+  syncJoiningFlag();
+  if (!callNowBtn) return;
+  const name = currentBotName || 'your bot';
+  callNowBtn.textContent = joinPhase === 'starting' ? 'Starting…' : 'Start a new call';
+  callNowBtn.title = `Start a new meeting and bring ${name} into it`;
+  callNowBtn.disabled = !!joinPhase;
+  // The green follows the field: with a link in it, adding the bot to that
+  // call is the expected move; with none, starting a call is (one primary at a
+  // time, docs/STYLE-GUIDE.md).
+  const hasUrl = !!(meetUrlInput && meetUrlInput.value.trim());
+  joinBtn.classList.toggle('primary', hasUrl);
+  callNowBtn.classList.toggle('primary', !hasUrl);
+}
+
+// ── The panel inside the app window (#301) ──
+// The bot no longer IS the window, so the pane reads top to bottom on the cream:
+//   name + status · the bot's face as a card the shape of its camera tile, with
+//   the inspectors (👀 🧠 🛈) on it like controls on a call tile · notices ·
+//   meeting link + Add / Start, stacked · the in-call controls · About <bot>:
+//   agent (with its terminal), voice (with a sample), Google account, Edit.
+// Built from the existing elements, moved, so every handler keeps working; a
+// bot in its own window is unchanged.
+function setupHostedLayout() {
+  const container = document.querySelector('#mainScreen .container');
+  const hero = container && container.querySelector('.bot-hero');
+  if (!container || !hero) return;
+  const el = (tag, cls, text) => {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  };
+
+  // Name and status, above the card.
+  const head = el('div', 'hosted-head');
+  const nameRow = hero.querySelector('.agent-name-row');
+  if (nameRow) head.append(nameRow);
+  const status = el('div', 'hosted-status');
+  status.id = 'hostedStatus';
+  head.append(status);
+  hero.before(head);
+
+  // The inspectors, on the card.
+  const tools = el('div', 'card-tools');
+  const tool = (icon, title, run) => {
+    const b = el('button', `card-tool tool-${icon}`);
+    b.title = title;
+    b.setAttribute('aria-label', title);
+    b.append(el('i', `ui-icon ui-icon-${icon}`));
+    b.addEventListener('click', run);
+    tools.append(b);
+  };
+  tool('eyes', "Bot's view: see what the bot sees", () => document.querySelector('.botview-toggle-btn')?.click());
+  tool('brain', 'Brain: what the agent is thinking and doing', () => document.getElementById('openBrainBtn')?.click());
+  tool('info', 'Troubleshoot: live call state, captions, and the agent\'s view', () => document.getElementById('openTroubleshootingBtn')?.click());
+  hero.append(tools);
+
+  // Below the card, in reading order.
+  const after = [];
+  const notices = hero.querySelector('.hero-notices');
+  if (notices) after.push(notices);
+
+  const controls = el('div');
+  controls.id = 'hostedControls';
+  if (callUrlField) controls.append(callUrlField);
+  const buttons = el('div', 'hosted-buttons');
+  joinBtn.classList.add('hosted-add');
+  callNowBtn = el('button', 'hosted-call');
+  callNowBtn.addEventListener('click', () => { startFreshCall(); });
+  buttons.append(joinBtn, callNowBtn);
+  controls.append(buttons);
+  after.push(controls);
+
+  const incall = hero.querySelector('.hero-incall');
+  if (incall) after.push(incall);
+
+  after.push(buildHostedAbout(el));
+  let anchor = hero;
+  for (const n of after) { anchor.after(n); anchor = n; }
+
+  // Status line: one word for where the bot is.
+  const syncStatus = () => {
+    const st = document.body.dataset.callState;
+    status.textContent = st === 'in-call' ? 'In a call'
+      : document.documentElement.classList.contains('joining') ? 'Joining…'
+      : 'Ready';
+  };
+  new MutationObserver(syncStatus).observe(document.body, { attributes: true, attributeFilter: ['data-call-state'] });
+  new MutationObserver(syncStatus).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  syncStatus();
+
+  meetUrlInput.addEventListener('input', () => updateJoinBtnState());
+  updateJoinBtnState();
+}
+
+// About <bot>: what it runs on, at a glance, and the way into changing it. A
+// row appears only when it has something to say (no account, no row).
+const hostedAbout = {};
+function buildHostedAbout(el) {
+  const sec = el('section', 'hosted-about');
+  hostedAbout.title = el('div', 'hosted-eyebrow');
+  sec.append(hostedAbout.title);
+  const row = (label) => {
+    const r = el('div', 'about-row');
+    r.append(el('span', 'about-k', label));
+    const v = el('span', 'about-v');
+    r.append(v);
+    sec.append(r);
+    return { r, v };
+  };
+  const action = (icon, text, title, run) => {
+    const b = el('button', 'about-act');
+    b.title = title;
+    b.append(el('i', `ui-icon ui-icon-${icon} ui-icon--lead`), document.createTextNode(text));
+    b.addEventListener('click', run);
+    return b;
+  };
+
+  hostedAbout.agent = row('Agent');
+  hostedAbout.agentName = el('span', 'about-val');
+  hostedAbout.agentActs = el('span', 'about-acts');
+  hostedAbout.agentActs.append(
+    hostedAbout.terminalBtn = action('terminal', 'Open terminal', "Open the bot's agent session in a terminal: the same session it uses on calls", () => { openChatSession(); }),
+    action('copy', 'Copy command', 'Copy the command that opens this session from any terminal', () => {
+      api.invoke('chat-session:copy').catch(() => {});
+    }),
+  );
+  hostedAbout.terminalLabel = hostedAbout.terminalBtn.lastChild;
+  // A terminal can be closed at any moment, and nothing tells the bot; check
+  // now and then (free when the bot has opened none: see openAgentTerminalIds).
+  setInterval(() => refreshTerminalLabel(), 10_000);
+  window.addEventListener('focus', () => refreshTerminalLabel());
+  hostedAbout.agent.v.append(hostedAbout.agentName, hostedAbout.agentActs);
+
+  hostedAbout.voice = row('Voice');
+  hostedAbout.voiceName = el('span', 'about-val');
+  const play = el('button', 'about-play');
+  play.title = 'Hear this voice';
+  play.setAttribute('aria-label', 'Hear this voice');
+  play.append(el('i', 'ui-icon ui-icon-play'));
+  play.addEventListener('click', () => { const o = selectedVoiceSample(); if (o) previewVoiceSample(o); });
+  hostedAbout.voice.v.append(hostedAbout.voiceName, play);
+
+  hostedAbout.google = row('Signed in');
+  hostedAbout.google.r.style.display = 'none';
+
+  const edit = el('button', 'hosted-edit');
+  edit.append(el('i', 'ui-icon ui-icon-pencil ui-icon--lead'));
+  hostedAbout.editLabel = document.createTextNode('Edit');
+  edit.append(hostedAbout.editLabel);
+  edit.addEventListener('click', () => document.getElementById('openSettingsBtn')?.click());
+  sec.append(edit);
+
+  unifiedVoiceSelect?.addEventListener('change', () => refreshHostedAbout());
+  refreshHostedAbout();
+  return sec;
+}
+
+// "Show terminal" while the bot's session is open in a window it opened,
+// "Open terminal" otherwise.
+async function refreshTerminalLabel() {
+  if (!hostedAbout.terminalLabel) return;
+  const st = await api.invoke('chat-session:status').catch(() => null);
+  const running = !!st?.running;
+  hostedAbout.terminalLabel.textContent = running ? 'Show terminal' : 'Open terminal';
+  hostedAbout.terminalBtn.title = running
+    ? "Bring the bot's agent session's terminal to the front"
+    : "Open the bot's agent session in a terminal: the same session it uses on calls";
+}
+
+const AGENT_LABELS = { claude: 'Claude Code', codex: 'Codex' };
+async function refreshHostedAbout() {
+  if (!HOSTED || !hostedAbout.title) return;
+  const name = currentBotName || 'this bot';
+  hostedAbout.title.textContent = `About ${name}`;
+  hostedAbout.editLabel.textContent = `Edit ${name}`;
+
+  // Voice: the picker's own label and group, which populateUnifiedVoices fills
+  // from the saved config on load.
+  const opt = unifiedVoiceSelect?.selectedOptions[0];
+  const group = opt?.parentElement?.label || '';
+  const voice = opt ? opt.textContent.replace(/\s*\(.*$/, '') : '';
+  hostedAbout.voiceName.textContent = voice ? `${voice}${group ? ` · ${group.replace(/\s*\(.*$/, '')}` : ''}` : 'Not set';
+
+  let cfg = {};
+  try { cfg = (await api.invoke('get-config', ['agentBackend', 'meetAccountEmail'])) || {}; } catch { /* keep defaults */ }
+  const backend = cfg.agentBackend || 'claude';
+  hostedAbout.agentName.textContent = AGENT_LABELS[backend] || 'Another agent';
+  // The terminal belongs to the bot's Claude Code session; other agents bring their own.
+  hostedAbout.agentActs.style.display = backend === 'claude' ? '' : 'none';
+  refreshTerminalLabel();
+
+  try {
+    const acct = await api.invoke('get-meet-account-email');
+    const email = acct?.email || cfg.meetAccountEmail || '';
+    hostedAbout.google.v.textContent = acct?.signedIn ? `Google${email ? ` · ${email}` : ''}` : '';
+    hostedAbout.google.r.style.display = acct?.signedIn ? '' : 'none';
+  } catch { hostedAbout.google.r.style.display = 'none'; }
+}
+
+if (HOSTED) setupHostedLayout();
+
+// A panel can load while its bot is already in a call: in the app window,
+// selecting a bot that is in one loads its panel then (#301). Until now the
+// panel only ever learned the call state from changes, because a standalone
+// window loads with its bot, before any call. So ask once, and take the
+// in-call view straight away if the bot is in one. Main screen only: the
+// Brain and Troubleshooting windows are other screens of this same file.
+if (!IS_POPOUT_WINDOW) {
+  api.invoke('get-call-state').then((snap) => {
+    if (!snap || inCall) return;
+    if (snap.callStatus === 'in-call') {
+      if (snap.currentMeetUrl && !meetUrlInput.value) meetUrlInput.value = snap.currentMeetUrl;
+      enterCallState(snap.roomId || '');
+    } else if (['navigating', 'joining', 'waiting-to-be-admitted'].includes(snap.callStatus)) {
+      joiningStatus = true;
+      syncJoiningFlag();
+    }
+  }).catch(() => { /* older bot without get-call-state: changes still arrive */ });
+}
+

@@ -42,7 +42,8 @@ test('the vibeconferencing pin always wins', () => {
   // could override it, the agent would drive whichever app the user-scoped
   // fallback port happens to point at.
   const spread = block.indexOf('...inherited,');
-  const pin = block.indexOf('vibeconferencing: {');
+  // Inline, or the chosen server (#301: chooseAgentMcpServer pins it to this bot).
+  const pin = Math.max(block.indexOf('vibeconferencing: {'), block.indexOf('vibeconferencing: agentMcp.server'));
   assert.ok(spread > 0 && pin > spread, 'the pinned entry must come after the spread');
 });
 

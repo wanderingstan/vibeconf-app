@@ -163,7 +163,7 @@ The agent never touches WebRTC. It calls MCP tools; the app does the real-time m
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="media/processes-dark.svg">
-  <img alt="Process diagram: on this Mac, the vibeconferencing app window is one process that spawns each bot (Charlie, Bob) as its own child process over a private channel, relays the selected bot's panel onto its stage over HTTP and SSE, and finds bots it did not start by scanning ports. Each agent session (Claude Code, Codex) runs an MCP server as its stdio child, which finds its bot through the app's directory on port 7864 and talks to the bot's local port over HTTP with a token. Bots join Google Meet, Zoom, Microsoft Teams and Slack Huddles over the internet." src="media/processes-light.svg">
+  <img alt="Process diagram, read left to right. On this Mac, each agent session (Charlie's agent in Claude Code, Bob's agent in Codex) runs an MCP server as its stdio child; it finds its bot through the app's directory on port 7864 and talks to the bot's local API over HTTP with a token. The vibeconferencing app is one region containing a main process (stage, sidebar, directory, bot children) and the bot processes Charlie (port 7885) and Bob (port 7887), each with a local API, a panel and a call view. The main process spawns each bot as its own child over a private channel, relays the selected bot's panel onto its stage over HTTP and SSE, and finds other bots it did not start by scanning ports. The bots join Google Meet, Zoom, Microsoft Teams and Slack Huddles, outside the machine boundary, as participants." src="media/processes-light.svg">
 </picture>
 
 Regenerate with `python3 media/processes-diagram.py`.

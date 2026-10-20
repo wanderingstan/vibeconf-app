@@ -32,7 +32,7 @@ DARK = dict(
     shadow='flood-color="#000000" flood-opacity="0.35"',
 )
 
-W, H = 1120, 830
+W, H = 1180, 792
 SYNE = "Syne, Futura, 'Trebuchet MS', sans-serif"
 MONO = "'JetBrains Mono', ui-monospace, Menlo, monospace"
 
@@ -110,114 +110,130 @@ def render(T):
     text(60, 54, 'vibeconferencing: processes', 30, 800, family=SYNE, spacing=-0.6)
     text(60, 80, 'One app window, one process per bot, one agent per call. Every solid box is its own process: its own memory, its own crash.', 14, fill=T['soft'])
 
+    # Layout: agents on the left, the app (main process + its bot children) in the
+    # middle, call platforms on the right. Same reading direction as the README's
+    # architecture diagram. Each agent sits on the same row as the bot it drives.
+    ROW = [362, 482, 602]                   # Charlie, Bob, Other bots
+    RH = 90
+    SX, SW = 56, 230                        # agent sessions column
+    RX, RY, RW, RB = 330, 150, 570, 648     # the app region (x, top, width, bottom)
+    BX, BW = 400, 460                       # bot boxes inside the app region
+    GUT = RX + RW - 24                      # right gutter inside the region: spawn trunk
+    PX, PW = 960, 164                       # call platforms column
+
     # ── This Mac ──
-    a(f'<rect x="36" y="104" width="860" height="660" rx="12" fill="none" stroke="{T["region"]}" stroke-width="1.5" stroke-dasharray="7 5"/>')
+    a(f'<rect x="36" y="104" width="884" height="626" rx="12" fill="none" stroke="{T["region"]}" stroke-width="1.5" stroke-dasharray="7 5"/>')
     eyebrow(56, 132, 'THIS MAC', 'everything inside talks over 127.0.0.1 only')
 
-    # ── The app window ──
-    AX, AY, AW, AH = 330, 150, 540, 176
+    # ── The app: one region, one main process, N bot processes ──
+    a(f'<rect x="{RX}" y="{RY}" width="{RW}" height="{RB - RY}" rx="10" fill="none" stroke="{T["line"]}" stroke-width="2"/>')
+    eyebrow(RX + 16, RY - 10, 'VIBECONFERENCING.APP', None)
+    AX, AY, AW, AH = RX + 16, RY + 14, RW - 32, 146
     box(AX, AY, AW, AH, stroke_w=2)
     a(f'<g transform="translate({AX + 20},{AY + 16}) scale(0.125)"><circle cx="64" cy="64" r="56" fill="#D97757"/><rect x="136" y="8" width="112" height="112" rx="6" fill="#7B68EE"/><rect x="8" y="136" width="112" height="112" rx="6" fill="#E95678"/><circle cx="192" cy="192" r="56" fill="#45D4CF"/></g>')
-    text(AX + 64, AY + 30, 'vibeconferencing', 20, 800, family=SYNE, spacing=-0.3)
-    text(AX + 64, AY + 47, 'The app: the one window you see. Its main process owns the bots.', 11.5, fill=T['soft'])
-    a(f'<line x1="{AX + 20}" y1="{AY + 62}" x2="{AX + AW - 20}" y2="{AY + 62}" stroke="{T["line"]}" stroke-width="2"/>')
-    c1, c2, cw = AX + 20, AX + 280, 240
-    row(c1, AY + 74, cw, 'Stage', "the selected bot's real panel, relayed")
-    row(c2, AY + 74, cw, 'Sidebar', 'bots, upcoming calls, account')
-    row(c1, AY + 116, cw, 'Directory  :7864', 'where agents and skills find bots')
-    row(c2, AY + 116, cw, 'Bot children', 'spawns bots, sees every exit, reads output')
+    text(AX + 64, AY + 30, 'main process', 20, 800, family=SYNE, spacing=-0.3)
+    text(AX + 64, AY + 47, 'The one window you see. It owns the bots.', 11.5, fill=T['soft'])
+    a(f'<line x1="{AX + 20}" y1="{AY + 58}" x2="{AX + AW - 20}" y2="{AY + 58}" stroke="{T["line"]}" stroke-width="2"/>')
+    cw = (AW - 40 - 16) // 2
+    c1, c2 = AX + 20, AX + 20 + cw + 16
+    row(c1, AY + 66, cw, 'Stage', "the selected bot's real panel, relayed")
+    row(c2, AY + 66, cw, 'Sidebar', 'bots, upcoming calls, account')
+    row(c1, AY + 104, cw, 'Directory  :7864', 'where agents and skills find bots')
+    row(c2, AY + 104, cw, 'Bot children', 'spawns bots, sees every exit, reads output')
+    DIR_Y = AY + 104 + 17                   # directory row, vertical centre
+    AB = AY + AH                            # bottom of the main process box
 
-    # ── Bot processes ──
-    BY, BW, BH = 430, 166, 176
-    bx = [330, 517, 704]
-    a(f'<rect x="318" y="416" width="564" height="204" rx="10" fill="none" stroke="{T["line"]}" stroke-width="1.5"/>')
-    for x, (name, port) in zip(bx[:2], [('Charlie', '7885'), ('Bob', '7887')]):
-        box(x, BY, BW, BH, stroke_w=2)
-        text(x + 14, BY + 26, name, 17, 800, family=SYNE, spacing=-0.3)
-        text(x + 14, BY + 42, f'bot process · port {port}', 11, fill=T['soft'])
-        row(x + 12, BY + 54, BW - 24, 'Call view', 'the meeting itself', 34)
-        row(x + 12, BY + 94, BW - 24, 'Panel', 'hidden; shown on stage', 34)
-        row(x + 12, BY + 134, BW - 24, 'Local API', 'tools, status, relay', 34)
-    x = bx[2]
-    box(x, BY, BW, BH, planned=True)
-    text(x + 14, BY + 26, 'Other bots', 17, 800, family=SYNE, fill=T['planned_text'], spacing=-0.3)
-    text(x + 14, BY + 42, 'test fleet, or by hand', 11, fill=T['planned_text'])
-    for i, s in enumerate(['Still a bot process, but', "not the app's child. The", 'app finds it by scanning', 'ports and stops it over', 'HTTP.']):
-        text(x + 14, BY + 70 + i * 16, s, 11, fill=T['planned_text'])
+    # ── Bot processes (one row each) ──
+    rw3 = (BW - 28 - 16) // 3
+    for y, (name, port) in zip(ROW[:2], [('Charlie', '7885'), ('Bob', '7887')]):
+        box(BX, y, BW, RH, stroke_w=2)
+        text(BX + 14, y + 26, name, 17, 800, family=SYNE, spacing=-0.3)
+        text(BX + 14, y + 42, f'bot process · port {port}', 11, fill=T['soft'])
+        row(BX + 14, y + 50, rw3, 'Local API', 'tools, status, relay', 34)
+        row(BX + 14 + rw3 + 8, y + 50, rw3, 'Panel', 'hidden; shown on stage', 34)
+        row(BX + 14 + 2 * (rw3 + 8), y + 50, rw3, 'Call view', 'the meeting itself', 34)
+    PANEL_X = BX + 14 + rw3 + 8 + rw3 // 2  # centre of the Panel row
+    # Other bots straddle the app's edge: a bot process, but not the app's child.
+    y = ROW[2]
+    box(BX, y, BW, RH, planned=True)
+    text(BX + 14, y + 26, 'Other bots', 17, 800, family=SYNE, fill=T['planned_text'], spacing=-0.3)
+    text(BX + 14, y + 42, 'test fleet, or started by hand', 11, fill=T['planned_text'])
+    text(BX + 14, y + 62, "Still a bot process, but not the app's child. The app finds it by scanning", 11, fill=T['planned_text'])
+    text(BX + 14, y + 78, 'ports and stops it over HTTP.', 11, fill=T['planned_text'])
 
-    # app → bots: the parent/child tree, the panel relay, the scan
-    ab = AY + AH
-    trunk = 740
-    wire([(trunk, ab), (trunk, 392)], 'owner', end=False)
-    wire([(bx[0] + 83, 392), (trunk, 392)], 'owner', end=False)
-    wire([(bx[0] + 83, 392), (bx[0] + 83, BY)], 'owner')
-    wire([(bx[1] + 83, 392), (bx[1] + 83, BY)], 'owner')
-    label(560, 384, 'spawns each bot as its own child', fill=T['owner_text'], mono=False, size=11.5)
-    label(507, 408, 'quit · hello · show me', fill=T['owner_text'], size=9.5)
-    label(670, 408, 'sees every exit', fill=T['owner_text'], size=9.5)
-    wire([(360, ab), (360, BY)], 'http', start=True)
-    label(352, 374, 'panel relay', anchor='end')
-    label(352, 388, 'HTTP + SSE', anchor='end')
-    wire([(820, ab), (820, BY)], 'lookup')
-    label(828, 374, 'port', anchor='start')
-    label(828, 388, 'scan', anchor='start')
+    # main process → bots: the parent/child tree down the right gutter
+    wire([(GUT, AB), (GUT, ROW[1] + 18)], 'owner', end=False)
+    wire([(GUT, ROW[0] + 18), (BX + BW, ROW[0] + 18)], 'owner')
+    wire([(GUT, ROW[1] + 18), (BX + BW, ROW[1] + 18)], 'owner')
+    label(GUT - 10, ROW[0] - 36, 'spawns each bot as its own child', anchor='end', fill=T['owner_text'], mono=False, size=11.5)
+    label(GUT - 10, ROW[0] - 22, 'quit · hello · show me', anchor='end', fill=T['owner_text'], size=9.5)
+    label(GUT - 10, ROW[0] - 8, 'sees every exit', anchor='end', fill=T['owner_text'], size=9.5)
+    # ...and finds the ones it did not start
+    wire([(GUT + 12, AB), (GUT + 12, ROW[2])], 'lookup')
+    label(GUT - 8, ROW[2] - 22, 'port', anchor='end')
+    label(GUT - 8, ROW[2] - 8, 'scan', anchor='end')
+    # the selected bot's panel is relayed onto the stage
+    wire([(PANEL_X, ROW[0]), (PANEL_X, AB)], 'http', start=True)
+    label(PANEL_X - 8, ROW[0] - 22, 'panel relay', anchor='end')
+    label(PANEL_X - 8, ROW[0] - 8, 'HTTP + SSE', anchor='end')
 
     # ── Agent sessions ──
-    eyebrow(56, 420, 'AGENT SESSIONS', 'one per bot in a call')
-    SX, SW, SH = 56, 230, 128
-    for (sy, who, app_name, ico, port) in [(452, "Charlie's agent", 'Claude Code', 'Claude', '7885'), (612, "Bob's agent", 'Codex', 'Codex', '7887')]:
-        box(SX, sy, SW, SH, stroke_w=2)
-        icon(ico, SX + 14, sy + 14)
-        text(SX + 50, sy + 27, who, 15, 600)
-        text(SX + 50, sy + 43, f'{app_name} · opened by its bot', 10.5, fill=T['soft'])
-        a(f'<line x1="{SX + 14}" y1="{sy + 56}" x2="{SX + SW - 14}" y2="{sy + 56}" stroke="{T["line"]}" stroke-width="1.5"/>')
-        row(SX + 14, sy + 66, SW - 28, 'MCP server', f'its child, over stdio · pinned to {port}', 44)
-    # a session's MCP server talks to its own bot
-    wire([(SX + SW, 530), (bx[0], 530)], 'http')
-    label(308, 523, 'HTTP')
-    label(308, 545, 'token')
-    wire([(SX + SW, 690), (bx[1] + 50, 690), (bx[1] + 50, BY + BH)], 'http')
-    label(450, 683, 'HTTP + token, to its own bot', mono=False, size=11)
+    eyebrow(56, 330, 'AGENT SESSIONS', 'one per bot in a call')
+    for (y, who, app_name, ico, port) in [(ROW[0], "Charlie's agent", 'Claude Code', 'Claude', '7885'), (ROW[1], "Bob's agent", 'Codex', 'Codex', '7887')]:
+        box(SX, y, SW, RH, stroke_w=2)
+        icon(ico, SX + 14, y + 12)
+        text(SX + 50, y + 27, who, 15, 600)
+        text(SX + 50, y + 43, f'{app_name} · opened by its bot', 10.5, fill=T['soft'])
+        row(SX + 14, y + 50, SW - 28, 'MCP server', f'its stdio child · pinned to {port}', 34)
+        # a session's MCP server talks to its own bot's local API
+        wire([(SX + SW, y + 67), (BX, y + 67)], 'http')
+        label((SX + SW + BX) / 2, y + 60, 'HTTP + token')
     # ...and finds it through the app's directory
-    wire([(270, 452), (270, AY + 133), (AX, AY + 133)], 'lookup')
-    label(262, 340, 'finds its bot', anchor='end')
-    label(262, 354, ':7864', anchor='end')
+    # Down the session box's right edge, clear of the AGENT SESSIONS eyebrow.
+    wire([(SX + SW - 16, ROW[0]), (SX + SW - 16, DIR_Y), (AX, DIR_Y)], 'lookup')
+    label(SX + SW - 24, DIR_Y + 20, 'finds its bot', anchor='end')
+    label(SX + SW - 24, DIR_Y + 34, ':7864', anchor='end')
 
     # ── Call platforms, outside this Mac ──
-    eyebrow(920, 420, 'CALL PLATFORMS', 'bots join as participants')
+    eyebrow(PX, 412, 'CALL PLATFORMS', 'bots join as participants')
     names = ['Google Meet', 'Zoom', 'Microsoft Teams', 'Slack Huddles']
     for i, n in enumerate(names):
-        y = 450 + i * 46
-        box(920, y, 164, 38)
-        icon(n, 930, y + 8, 22)
-        text(962, y + 24, n, 13, 600)
-    wire([(882, 518), (920, 518)], 'http', start=True)
+        y = 442 + i * 46
+        box(PX, y, PW, 38)
+        icon(n, PX + 10, y + 8, 22)
+        text(PX + 42, y + 24, n, 13, 600)
+    bus_y = 442 + 2 * 46
+    wire([(RX + RW, bus_y), (PX, bus_y)], 'http', start=True)
 
     # ── Key ──
-    eyebrow(920, 132, 'KEY')
+    eyebrow(PX, 132, 'KEY')
     ky = 152
-    a(f'<rect x="920" y="{ky}" width="34" height="22" rx="4" fill="{T["paper"]}" stroke="{T["card_stroke"]}" stroke-width="2"/>')
-    text(964, ky + 10, 'a process', 11.5, 600)
-    text(964, ky + 24, 'own memory, own crash', 10.5, fill=T['soft'])
+    a(f'<rect x="{PX}" y="{ky}" width="34" height="22" rx="4" fill="{T["paper"]}" stroke="{T["card_stroke"]}" stroke-width="2"/>')
+    text(PX + 44, ky + 10, 'a process', 11.5, 600)
+    text(PX + 44, ky + 24, 'own memory, own crash', 10.5, fill=T['soft'])
     ky += 42
-    wire([(920, ky + 11), (954, ky + 11)], 'owner')
-    text(964, ky + 10, 'parent to child', 11.5, 600)
-    text(964, ky + 24, 'spawn + private channel', 10.5, fill=T['soft'])
+    wire([(PX, ky + 11), (PX + 34, ky + 11)], 'owner')
+    text(PX + 44, ky + 10, 'parent to child', 11.5, 600)
+    text(PX + 44, ky + 24, 'spawn + private channel', 10.5, fill=T['soft'])
     ky += 42
-    wire([(920, ky + 11), (954, ky + 11)], 'http')
-    text(964, ky + 10, 'HTTP', 11.5, 600)
-    text(964, ky + 24, 'local port, bot token', 10.5, fill=T['soft'])
+    wire([(PX, ky + 11), (PX + 34, ky + 11)], 'http')
+    text(PX + 44, ky + 10, 'HTTP', 11.5, 600)
+    text(PX + 44, ky + 24, 'local port, bot token', 10.5, fill=T['soft'])
     ky += 42
-    wire([(920, ky + 11), (954, ky + 11)], 'lookup')
-    text(964, ky + 10, 'lookup', 11.5, 600)
-    text(964, ky + 24, 'directory or port scan', 10.5, fill=T['soft'])
+    wire([(PX, ky + 11), (PX + 34, ky + 11)], 'lookup')
+    text(PX + 44, ky + 10, 'lookup', 11.5, 600)
+    text(PX + 44, ky + 24, 'directory or port scan', 10.5, fill=T['soft'])
     ky += 42
-    a(f'<rect x="920" y="{ky}" width="34" height="22" rx="4" fill="none" stroke="{T["region"]}" stroke-width="1.5" stroke-dasharray="4 3"/>')
-    text(964, ky + 10, 'machine boundary', 11.5, 600)
-    text(964, ky + 24, 'beyond it: the internet', 10.5, fill=T['soft'])
+    a(f'<rect x="{PX}" y="{ky}" width="34" height="22" rx="4" fill="none" stroke="{T["line"]}" stroke-width="2"/>')
+    text(PX + 44, ky + 10, 'the app', 11.5, 600)
+    text(PX + 44, ky + 24, 'one window, many processes', 10.5, fill=T['soft'])
+    ky += 42
+    a(f'<rect x="{PX}" y="{ky}" width="34" height="22" rx="4" fill="none" stroke="{T["region"]}" stroke-width="1.5" stroke-dasharray="4 3"/>')
+    text(PX + 44, ky + 10, 'machine boundary', 11.5, 600)
+    text(PX + 44, ky + 24, 'beyond it: the internet', 10.5, fill=T['soft'])
 
     # ── Footer ──
-    text(60, 798, "A bot that crashes takes nothing else down. The app sees the exit and its reason; if the app goes away, its bots finish their calls and quit.", 12, fill=T['soft'])
+    text(60, 768, "A bot that crashes takes nothing else down. The app sees the exit and its reason; if the app goes away, its bots finish their calls and quit.", 12, fill=T['soft'])
 
     a('</svg>')
     return '\n'.join(o)

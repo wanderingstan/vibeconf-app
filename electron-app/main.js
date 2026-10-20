@@ -7580,6 +7580,27 @@ function clearBroadcastError(key) {
 // Track every Terminal window we open so we can close them all on quit —
 // otherwise repeated testing leaves a pile of orphaned windows.
 let claudeTerminalWindowIds = [];
+// Terminal windows opened from the panel's "Open terminal" (chat-session:open).
+// Kept apart from the call's: leaving a call closes its terminal, and must not
+// close one you opened yourself.
+let chatTerminalWindowIds = [];
+
+// Which of the agent terminals this bot opened are still open, newest first.
+// Asks Terminal only if it is running (a `tell` would launch it) and only if
+// there is anything to ask about, so an idle bot costs nothing.
+function openAgentTerminalIds() {
+  const known = [...chatTerminalWindowIds, ...claudeTerminalWindowIds].reverse();
+  if (process.platform !== 'darwin' || !known.length) return Promise.resolve([]);
+  const script = 'if application "Terminal" is running then\n  tell application "Terminal" to return id of windows\nend if\nreturn ""';
+  return new Promise((resolve) => {
+    require('child_process').execFile('osascript', ['-e', script], (err, stdout) => {
+      if (err) return resolve([]);
+      const open = new Set(String(stdout || '').split(/[,\s]+/).filter(Boolean));
+      chatTerminalWindowIds = chatTerminalWindowIds.filter((id) => open.has(id));
+      resolve(known.filter((id) => open.has(String(id))).map(String));
+    });
+  });
+}
 
 // #305: make sure this profile has a dedicated, TRUSTED working dir and return
 // its path. Creates …/<userData>/agent/, seeds .claude/settings.local.json with
@@ -7972,22 +7993,6 @@ function planAgentSession(claudeDir, botName) {
 // command gets the same guarantee: an id, not a name that stops being unique
 // the moment this working directory has collected a second session with that
 // title. '' means nothing usable is cached, so the caller falls back to name.
-// The bot keeps ONE agent session named after itself; this is the shell
-// command that resumes it (Bot > Copy Terminal Command, and the hosted pane).
-function buildChatCommandForThisBot() {
-  const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
-  const sessionField = store.get('agentSession');
-  const botName = resolvedBotName();
-  const { resolveSessionRef } = require('./agent-session.js');
-  const ref = resolveSessionRef(sessionField, botName);
-  return require('./chat-command.js').buildChatCommand({
-    workdir: claudeDir,
-    sessionField,
-    botName,
-    cachedSessionId: ref.kind === 'name' ? cachedResumeSessionId(claudeDir, ref.name) : '',
-  });
-}
-
 function cachedResumeSessionId(claudeDir, name) {
   const { sessionCacheKey, resolveSessionId, sessionExists } = require('./agent-session.js');
   const id = resolveSessionId((store.get('agentSessionCache') || {})[sessionCacheKey(claudeDir, name)]);
@@ -12151,7 +12156,18 @@ function createMainWindow() {
           accelerator: 'Alt+CmdOrCtrl+C',
           click: () => {
             try {
-              require('electron').clipboard.writeText(buildChatCommandForThisBot());
+              const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
+              const sessionField = store.get('agentSession');
+              const botName = resolvedBotName();
+              const { resolveSessionRef } = require('./agent-session.js');
+              const ref = resolveSessionRef(sessionField, botName);
+              const command = require('./chat-command.js').buildChatCommand({
+                workdir: claudeDir,
+                sessionField,
+                botName,
+                cachedSessionId: ref.kind === 'name' ? cachedResumeSessionId(claudeDir, ref.name) : '',
+              });
+              require('electron').clipboard.writeText(command);
               console.log('[chat-session] copied chat command from the Edit menu');
             } catch (err) {
               console.warn('[chat-session] copy from menu failed:', err.message);
@@ -12891,13 +12907,6 @@ function setupIPC() {
   // #381: open the machine-wide App Settings window (used by the panel's
   // "voice is off" onboarding banner, and available via ⌘,).
   ipcMain.handle('open-app-settings', () => { openAppSettings(); return { ok: true }; });
-  // The command that opens this bot's agent session at any prompt: the hosted
-  // pane's "Copy command" (#301). Returned, not copied, so the app window
-  // writes it to the clipboard on the user's click.
-  ipcMain.handle('copy-chat-command', () => {
-    try { return { ok: true, command: buildChatCommandForThisBot() }; }
-    catch (err) { return { ok: false, error: err.message }; }
-  });
 
   // #381: the app-level (scope:'app') schema prefs, for App Settings' schema-driven
   // section. Only prefs in BOTH the user-facing schema AND config-scope's app-level
@@ -13424,15 +13433,33 @@ function setupIPC() {
     // AppleScript quoting layer put back on for `do script "…"`.
     const escaped = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
     const script = require('./launch-command.js').buildTerminalLaunchScript(escaped);
-    require('child_process').execFile('osascript', ['-e', script], (err) => {
+    require('child_process').execFile('osascript', ['-e', script], (err, stdout) => {
       if (err) {
         // Same recovery as the agent launcher: if Terminal will not play, the
         // user still gets the command rather than nothing.
         console.warn('[chat-session] osascript failed:', err.message);
         try { require('electron').clipboard.writeText(command); } catch { /* noop */ }
+        return;
       }
+      // Remembered so "Show terminal" can bring it back (chat-session:status).
+      const id = (stdout || '').trim();
+      if (/^\d+$/.test(id) && !chatTerminalWindowIds.includes(id)) chatTerminalWindowIds.push(id);
     });
     return { ok: true, command };
+  });
+
+  // Is this bot's agent session open in a Terminal window it opened (for a
+  // call, or from "Open terminal")? The hosted pane says "Show terminal" then,
+  // and brings that window forward rather than opening another (#301). macOS
+  // only; elsewhere the answer is always "no", which just means "Open".
+  ipcMain.handle('chat-session:status', async () => ({ running: (await openAgentTerminalIds()).length > 0 }));
+  ipcMain.handle('chat-session:show', async () => {
+    const [id] = await openAgentTerminalIds();
+    if (!id) return { ok: false };
+    const script = `tell application "Terminal"\n  set index of window id ${id} to 1\n  activate\nend tell`;
+    return new Promise((resolve) => {
+      require('child_process').execFile('osascript', ['-e', script], (err) => resolve({ ok: !err }));
+    });
   });
 
   ipcMain.handle('onboarding:verify-claude', () => {

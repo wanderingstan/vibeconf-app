@@ -1102,7 +1102,13 @@ function installMenu() {
 
 function createWindow() {
   // A window means a Dock icon, even for a supervisor that started in the background.
-  if (app.dock) app.dock.show();
+  // The app's own icon, not Electron's: a packaged build gets it from the
+  // bundle, but run from source the Dock shows Electron's (the bot sets the
+  // same in main.js).
+  if (app.dock) {
+    app.dock.show();
+    try { app.dock.setIcon(require('electron').nativeImage.createFromPath(path.join(__dirname, 'icon.png'))); } catch { /* keep the default */ }
+  }
   win = new BrowserWindow({
     // Sized by content, so the stage is exactly PANEL_W; see fitWindowWidth.
     useContentSize: true,
@@ -1111,6 +1117,7 @@ function createWindow() {
     minHeight: 520,
     backgroundColor: '#FFF4DA', // --cream, so nothing flashes dark before the page paints
     title: 'Vibeconferencing',
+    icon: path.join(__dirname, 'icon.png'), // Windows / Linux taskbar
     webPreferences: {
       preload: path.join(__dirname, 'preload-supervisor.js'),
       contextIsolation: true,

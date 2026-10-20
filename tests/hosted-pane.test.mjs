@@ -48,11 +48,21 @@ test('About lists agent, voice and a Google account only when signed in, and Edi
   assert.doesNotMatch(css, /\.about-row \{[^}]*justify-content: space-between/, 'left-aligned, never spread across a wide window');
 });
 
-test('Copy command and the Bot menu share one implementation with the bot\'s own menu', () => {
-  assert.match(main, /ipcMain\.handle\('copy-chat-command', \(\) => \{\s*\n\s*try \{ return \{ ok: true, command: buildChatCommandForThisBot\(\) \}; \}/);
-  assert.match(main, /require\('electron'\)\.clipboard\.writeText\(buildChatCommandForThisBot\(\)\);/);
+test('Copy command and the terminal use the bot\'s existing chat-session handlers', () => {
+  assert.match(panel, /api\.invoke\('chat-session:copy'\)/);
+  assert.doesNotMatch(main, /copy-chat-command/, 'no second copy of chatCommandForBot');
   assert.match(main, /ipcMain\.removeHandler\('bot-menu-items'\);\s*\n\s*ipcMain\.removeHandler\('bot-menu-click'\);/);
   assert.match(main, /const item = botSubmenu\(\)\.find\(\(i\) => i\.label === label\);/);
+});
+
+test('Show terminal: an open agent terminal is brought forward, not opened again', () => {
+  const open = panel.slice(panel.indexOf('async function openChatSession()'));
+  assert.match(open.slice(0, 400), /const shown = await api\.invoke\('chat-session:show'\)[\s\S]{0,60}if \(shown\?\.ok\) return;/);
+  assert.match(panel, /running \? 'Show terminal' : 'Open terminal'/);
+  assert.match(main, /ipcMain\.handle\('chat-session:status', async \(\) => \(\{ running: \(await openAgentTerminalIds\(\)\)\.length > 0 \}\)\);/);
+  // Never launches Terminal just to ask, and never closes a terminal you opened.
+  assert.match(main, /if application "Terminal" is running then/);
+  assert.match(main, /let chatTerminalWindowIds = \[\];/);
 });
 
 test('the app window builds its Bot menu from the selected bot and refreshes it on every selection', () => {

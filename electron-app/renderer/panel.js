@@ -1414,7 +1414,11 @@ window.addEventListener('blur', () => setOptionHeld(false));
 
 async function openChatSession() {
   try {
+    // Already open in a window this bot opened: bring it forward (#301).
+    const shown = await api.invoke('chat-session:show').catch(() => null);
+    if (shown?.ok) return;
     const r = await api.invoke('chat-session:open');
+    setTimeout(() => refreshTerminalLabel(), 2000);
     if (r && r.ok === false && r.copied) {
       // No terminal we can drive — say what we did instead, rather than
       // appearing to do nothing.
@@ -4291,14 +4295,16 @@ function buildHostedAbout(el) {
   hostedAbout.agentName = el('span', 'about-val');
   hostedAbout.agentActs = el('span', 'about-acts');
   hostedAbout.agentActs.append(
-    action('terminal', 'Open terminal', "Open the bot's agent session in a terminal: the same session it uses on calls", () => { openChatSession(); }),
-    action('copy', 'Copy command', "Copy the command that opens this session from any terminal", async () => {
-      try {
-        const r = await api.invoke('copy-chat-command');
-        if (r?.command) api.copyToClipboard(r.command);
-      } catch { /* older bot */ }
+    hostedAbout.terminalBtn = action('terminal', 'Open terminal', "Open the bot's agent session in a terminal: the same session it uses on calls", () => { openChatSession(); }),
+    action('copy', 'Copy command', 'Copy the command that opens this session from any terminal', () => {
+      api.invoke('chat-session:copy').catch(() => {});
     }),
   );
+  hostedAbout.terminalLabel = hostedAbout.terminalBtn.lastChild;
+  // A terminal can be closed at any moment, and nothing tells the bot; check
+  // now and then (free when the bot has opened none: see openAgentTerminalIds).
+  setInterval(() => refreshTerminalLabel(), 10_000);
+  window.addEventListener('focus', () => refreshTerminalLabel());
   hostedAbout.agent.v.append(hostedAbout.agentName, hostedAbout.agentActs);
 
   hostedAbout.voice = row('Voice');
@@ -4325,6 +4331,18 @@ function buildHostedAbout(el) {
   return sec;
 }
 
+// "Show terminal" while the bot's session is open in a window it opened,
+// "Open terminal" otherwise.
+async function refreshTerminalLabel() {
+  if (!hostedAbout.terminalLabel) return;
+  const st = await api.invoke('chat-session:status').catch(() => null);
+  const running = !!st?.running;
+  hostedAbout.terminalLabel.textContent = running ? 'Show terminal' : 'Open terminal';
+  hostedAbout.terminalBtn.title = running
+    ? "Bring the bot's agent session's terminal to the front"
+    : "Open the bot's agent session in a terminal: the same session it uses on calls";
+}
+
 const AGENT_LABELS = { claude: 'Claude Code', codex: 'Codex' };
 async function refreshHostedAbout() {
   if (!HOSTED || !hostedAbout.title) return;
@@ -4345,6 +4363,7 @@ async function refreshHostedAbout() {
   hostedAbout.agentName.textContent = AGENT_LABELS[backend] || 'Another agent';
   // The terminal belongs to the bot's Claude Code session; other agents bring their own.
   hostedAbout.agentActs.style.display = backend === 'claude' ? '' : 'none';
+  refreshTerminalLabel();
 
   try {
     const acct = await api.invoke('get-meet-account-email');

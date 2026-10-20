@@ -81,13 +81,9 @@ every other frame inherits it:
 - Zoom out enough that the **top of the head and the chin are both fully in frame**, with a
   little shoulder/outfit visible. A tight face-only crop looks wrong once you can't see hair
   or chin — this was the #1 mistake generating the reference set for this skill.
-- Ask for a **flat, single-color background in a colour the character does NOT contain** —
-  a chroma backdrop: solid bright magenta (`#FF00FF`) by default, or chroma green if the
-  character has pink/magenta. Not white: a white backdrop can only be keyed by flood-filling
-  from the corners (or white eyes/teeth get punched out), and a flood fill never reaches the
-  white pockets trapped inside fuzzy hair, fur or between fingers — the 2026-10-20
-  felt-puppet set shipped with white specks all through its hair tuft. A chroma colour can
-  be keyed out *everywhere*, enclosed gaps included.
+- Ask for a **flat, pure white background** ("pure white, studio shoot"). White is the
+  most neutral colour to leave behind as a fringe — any halo the keying leaves reads as a
+  soft glow, where a chroma green/magenta fringe reads as a defect (Stan, 2026-10-20).
 - Bake the theme's styling into the prompt once here; every derived frame will inherit it
   automatically by being edited *from* this image rather than re-describing the outfit each
   time.
@@ -143,15 +139,20 @@ Not required — a flat-colored square behind each face can look fine, even funk
 If `magick`/`convert` is available (`command -v magick`), key out the flat background on
 each face file:
 
+Flood-fill the white **from the corners** — never key white globally, or white eyes,
+teeth and highlights get punched out:
+
 ```
-magick <file> -fuzz 12% -transparent '#FF00FF' <file>     # whatever backdrop colour Step 2 used
+magick <file> -alpha set -fuzz 8% -fill none \
+  -draw "color 0,0 floodfill" -draw "color %[fx:w-1],0 floodfill" \
+  -draw "color 0,%[fx:h-1] floodfill" -draw "color %[fx:w-1],%[fx:h-1] floodfill" <file>
 ```
 
-Key the backdrop colour **globally** (not a corner flood fill) so gaps inside hair and fur
-clear too. Then check for a coloured fringe on soft edges; if there is one, despill (e.g.
-`-channel RGB -fx` to pull magenta out of edge pixels) or raise the fuzz slightly. If a set
-was already generated on white, a corner flood fill (`-fill none -draw "color 0,0 floodfill"`
-from each corner) is the safe fallback — but expect trapped specks in hair.
+**Known limitation:** a flood fill can't reach white pockets *enclosed* by the character —
+gaps inside fuzzy hair/fur, between fingers. The 2026-10-20 felt-puppet set has white specks
+in its hair tuft for this reason. If that matters for a theme, clear small enclosed
+near-white islands that sit *outside* the face (hair, hands) as a second pass, and leave the
+eyes alone; or prompt for slicked-back/solid hair so there are no gaps to trap.
 
 (Tune the fuzz percent if edges look chewed up — hair against a flat background rarely
 keys perfectly, and that's OK for this look.) If ImageMagick isn't installed, don't try to

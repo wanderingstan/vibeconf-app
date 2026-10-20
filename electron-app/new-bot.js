@@ -54,7 +54,7 @@ function nextBotProfileName(profilesRoot, { profileManager = require('./profile-
 // bot's real stored settings before its first launch, not launch-time
 // overrides. The bot's very first act is resuming the session, so there is no
 // later moment to apply them.
-function seedNewBot(profilesRoot, profileName, { adopt = null, log = console } = {}) {
+function seedNewBot(profilesRoot, profileName, { adopt = null, overrides = null, log = console } = {}) {
   try {
     const { randomBotName } = require('./bot-names.js');
     const taken = (() => { try { return require('./profile-manager.js').takenBotNames(profilesRoot); } catch { return []; } })();
@@ -99,6 +99,11 @@ function seedNewBot(profilesRoot, profileName, { adopt = null, log = console } =
     // new-bot-background.js).
     seeded[require('./new-bot-background.js').SEED_BACKGROUND_MARKER] = true;
     if (adopt && adopt.workdir) seeded.claudeWorkDir = adopt.workdir;
+    // Choices made before the bot exists (the Sessions pane's name, face style
+    // and voice): they win over the random ones, since the person picked them.
+    if (overrides) {
+      for (const [k, v] of Object.entries(overrides)) if (v !== undefined && v !== null && v !== '') seeded[k] = v;
+    }
     if (adopt && adopt.session) {
       seeded.agentSession = adopt.session;
       // Adopting IS taking the session field over. Left on auto, the first

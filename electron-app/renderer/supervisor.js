@@ -13,6 +13,7 @@ const els = {
   events: document.getElementById('events'),
   banner: document.getElementById('calendarBanner'),
   tickStatus: document.getElementById('tickStatus'),
+  sessions: document.getElementById('sessions'),
 };
 
 // Everything from the main process is either read off disk or off the network,
@@ -95,6 +96,7 @@ const starting = new Set();
 function showStage(bot, { note = 'Waking up…', pulse = true } = {}) {
   const stage = document.getElementById('stage');
   stage.replaceChildren();
+  stage.classList.remove('has-session');
   if (!bot) { stage.append(el('div', null, 'Select a bot to see it here.')); return; }
   const card = el('div', 'waking');
   const face = el('div', 'waking-face');
@@ -112,6 +114,7 @@ function showStage(bot, { note = 'Waking up…', pulse = true } = {}) {
 
 async function openBot(bot) {
   if (starting.has(bot.name)) return;
+  if (selectedSession) { selectedSession = null; renderSessions(); }
   rowErrors.delete(bot.name);
   if (!bot.running) {
     starting.add(bot.name);
@@ -243,6 +246,124 @@ function renderEvents(state) {
 
 async function refresh() {
   renderBots(await api.invoke('supervisor:fleet'));
+}
+
+// ── Sessions: your recent Claude Code sessions, below the bots ──
+//
+// Seth's idea: a session you already have knows about real work, so make it
+// a bot and it can talk about that work. Click one for its last lines and a
+// Create bot button; the bot resumes that very session.
+
+let selectedSession = null;
+const SESSION_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5 L10 12 L7 14.5 M12.5 15 L17 15"/></svg>';
+
+function ago(ms) {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 90) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+const folderOf = (cwd) => String(cwd || '').split('/').filter(Boolean).pop() || cwd;
+
+async function renderSessions() {
+  if (!els.sessions) return;
+  const list = await api.invoke('supervisor:sessions').catch(() => []);
+  els.sessions.replaceChildren();
+  if (!list.length) return;
+  els.sessions.append(el('div', 'section-head', 'Sessions'));
+  for (const sess of list) {
+    const row = el('div', `session${sess.id === selectedSession ? ' selected' : ''}`);
+    row.title = `${sess.cwd}\nSession ${sess.id}`;
+    const icon = el('div', 'session-icon');
+    icon.innerHTML = SESSION_ICON; // a fixed glyph of our own, not data
+    const who = el('div', 'who');
+    who.append(el('div', 'title', sess.title || sess.lastPrompt || folderOf(sess.cwd)));
+    const sub = el('div', 'sub');
+    if (Date.now() - sess.mtimeMs < 2 * 60 * 1000) sub.append(el('span', 'live'));
+    sub.append(document.createTextNode(sess.bot ? `Already ${sess.bot}` : `${ago(sess.mtimeMs)} · ${folderOf(sess.cwd)}`));
+    who.append(sub);
+    row.append(icon, who);
+    row.addEventListener('click', () => openSession(sess.id));
+    els.sessions.append(row);
+  }
+}
+renderSessions();
+setInterval(renderSessions, 20000);
+window.addEventListener('focus', renderSessions);
+
+async function openSession(id) {
+  selectedSession = id;
+  selectedBot = null;
+  await api.invoke('supervisor:clear-stage').catch(() => {});
+  const d = await api.invoke('supervisor:session-detail', id).catch((e) => ({ ok: false, error: e.message }));
+  // The clear-stage push redraws an empty stage; draw the session after it.
+  setTimeout(() => showSessionStage(d), 0);
+  renderSessions();
+  refresh();
+}
+
+function showSessionStage(d) {
+  const stage = document.getElementById('stage');
+  stage.replaceChildren();
+  stage.classList.add('has-session');
+  if (!d?.ok) { stage.append(el('div', 'sess-err', d?.error || 'Could not read that session.')); return; }
+  const { session: s, excerpt, suggestion, emojiSets, voices } = d;
+  stage.append(el('div', 'sess-title', s.title || s.lastPrompt || folderOf(s.cwd)));
+  stage.append(el('div', 'sess-meta', `Claude Code session · ${ago(s.mtimeMs)} · ${s.cwd}`));
+
+  // Its last lines, so you can tell which session this is.
+  const box = el('div', 'sess-excerpt');
+  if (!excerpt.length) box.append(el('div', 'sess-line', 'No conversation to show yet.'));
+  for (const line of excerpt) {
+    const div = el('div', `sess-line ${line.role}`);
+    div.append(el('span', 'who', line.role === 'user' ? 'You' : 'Claude'), document.createTextNode(line.text));
+    box.append(div);
+  }
+  stage.append(box);
+  requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+
+  const create = el('button', 'sess-create', 'Create bot');
+  stage.append(create);
+
+  // The bot it becomes: picked at random the way a new bot is, changeable here.
+  const opts = el('div', 'sess-opts');
+  const field = (label, control) => { const f = el('div', 'sess-opt'); f.append(el('label', null, label), control); opts.append(f); return control; };
+  const nameIn = field('Name', Object.assign(document.createElement('input'), { value: suggestion.name, maxLength: 40 }));
+  const faceSel = field('Face style', document.createElement('select'));
+  for (const e of emojiSets) faceSel.append(Object.assign(document.createElement('option'), { value: e.id, textContent: e.label }));
+  faceSel.value = suggestion.emojiSet;
+  const voiceSel = field('Voice', document.createElement('select'));
+  voiceSel.append(Object.assign(document.createElement('option'), { value: '', textContent: 'The app\'s default voice' }));
+  for (const v of voices) voiceSel.append(Object.assign(document.createElement('option'), { value: v.id, textContent: v.label }));
+  const shuffle = el('button', 'sess-shuffle', 'Shuffle name and face');
+  shuffle.addEventListener('click', async () => {
+    const n = await api.invoke('supervisor:suggest-bot', s.id).catch(() => null);
+    if (n) { nameIn.value = n.name; faceSel.value = n.emojiSet; }
+  });
+  opts.append(shuffle);
+  stage.append(opts);
+  stage.append(el('div', 'sess-note', 'The bot resumes this session, in its folder, so it starts with everything the session knows. Its background is picked at random; change anything later in its settings.'));
+  const err = el('div', 'sess-err');
+  stage.append(err);
+
+  create.addEventListener('click', async () => {
+    create.disabled = true;
+    create.textContent = 'Creating…';
+    const r = await api.invoke('supervisor:create-bot-from-session', {
+      id: s.id, name: nameIn.value, emojiSet: faceSel.value, voice: voiceSel.value,
+    }).catch((e) => ({ ok: false, error: e.message }));
+    if (!r?.ok) {
+      create.disabled = false;
+      create.textContent = 'Create bot';
+      err.textContent = `Could not create it: ${r?.error || 'unknown error'}`;
+      return;
+    }
+    selectedSession = null;
+    renderSessions();
+  });
 }
 
 // The process pushes after every tick, so the window stays current without

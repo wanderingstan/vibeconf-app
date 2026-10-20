@@ -48,6 +48,16 @@ function noteQuitCause(cause) { if (!quitCause) quitCause = cause; }
 const panelRelay = require('./panel-relay.js').createPanelRelay({ ipcMain, onQuit: (from) => { noteQuitCause(`the app window asked it to stop (/api/panel/quit${from ? ' from ' + from : ''})`); app.quit(); } });
 // (No signal handlers: Electron turns SIGTERM into an ordinary quit before any
 // JS handler runs, so a signal shows up below as unattributed.)
+// #301: the channel to the app window, when the app started this bot as its own
+// child (bot-parent-link.js; the app's end is bot-children.js). null for a bot
+// opened any other way. Quit requests arrive here instead of over HTTP, "show
+// me" goes back over it, and if the app goes away the bot follows it (after
+// its call, if it is in one) rather than living on with no UI.
+const parentLink = require('./bot-parent-link.js').connectToParent({
+  onQuit: (cause) => { noteQuitCause(cause); app.quit(); },
+  // localServer is declared further down; before it exists there is no call.
+  isInCall: () => { try { return require('./call-phase.js').isBusy(localServer.callStatus); } catch { return false; } },
+});
 
 const path = require('path');
 const fs = require('fs');
@@ -9008,6 +9018,7 @@ function updateSpeakingState(name, speaking) {
 if (isDefaultInstance) {
   const gotTheLock = app.requestSingleInstanceLock();
   if (!gotTheLock) {
+    if (parentLink) parentLink.duplicate();
     // Reinstalling/updating the app does NOT kill an already-running process —
     // it just overwrites the .app bundle. That old process keeps the lock and
     // keeps serving on DEFAULT_PORT, so a "fresh" relaunch silently quits here
@@ -9051,6 +9062,10 @@ if (isDefaultInstance) {
   // Bot's view).
   if (!app.requestSingleInstanceLock()) {
     console.log(`[electron] Bot "${appProfile}" is already running in another process; quitting this copy.`);
+    // Started by the app window: say so, so this exit is not reported as a bot
+    // dying (the running copy shows itself via second-instance).
+    if (parentLink) parentLink.duplicate();
+    noteQuitCause('a copy of this bot was already running');
     app.quit();
   } else {
     console.log('[electron] Allowing separate app instance for profile:', appProfile);
@@ -9515,6 +9530,9 @@ app.whenReady().then(async () => {
     console.log('[electron] Requested local server port:', explicitLocalPort);
   }
   await localServer.start();
+  // Tell the app that started us where we listen, so it can match this child
+  // to the bot its port scan finds (see bot-children.js).
+  if (parentLink) parentLink.hello(localServer.port);
 
   // Remote log shipping (opt-in via `remoteLogging` pref). Build a stable
   // instanceId from hostname + profile so the same bot is recognizable across
@@ -11625,8 +11643,14 @@ function makeHeadless(win) {
     focus: win.focus.bind(win),
   };
   let presenting = false;
+  let lastSelectAt = 0;
   const presentInShell = () => {
     if (presenting) return;
+    // Started by the app: ask it over our channel. No port, no token, and no
+    // chance of reaching some other app window than the one that owns us.
+    // show() and focus() usually come as a pair: one request for both.
+    if (parentLink && Date.now() - lastSelectAt < 1000) return;
+    if (parentLink && parentLink.select()) { lastSelectAt = Date.now(); return; }
     presenting = true;
     (async () => {
       try {

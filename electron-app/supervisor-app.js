@@ -23,14 +23,40 @@
 
 const { app, BrowserWindow, WebContentsView, ipcMain, shell, dialog, Menu, Notification, clipboard } = require('electron');
 const path = require('path');
-const { execFile } = require('child_process');
+const { spawn } = require('child_process');
 
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
 const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, upcomingForFleet, decideReaping, pickResumeBot } = require('./supervisor.js');
-const { spawnArgsForProfile, profileLaunchCommand } = require('./profile-launch.js');
+const { spawnArgsForProfile } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
 const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
+const { createBotChildren } = require('./bot-children.js');
+
+// The bots this window started, as its own child processes (bot-children.js):
+// their PIDs, exits and output. A bot asking to be shown ('select') comes in
+// here too, and so does every exit, expected or not.
+const botChildren = createBotChildren({
+  spawn,
+  onMessage: (name, msg) => {
+    if (msg.type !== 'select') return;
+    console.log(`[supervisor] bot "${name}" asked to be shown`);
+    showBot(name).catch(() => {});
+  },
+  onExit: (info) => {
+    statusSince.delete(info.name);
+    pushState({ botExited: info });
+    if (!info.expected && !quitting && Notification.isSupported()) {
+      // A bot leaving on its own is news, even more so mid-call.
+      try {
+        new Notification({
+          title: `${info.name} stopped`,
+          body: info.signal ? `Its process was killed (${info.signal}).` : `It exited unexpectedly (code ${info.code}).`,
+        }).show();
+      } catch { /* notifications unavailable */ }
+    }
+  },
+});
 
 const POLL_MS = 60 * 1000;
 const PROBE_TIMEOUT_MS = 350;
@@ -233,8 +259,11 @@ let idleSince = {};       // profile -> when it was first seen idle and unselect
 
 // Ask one bot to stop (panel-relay's /api/panel/quit). A bot from an older
 // build has no such route and is left running: better than killing it blind.
-async function stopBot(port, timeoutMs = 2000, reason = 'unspecified') {
+async function stopBot(port, timeoutMs = 2000, reason = 'unspecified', name = null) {
   console.log(`[supervisor] stopping the bot on port ${port}: ${reason}`);
+  // Our own child: over its channel, and we see it exit.
+  const child = name && botChildren.has(name) ? name : botChildren.nameForPort(port);
+  if (child) return botChildren.quit(child, `supervisor: ${reason}`, timeoutMs);
   try {
     const res = await fetch(`http://127.0.0.1:${port}/api/panel/quit`, {
       method: 'POST',
@@ -263,7 +292,7 @@ async function reapTick() {
   });
   idleSince = next;
   for (const name of quit) {
-    const ok = await stopBot(running.get(name).port, 2000, `reaper ("${name}" idle)`);
+    const ok = await stopBot(running.get(name).port, 2000, `reaper ("${name}" idle)`, name);
     console.log(`[supervisor] reaper: "${name}" idle for ${Math.round((Number(process.env.VIBECONF_REAP_IDLE_MS) || 300000) / 1000)}s${ok ? ', stopped it' : ', but it would not stop (an older build?)'}`);
   }
   if (quit.length) pushState({ reaped: quit });
@@ -273,11 +302,15 @@ async function reapTick() {
 // hand: the app is the bots. Capped, so a wedged bot cannot hold the quit.
 async function stopAllBots(capMs = 3000) {
   const running = await scanRunning().catch(() => new Map());
-  if (!running.size) return;
-  console.log(`[supervisor] quitting: stopping ${running.size} bot${running.size > 1 ? 's' : ''}`);
+  // Our children, including any still starting up and not yet on a port.
+  const names = new Set([...running.keys(), ...botChildren.names()]);
+  if (!names.size) return;
+  console.log(`[supervisor] quitting: stopping ${names.size} bot${names.size > 1 ? 's' : ''}`);
   await Promise.race([
-    Promise.allSettled([...running.values()].map((inst) => stopBot(inst.port, capMs, 'the app is quitting'))),
-    new Promise((r) => setTimeout(r, capMs)),
+    Promise.allSettled([...names].map((name) => (botChildren.has(name)
+      ? botChildren.quit(name, 'supervisor: the app is quitting', capMs)
+      : stopBot(running.get(name).port, capMs, 'the app is quitting', name)))),
+    new Promise((r) => setTimeout(r, capMs + 1500)),
   ]);
 }
 
@@ -336,26 +369,18 @@ function launchProfile(name, { openSettings = false } = {}) {
   try { args = spawnArgsForProfile({ name, isDefault, port, openSettings, headless: true }); }
   catch (err) { return { ok: false, error: err.message }; }
 
-  try {
-    // Same per-platform argv as main.js's launcher (#746) — `open -n` only on
-    // macOS; elsewhere the executable itself, detached so it outlives us.
-    const { cmd, argv, detached } = profileLaunchCommand({
-      platform: process.platform,
-      isPackaged: app.isPackaged,
-      exePath: app.getPath('exe'),
-      appPath: app.isPackaged ? null : app.getAppPath(),
-      args,
-    });
-    const onError = (err) => { if (err) console.error('[supervisor] launch failed:', err.message); };
-    const child = detached
-      ? execFile(cmd, argv, { detached: true, stdio: 'ignore' })
-      : execFile(cmd, argv, onError);
-    child.on('error', onError);
-    if (detached) child.unref();
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-  return { ok: true, port };
+  // Our own child process, not a detached launch: see bot-children.js. The
+  // executable itself, even in a packaged Mac build. `open -n` existed to give
+  // each copy its own Dock identity, which a hosted bot must not have; and the
+  // child shares the app's bundle, so camera, mic and screen permissions are
+  // the app's.
+  if (botChildren.has(name)) return { ok: true, port, pid: botChildren.get(name).pid, already: true };
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE; // inherited from a dev shell, it would start the bot as plain Node
+  const argv = app.isPackaged ? args : [app.getAppPath(), ...args];
+  const started = botChildren.start(name, app.getPath('exe'), argv, { env });
+  if (!started.ok) return { ok: false, error: started.error };
+  return { ok: true, port, pid: started.pid };
 }
 
 // Every bot's local API wants its per-launch token, except discovery
@@ -627,6 +652,13 @@ function startDirectory() {
       }
       // Debug only: pictures of the sidebar and the hosted panel, for checking
       // the shell without access to the screen. Off unless asked for.
+      // Stop one bot the way the reaper does (its child channel when it is ours).
+      if (url.pathname === '/api/debug/stop' && req.method === 'POST' && process.env.VIBECONF_SUPERVISOR_DEBUG === '1') {
+        const name = url.searchParams.get('profile');
+        const inst = (await scanRunning()).get(name);
+        if (!inst && !botChildren.has(name)) return send(404, { ok: false, error: 'not running' });
+        return send(200, { ok: await stopBot(inst ? inst.port : null, 3000, 'debug stop', name), child: botChildren.get(name) });
+      }
       if (url.pathname === '/api/debug/capture' && process.env.VIBECONF_SUPERVISOR_DEBUG === '1') {
         const dir = url.searchParams.get('dir') || require('os').tmpdir();
         const fs = require('fs');
@@ -658,14 +690,7 @@ function startDirectory() {
         // user named none and no bot is running (mcp-server/join-call-skill.md).
         const name = url.searchParams.get('profile') || paths.defaultProfile;
         if (!name) return send(400, { ok: false, error: 'profile is required' });
-        // "Show me this bot": from a headless bot's notification, focus
-        // request or relaunch, as well as from agents. So the window comes forward too.
-        if (!win || win.isDestroyed()) createWindow();
-        if (win.isMinimized()) win.restore();
-        win.show();
-        win.focus();
-        app.focus({ steal: true });
-        return send(200, await openBot(name)); // same as a sidebar click
+        return send(200, await showBot(name));
       }
       if (url.pathname === '/api/launch' && req.method === 'POST') {
         const name = url.searchParams.get('profile');
@@ -868,6 +893,18 @@ async function selectBot(name, { startScreen = null } = {}) {
 // previous bot's panel comes off the stage at once, so the window's own
 // "Waking up…" placeholder (drawn by supervisor.html from the bot's face and
 // name, already on disk) shows until the new panel replaces it.
+// "Show me this bot": from a hosted bot's notification, focus request or
+// relaunch (over its child channel, or /api/select from a bot we did not
+// start), and from agents. So the window comes forward too.
+async function showBot(name) {
+  if (!win || win.isDestroyed()) createWindow();
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+  app.focus({ steal: true });
+  return openBot(name); // same as a sidebar click
+}
+
 async function openBot(name) {
   const up = (await scanRunning()).has(name);
   if (!up) {

@@ -160,10 +160,13 @@ test('both launchers use this module — there is not a second copy', () => {
     assert.match(src, /require\('\.\/profile-launch\.js'\)/, `${label} must use the shared launcher`);
     assert.ok(!/`--profile=\$\{name\}`, `--local-port=/.test(src),
       `${label} still builds the profile args inline`);
-    // #746: and both go through the per-platform command, not a bare open(1).
-    assert.match(src, /profileLaunchCommand\(/, `${label} must use the per-platform launch command`);
     assert.ok(!/execFile\('open'/.test(src), `${label} still shells out to open(1) directly`);
   }
+  // #746: main.js's launcher goes through the per-platform command. The app
+  // window does not: it spawns hosted bots as its own children (bot-children.js),
+  // which a detached open(1) cannot be.
+  assert.match(main, /profileLaunchCommand\(/, 'main.js must use the per-platform launch command');
+  assert.match(supervisor, /botChildren\.start\(/, 'the app window spawns its bots as children');
 });
 
 test('--supervisor returns before any of main.js runs', () => {

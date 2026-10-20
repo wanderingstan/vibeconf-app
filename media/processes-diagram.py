@@ -126,8 +126,8 @@ def render(T):
     RH = 104
     SX, SW = 56, 230                        # agent sessions column
     RX, RY, RW, RB = 330, 150, 570, 682     # the app region (x, top, width, bottom)
-    BX, BW = 400, 460                       # bot boxes inside the app region
-    GUT = RX + RW - 24                      # right gutter inside the region: spawn trunk
+    BX, BW = 400, 436                       # bot boxes inside the app region
+    GUT = RX + RW - 36                      # right gutter inside the region: spawn trunk
     PX, PW = 960, 164                       # call platforms column
 
     # ── This Mac ──
@@ -179,9 +179,9 @@ def render(T):
     label(GUT - 10, ROW[0] - 22, 'quit · hello · show me', anchor='end', fill=T['owner_text'], size=9.5)
     label(GUT - 10, ROW[0] - 8, 'sees every exit', anchor='end', fill=T['owner_text'], size=9.5)
     # ...and finds the ones it did not start
-    wire([(GUT + 12, AB), (GUT + 12, ROW[2])], 'lookup')
-    label(GUT - 8, ROW[2] - 22, 'port', anchor='end')
-    label(GUT - 8, ROW[2] - 8, 'scan', anchor='end')
+    scan_x = GUT + 18
+    wire([(scan_x, AB), (scan_x, ROW[2] - 18), (BX + BW - 28, ROW[2] - 18), (BX + BW - 28, ROW[2])], 'lookup')
+    label(scan_x - 8, ROW[2] - 5, 'port scan', anchor='end')
     # the selected bot's panel is relayed onto the stage
     wire([(PANEL_X, ROW[0]), (PANEL_X, AB)], 'http', start=True)
     label(PANEL_X - 8, ROW[0] - 22, 'panel relay', anchor='end')

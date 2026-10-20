@@ -81,8 +81,13 @@ every other frame inherits it:
 - Zoom out enough that the **top of the head and the chin are both fully in frame**, with a
   little shoulder/outfit visible. A tight face-only crop looks wrong once you can't see hair
   or chin — this was the #1 mistake generating the reference set for this skill.
-- Ask for a **flat, single-color background** ("pure white, studio shoot" worked well) —
-  needed for the best-effort transparency step later.
+- Ask for a **flat, single-color background in a colour the character does NOT contain** —
+  a chroma backdrop: solid bright magenta (`#FF00FF`) by default, or chroma green if the
+  character has pink/magenta. Not white: a white backdrop can only be keyed by flood-filling
+  from the corners (or white eyes/teeth get punched out), and a flood fill never reaches the
+  white pockets trapped inside fuzzy hair, fur or between fingers — the 2026-10-20
+  felt-puppet set shipped with white specks all through its hair tuft. A chroma colour can
+  be keyed out *everywhere*, enclosed gaps included.
 - Bake the theme's styling into the prompt once here; every derived frame will inherit it
   automatically by being edited *from* this image rather than re-describing the outfit each
   time.
@@ -92,6 +97,13 @@ Save it as `<set-dir>/_anchor.png` and also save the theme description as
 "add more emoji later" flow in Step 5.
 
 ## Step 3: Derive every other state from the anchor
+
+**Never overwrite a frame — keep every take.** Before writing a frame that already exists
+(a redo after feedback, a regenerate), move the old file to `<set-dir>/_versions/` as
+`<name>.v<N>.png` (N = 1, 2, …). The user will want to A/B earlier takes, and a redo that
+came out worse is otherwise unrecoverable (Stan, 2026-10-20: several redone felt-puppet
+frames were lost this way). A rejected take may also suit a *different* glyph — e.g. a
+hands-over-mouth 🤐 attempt is a good 🤭 (`1f92d`) — so offer that before discarding it.
 
 For each remaining glyph, call `generate_image` in **edit mode**: pass `_anchor.png` (or
 the previous frame — anchor is usually safer, less drift) as `input_image_path_1`, and
@@ -132,8 +144,14 @@ If `magick`/`convert` is available (`command -v magick`), key out the flat backg
 each face file:
 
 ```
-magick <file> -fuzz 8% -transparent white <file>
+magick <file> -fuzz 12% -transparent '#FF00FF' <file>     # whatever backdrop colour Step 2 used
 ```
+
+Key the backdrop colour **globally** (not a corner flood fill) so gaps inside hair and fur
+clear too. Then check for a coloured fringe on soft edges; if there is one, despill (e.g.
+`-channel RGB -fx` to pull magenta out of edge pixels) or raise the fuzz slightly. If a set
+was already generated on white, a corner flood fill (`-fill none -draw "color 0,0 floodfill"`
+from each corner) is the safe fallback — but expect trapped specks in hair.
 
 (Tune the fuzz percent if edges look chewed up — hair against a flat background rarely
 keys perfectly, and that's OK for this look.) If ImageMagick isn't installed, don't try to

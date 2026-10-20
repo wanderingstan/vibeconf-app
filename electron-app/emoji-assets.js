@@ -35,6 +35,7 @@ const EMOJI_SETS = {
   noto: { dir: 'noto', file: (e) => 'emoji_u' + emojiHex(e, { sep: '_', upper: false, dropFe0f: true }) + '.svg' },
   fluent3d: { dir: 'fluent3d', file: (e) => canon(e) + '.png' },
   redpanda: { dir: 'redpanda', file: (e) => canon(e) + '.png' },
+  'felt-puppet': { dir: 'felt-puppet', file: (e) => canon(e) + '.png' },
 };
 
 // Sets that ship as a COLOUR FONT rather than one file per emoji.
@@ -46,7 +47,7 @@ const EMOJI_SETS = {
 // nothing to check. Coverage was checked against every emoji the avatar uses,
 // including the ZWJ sequence 🧑‍💻: 17/17.
 //
-// fluent3d and redpanda are NOT here and stay as images — rendered/illustrated
+// fluent3d, redpanda and felt-puppet are NOT here and stay as images — rendered/illustrated
 // raster art with no font equivalent.
 //
 // One 🙂 per set survives in the old image dirs on purpose: list_visual_assets

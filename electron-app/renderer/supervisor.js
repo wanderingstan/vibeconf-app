@@ -319,7 +319,9 @@ function showSessionStage(d) {
   if (!excerpt.length) box.append(el('div', 'sess-line', 'No conversation to show yet.'));
   for (const line of excerpt) {
     const div = el('div', `sess-line ${line.role}`);
-    div.append(el('span', 'who', line.role === 'user' ? 'You' : 'Claude'), document.createTextNode(line.text));
+    // No labels: your prompts sit on a shaded, indented block, the way Claude
+    // Code shows a conversation; Claude's replies are plain text.
+    div.append(document.createTextNode(line.text));
     box.append(div);
   }
   stage.append(box);

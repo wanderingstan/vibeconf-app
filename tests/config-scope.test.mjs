@@ -220,7 +220,10 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // feed lists every bot's meetings and each bot picks out its own by invite
     // email or #vibeconf: tag, exactly like the one shared Google login. A secret,
     // like ttsApiKey: kept out of the schema. New pref, nothing to promote.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'calendarFeedSecretUrl', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'cropCallRecording', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'meetViewSize', 'realtimeApiKey', 'remoteLogging', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // sessionBotNames: how the app window names a bot made from a Claude Code
+    // session. The app window reads it, not any one bot, and it must show in
+    // App Settings (which renders app-level prefs only). New pref.
+    ['agentBackend', 'agentHosting', 'automationProbed', 'calendarFeedSecretUrl', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'cropCallRecording', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'meetViewSize', 'realtimeApiKey', 'remoteLogging', 'sessionBotNames', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

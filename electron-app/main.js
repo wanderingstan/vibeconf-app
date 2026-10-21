@@ -7160,20 +7160,7 @@ let basicAuthSeq = 0;
 // Parsing lives in system-voices.js so it can be unit-tested without a machine
 // of each kind; this function is only the exec half.
 async function enumerateSystemVoices() {
-  const { parseSayVoices, parseSapiVoices, powerShellArgs, SAPI_LIST_SCRIPT } = require('./system-voices.js');
-  const { execFile } = require('child_process');
-  const isWin = process.platform === 'win32';
-  if (!isWin && process.platform !== 'darwin') return [];
-  // PowerShell's cold start makes 5s tight on a slow/first run; give it 15s.
-  const [cmd, args, opts, parse] = isWin
-    ? ['powershell.exe', powerShellArgs(SAPI_LIST_SCRIPT), { timeout: 15000, maxBuffer: 1 << 20 }, parseSapiVoices]
-    : ['say', ['-v', '?'], { timeout: 5000, maxBuffer: 1 << 20 }, parseSayVoices];
-  return new Promise((resolve) => {
-    execFile(cmd, args, opts, (err, stdout) => {
-      if (err) { console.error('[electron] enumerateSystemVoices failed:', err.message); return resolve([]); }
-      resolve(parse(stdout));
-    });
-  });
+  return require('./voice-catalog.js').listSystemVoices();
 }
 
 // Voicebox (local TTS server, experimental) profile names/ids, mirroring
@@ -7187,18 +7174,7 @@ let voiceboxProfilesById = new Map();
 // Best-effort: returns [] (never throws) if Voicebox isn't running or the
 // fetch fails/times out, matching enumerateMacosVoices()'s soft-fail shape.
 async function listVoiceboxProfiles() {
-  const url = `${tts.voiceboxUrl || 'http://127.0.0.1:17493'}/profiles`;
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!res.ok) return [];
-    const profiles = await res.json();
-    return Array.isArray(profiles) ? profiles : [];
-  } catch {
-    return [];
-  }
+  return require('./voice-catalog.js').listVoiceboxProfiles(tts.voiceboxUrl || undefined);
 }
 
 // Fetch the account's ElevenLabs voices (GET /v1/voices) for the unified voice
@@ -7308,37 +7284,7 @@ function resolveElevenLabsVoice(voice) {
 }
 
 async function listElevenLabsVoices(apiKey) {
-  const { classifyVoicesError, classifyVoicesNetworkError } = require('./elevenlabs-errors.js');
-  const key = apiKey || store?.get('ttsApiKey');
-  if (!key) return { voices: [], error: null };   // no key set is not an error
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch('https://api.elevenlabs.io/v1/voices', {
-      headers: { 'xi-api-key': key },
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (!res.ok) {
-      // Body may be empty or non-JSON on gateway errors — classify on the
-      // status alone in that case rather than throwing here.
-      let body = null;
-      try { body = await res.json(); } catch { /* not JSON */ }
-      const error = classifyVoicesError(res.status, body);
-      console.warn('[elevenlabs] voices list failed:', error.kind, '—', error.message);
-      return { voices: [], error };
-    }
-    const data = await res.json();
-    const voices = Array.isArray(data?.voices) ? data.voices : [];
-    return {
-      voices: voices.map((v) => ({ id: v.voice_id, name: v.name || v.voice_id, category: v.category || '' })),
-      error: null,
-    };
-  } catch (err) {
-    const error = classifyVoicesNetworkError(err);
-    console.warn('[elevenlabs] voices list failed:', error.kind, '—', error.message);
-    return { voices: [], error };
-  }
+  return require('./voice-catalog.js').listElevenLabsVoices(apiKey || store?.get('ttsApiKey'));
 }
 
 // True while we've degraded from ElevenLabs to the OS's built-in voice (e.g.

@@ -45,4 +45,26 @@ function isAddressableBotName(raw) {
   return true;
 }
 
-module.exports = { isAddressableBotName, MAX_WORDS, MAX_LENGTH, MIN_LENGTH };
+// A session title, tidied toward something you could say: bracketed asides
+// ("(Fable)", "[draft]"), issue and PR numbers ("#301"), emoji and stray
+// punctuation go. It does NOT shorten: cutting "Super Selfie Dance App" to
+// "Super Selfie" reads like a glitch, and a name that is still too long is
+// better replaced than mangled. The result still has to pass
+// isAddressableBotName.
+function tidySessionTitle(raw) {
+  return String(raw ?? '')
+    .replace(/[([{][^)\]}]*[)\]}]/g, ' ')
+    .replace(/#\d+/g, ' ')
+    .replace(/[^A-Za-z0-9'\- ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// The session's name as a bot name, or null when even tidied it would not
+// survive a call.
+function botNameFromSession(title) {
+  const tidy = tidySessionTitle(title);
+  return isAddressableBotName(tidy) ? tidy : null;
+}
+
+module.exports = { isAddressableBotName, tidySessionTitle, botNameFromSession, MAX_WORDS, MAX_LENGTH, MIN_LENGTH };

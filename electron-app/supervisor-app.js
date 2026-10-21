@@ -932,6 +932,130 @@ async function openBot(name) {
 // (new-bot.js: the first free botN folder, a random name and background), then
 // started headless and put on the stage, opened on its Settings page, which
 // is a new bot's next step (name, voice, face).
+// ── Sessions: your Claude Code sessions, any of which can become a bot ──────
+//
+// Seth's idea: a session you already have carries context about real work, so
+// giving it a face means a bot that can talk about that work from the start.
+// The list is claude-sessions.js; making the bot reuses the adopt path every
+// bot creation already has (new-bot.js seedNewBot's `adopt`): the new profile
+// resumes THAT session, in its folder, instead of opening one of its own.
+
+const EMOJI_SETS = [
+  { id: 'fluent3d', label: 'Fluent 3D' },
+  { id: 'redpanda', label: 'Red Panda' },
+  { id: 'noto', label: 'Noto' },
+  { id: 'twemoji', label: 'Twemoji' },
+  { id: 'openmoji', label: 'OpenMoji' },
+  { id: 'native', label: 'System' },
+];
+
+let lastSessions = new Map(); // id -> session, from the last list drawn
+
+// Which bot already resumes this session, if any (a bot pinned to it by id).
+function botsBySession() {
+  const out = new Map();
+  for (const bot of readFleet(paths.profilesRoot)) {
+    try {
+      const cfgPath = path.join(paths.profilesRoot, bot.name, 'agent', 'config.json');
+      const cfg = JSON.parse(require('fs').readFileSync(cfgPath, 'utf8'));
+      if (cfg.agentSession) out.set(String(cfg.agentSession).trim(), bot.botName || bot.name);
+    } catch { /* no config yet */ }
+  }
+  return out;
+}
+
+function listSessions() {
+  const { listRecentSessions } = require('./claude-sessions.js');
+  // A bot's own session is a bot already; and this app's profiles hold nothing else.
+  const profiles = paths.profilesRoot + path.sep;
+  const sessions = listRecentSessions({ limit: 8, exclude: (cwd) => (cwd + path.sep).startsWith(profiles) });
+  const owners = botsBySession();
+  lastSessions = new Map(sessions.map((x) => [x.id, x]));
+  return sessions.map((x) => ({
+    id: x.id, title: x.title, lastPrompt: x.lastPrompt, cwd: x.cwd, mtimeMs: x.mtimeMs,
+    bot: owners.get(x.id) || null,
+  }));
+}
+
+// Every voice a bot could speak in (voice-catalog.js): ElevenLabs with the
+// machine's key, a running Voicebox, and the good built-in ones. Cached for a
+// few minutes: listing calls ElevenLabs and runs `say`, and the pane asks on
+// every click.
+let voiceCache = { at: 0, voices: [] };
+async function listVoices() {
+  if (Date.now() - voiceCache.at < 5 * 60 * 1000 && voiceCache.voices.length) return voiceCache.voices;
+  const { listAllVoices } = require('./voice-catalog.js');
+  const voices = await listAllVoices({ elevenLabsKey: store.get('ttsApiKey') || '' }).catch(() => []);
+  voiceCache = { at: Date.now(), voices };
+  return voices;
+}
+
+// What the pane needs for one session: its last lines, and suggestions for
+// the bot it could become (randomised the way a new bot is, but changeable).
+async function sessionDetail(id) {
+  const s = lastSessions.get(id);
+  if (!s) return { ok: false, error: 'That session is no longer in the list.' };
+  const { sessionExcerpt } = require('./claude-sessions.js');
+  const voices = await listVoices();
+  return { ok: true, session: { id: s.id, title: s.title, lastPrompt: s.lastPrompt, cwd: s.cwd, mtimeMs: s.mtimeMs },
+    excerpt: sessionExcerpt(s.file, { max: 6 }), suggestion: await suggestBot(s), emojiSets: EMOJI_SETS,
+    voices: voices.map((v) => ({ id: v.id, label: v.label, group: v.group })) };
+}
+
+// The bot a session would become, picked at random the way a new bot is:
+//   name   a human one, or (App Settings > "Names for bots made from
+//          sessions") the session's own, tidied, when it can be said and heard
+//          in a call; else a human one, with a note saying why
+//   face   a random emoji set
+//   voice  a random voice from the best provider there is (ElevenLabs, then
+//          Voicebox, then the good built-in voices only)
+async function suggestBot(s) {
+  const { randomBotName } = require('./bot-names.js');
+  const { botNameFromSession } = require('./addressable-name.js');
+  let taken = [];
+  try { taken = profileManager.takenBotNames(paths.profilesRoot); } catch { /* none */ }
+  let name = null;
+  let nameNote = null;
+  if ((store.get('sessionBotNames') || 'human') === 'session' && s) {
+    const fromSession = botNameFromSession(s.title);
+    if (fromSession && !taken.includes(fromSession)) name = fromSession;
+    else nameNote = fromSession
+      ? `Another bot is already called ${fromSession}, so this is a human name instead.`
+      : "This session's name would be hard to say and hear in a call, so this is a human name instead.";
+  }
+  if (!name) name = randomBotName({ taken });
+  const sets = EMOJI_SETS.filter((e) => e.id !== 'native');
+  const { pickRandomVoice } = require('./voice-catalog.js');
+  const voice = pickRandomVoice(await listVoices());
+  return { name, nameNote, emojiSet: sets[Math.floor(Math.random() * sets.length)].id, voice: voice ? voice.id : '' };
+}
+
+async function createBotFromSession({ id, name, emojiSet, voice } = {}) {
+  const s = lastSessions.get(id);
+  if (!s) return { ok: false, error: 'That session is no longer in the list.' };
+  const { nextBotProfileName, seedNewBot } = require('./new-bot.js');
+  const profile = nextBotProfileName(paths.profilesRoot);
+  const overrides = {};
+  if (name && String(name).trim()) overrides.botName = String(name).trim().slice(0, 40);
+  if (EMOJI_SETS.some((e) => e.id === emojiSet)) overrides.emojiSet = emojiSet;
+  const picked = voice ? (await listVoices()).find((v) => v.id === voice) : null;
+  if (picked) Object.assign(overrides, picked.config);
+  seedNewBot(paths.profilesRoot, profile, { adopt: { workdir: s.cwd, session: s.id, botName: overrides.botName || s.title }, overrides });
+  console.log(`[supervisor] new bot "${profile}" from session ${s.id} (${JSON.stringify(s.title)}) in ${s.cwd}`);
+  closeRelayStream();
+  relay.name = null;
+  relay.port = null;
+  if (panelHost) panelHost.setVisible(false);
+  pushState({ created: profile, waking: profile });
+  const result = await launchThenAct({
+    isRunning: async () => (await scanRunning()).has(profile),
+    launch: () => launchProfile(profile),
+    act: () => selectBot(profile),
+  });
+  if (!result?.ok) pushState({ waking: null, wakeFailed: profile, error: result?.error || null });
+  return { ...result, name: profile };
+}
+
 async function createBot() {
   const { nextBotProfileName, seedNewBot } = require('./new-bot.js');
   const name = nextBotProfileName(paths.profilesRoot);
@@ -1239,6 +1363,12 @@ function start() {
     // configured site, never from a URL the page hands over.
     ipcMain.handle('supervisor:open-account', () => { shell.openExternal(`${websiteBase()}/me`); return { ok: true }; });
     ipcMain.handle('supervisor:new-bot', () => createBot());
+    ipcMain.handle('supervisor:sessions', () => listSessions());
+    ipcMain.handle('supervisor:session-detail', (_e, id) => sessionDetail(id));
+    ipcMain.handle('supervisor:suggest-bot', (_e, id) => suggestBot(lastSessions.get(id)));
+    ipcMain.handle('supervisor:create-bot-from-session', (_e, opts) => createBotFromSession(opts));
+    // A session on the stage: the bot panel steps aside for it.
+    ipcMain.handle('supervisor:clear-stage', () => { deselectBot(); return { ok: true }; });
     // Signing in is a bot's job today (it owns the browser-based login flow), so
     // the footer's Sign in goes through whichever bot is on the stage.
     ipcMain.handle('supervisor:sign-in', async () => {

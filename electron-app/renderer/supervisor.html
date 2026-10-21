@@ -109,6 +109,51 @@
       color: var(--faint); font-size: 13px; text-align: center; padding: 24px;
     }
     .bot.selectable { cursor: pointer; }
+
+    /* ── Sessions: the user's Claude Code sessions, below the bots ── */
+    .section-head {
+      margin: 18px 8px 6px; font-family: var(--font-mono, 'JetBrains Mono', monospace); font-size: 11px; font-weight: 700;
+      letter-spacing: .18em; text-transform: uppercase; color: var(--magenta);
+    }
+    .section-head::before { content: '\2726  '; color: var(--pink); }
+    .session { display: flex; align-items: center; gap: 12px; padding: 4px 8px; border-radius: 10px; cursor: pointer; }
+    .session:hover { background: var(--surface); }
+    .session.selected { background: var(--paper-lo); }
+    .session-icon {
+      flex: none; width: 44px; height: 44px; border-radius: 11px; border: 1.5px solid var(--ink-faint);
+      display: flex; align-items: center; justify-content: center; color: var(--ink-soft);
+    }
+    .session-icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .session .who { min-width: 0; flex: 1; }
+    .session .title { font-weight: 600; font-size: 14px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session .sub { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session .live { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--go-deep); margin-right: 6px; vertical-align: 1px; }
+
+    /* A session on the stage: what it is, its last lines, and the bot it could become. */
+    .stage.has-session { display: block; text-align: left; overflow-y: auto; color: var(--ink); font-size: 13px; padding: 20px 16px; font-family: var(--font-body, 'DM Sans', sans-serif); }
+    .sess-title { font-family: var(--font-display); font-weight: 800; font-size: 26px; line-height: 1.15; color: var(--ink); overflow-wrap: anywhere; }
+    .sess-meta { margin-top: 4px; font-family: var(--font-mono, monospace); font-size: 11px; letter-spacing: .08em; color: var(--ink-soft); overflow-wrap: anywhere; }
+    .sess-excerpt { margin: 14px 0 16px; max-height: 210px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+    .sess-line { font-size: 12px; line-height: 1.45; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .sess-line.user { margin-left: 14px; padding: 6px 9px; border-radius: 6px; background: var(--paper-lo); color: var(--ink); }
+    .sess-create {
+      width: 100%; height: 44px; border-radius: 22px; border: 1.5px solid var(--ink); background: var(--go); color: var(--ink);
+      font-family: var(--font-display); font-weight: 700; font-size: 16px; cursor: pointer; box-shadow: -1px 2px 6px rgba(74,49,64,.2);
+    }
+    .sess-create:hover:not(:disabled) { background: var(--go-deep); }
+    .sess-create:disabled { opacity: .6; cursor: default; }
+    .sess-opts { margin-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+    .sess-opt { display: flex; flex-direction: column; gap: 4px; }
+    .sess-opt label { font-size: 12px; font-weight: 600; color: var(--ink); }
+    .sess-opt input, .sess-opt select {
+      height: 34px; border: 1.5px solid var(--ink); border-radius: 6px; background: var(--paper); color: var(--ink);
+      padding: 0 10px; font: inherit; font-size: 13px;
+    }
+    .sess-shuffle { align-self: flex-start; border: none; background: none; color: var(--magenta); font: inherit; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; padding: 0; }
+    .sess-hint { font-size: 11.5px; color: var(--ink-soft); }
+    .sess-hint:empty { display: none; }
+    .sess-note { margin-top: 12px; font-size: 11.5px; line-height: 1.45; color: var(--ink-soft); }
+    .sess-err { margin-top: 10px; color: var(--warn); font-size: 12px; }
     /* The stage while a bot wakes up: its face and name from disk, then the
        live panel covers it. */
     .waking { display: flex; flex-direction: column; align-items: center; gap: 14px; }
@@ -301,6 +346,9 @@
     <div class="pane" data-pane="bots">
       <div id="orphans"></div>
       <div id="bots"><div class="empty">Looking…</div></div>
+      <!-- Your recent Claude Code sessions, any of which can become a bot
+           (supervisor.js renderSessions). -->
+      <div id="sessions"></div>
     </div>
 
     <div class="pane" data-pane="upcoming" hidden>

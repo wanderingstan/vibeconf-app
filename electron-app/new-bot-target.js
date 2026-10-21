@@ -22,7 +22,7 @@
 // packages must not import each other (#708, the packaging boundary).
 
 const MEET_CODE = /^[a-z]{3}-[a-z]{4}-[a-z]{3}$/i;
-const MEET_URL = /^(?:https?:\/\/)?(?:www\.)?meet\.google\.com\/([a-z]{3}-[a-z]{4}-[a-z]{3})(?:[/?#]|$)/i;
+const MEET_URL = /^(?:https?:\/\/)?(?:www\.)?meet\.google\.com\/(?:meet\/)?([a-z]{3}-[a-z]{4}-[a-z]{3})(?:[/?#]|$)/i;
 const SLACK_URL = /^(?:https?:\/\/)?app\.slack\.com\/client\/([A-Za-z0-9]+)\/([A-Za-z0-9]+)/;
 // Zoom and Teams: the same shapes mcp-server/server.js's join_call accepts.
 const ZOOM_HOST = /^https?:\/\/([a-z0-9-]+\.)*zoom\.us\//i;

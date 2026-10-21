@@ -7762,10 +7762,45 @@ async function refreshClaudeAuth({ maxAgeMs = 0 } = {}) {
   return claudeAuthState;
 }
 
+// #871: the banner's "Sign in" button opens a Terminal via AppleScript, so it
+// only exists where that launcher does. Sent WITH the state rather than asked
+// for separately, so a pushed update can never repaint the banner without it.
+const CLAUDE_SIGN_IN_SUPPORTED = process.platform === 'darwin';
+function claudeAuthForPanel() {
+  return { ...claudeAuthState, canSignIn: CLAUDE_SIGN_IN_SUPPORTED };
+}
+
 function broadcastClaudeAuth() {
   try {
-    broadcastToRenderers('claude-auth-changed', claudeAuthState);
+    broadcastToRenderers('claude-auth-changed', claudeAuthForPanel());
   } catch { /* window went away */ }
+}
+
+// #871: one click from the banner to `claude auth login`, in a Terminal the user
+// can see — the same `do script` launcher the agent uses, because that shell
+// sources the user's profile and so finds the `claude` the auth check found.
+// NOT recorded in claudeTerminalWindowIds: leaving a call closes those, and a
+// sign-in has nothing to do with the call.
+//
+// The banner clears on its own afterwards: the signed-out poll re-checks every
+// CLAUDE_AUTH_POLL_UNAUTHED_MS. Zeroing checkedAt also lets the panel's focus
+// refresh through its throttle, so coming back to the app from the finished
+// login clears it straight away rather than up to a minute later.
+function launchClaudeSignIn() {
+  if (!CLAUDE_SIGN_IN_SUPPORTED) return { ok: false, error: `not supported on ${process.platform}` };
+  const { execFile } = require('child_process');
+  const { buildTerminalLaunchScript } = require('./launch-command.js');
+  claudeAuthState = { ...claudeAuthState, checkedAt: 0 };
+  return new Promise((resolve) => {
+    execFile('osascript', ['-e', buildTerminalLaunchScript('claude auth login')], (err, _stdout, stderr) => {
+      if (err) {
+        console.error('[electron] Claude sign-in Terminal failed:', err.message, stderr);
+        return resolve({ ok: false, error: err.message });
+      }
+      console.log('[electron] opened Terminal for claude auth login');
+      resolve({ ok: true });
+    });
+  });
 }
 
 let claudeReady = false;
@@ -13170,8 +13205,9 @@ function setupIPC() {
     if (refresh) {
       refreshClaudeAuth({ maxAgeMs: CLAUDE_AUTH_FOCUS_MAX_AGE_MS }).catch(() => {});
     }
-    return claudeAuthState;
+    return claudeAuthForPanel();
   });
+  ipcMain.handle('claude-sign-in', () => launchClaudeSignIn());
 
   ipcMain.handle('create-and-join-meet', async (_e, opts) => createAndJoinMeet(opts || {}));
 

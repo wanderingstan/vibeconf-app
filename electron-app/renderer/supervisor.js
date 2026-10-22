@@ -132,7 +132,93 @@ async function openBot(bot) {
 // The last fleet drawn, so a 'waking' push can find the bot's face and name.
 let lastBots = [];
 
-function renderBots({ bots = [], orphans = [], selected = null }) {
+// ── Row actions: merge into a call, and the … menu ──
+//
+// Merge is a phone's "merge calls": add this bot to a call already going (a
+// Meet open in your browser, or a call another bot is in). It shows only when
+// there is such a call, so its presence says one is on. The … menu holds the
+// rest: Show in Finder, Stop, Delete bot.
+
+const MERGE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 7.5 L12 4 L15.5 7.5 M12 4 V12 M12 12 L6.5 20 M12 12 L17.5 20"/></svg>';
+const MORE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="18" cy="12" r="1.4"/></svg>';
+
+let openMenu = null;
+function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
+document.addEventListener('click', (e) => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+
+// A small menu under `anchor`: items are { label, run, disabled, danger, title }.
+function showMenu(anchor, items) {
+  closeMenu();
+  const menu = el('div', 'row-menu');
+  for (const it of items) {
+    const b = el('button', `row-menu-item${it.danger ? ' danger' : ''}`, it.label);
+    if (it.disabled) b.disabled = true;
+    if (it.title) b.title = it.title;
+    b.addEventListener('click', (e) => { e.stopPropagation(); closeMenu(); it.run(); });
+    menu.append(b);
+  }
+  document.body.append(menu);
+  const r = anchor.getBoundingClientRect();
+  menu.style.top = `${Math.round(r.bottom + 4)}px`;
+  menu.style.left = `${Math.round(Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8)))}px`;
+  openMenu = menu;
+}
+
+function iconButton(cls, svg, title) {
+  const b = el('button', `row-act ${cls}`);
+  b.title = title;
+  b.setAttribute('aria-label', title);
+  b.innerHTML = svg; // a fixed glyph of our own, not data
+  return b;
+}
+
+async function mergeInto(bot, target) {
+  rowErrors.delete(bot.name);
+  const r = await api.invoke('supervisor:add', bot.name, target.url).catch((e) => ({ ok: false, error: e.message }));
+  if (!r?.ok) rowErrors.set(bot.name, `Could not add it to the call: ${r?.error || 'unknown error'}`);
+  refresh();
+}
+
+function rowActions(bot, merge) {
+  const box = el('div', 'row-actions');
+  // Calls this bot is not already in.
+  const targets = inCall(bot) ? [] : (merge || []).filter((t) => t.bot !== bot.name);
+  if (targets.length) {
+    const m = iconButton('merge', MERGE_ICON, targets.length === 1 ? `Add ${labelOf(bot)} to ${targets[0].label}` : `Add ${labelOf(bot)} to a call`);
+    m.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (targets.length === 1) { mergeInto(bot, targets[0]); openBot(bot); return; }
+      showMenu(m, targets.map((t) => ({ label: t.label, title: t.url, run: () => { mergeInto(bot, t); openBot(bot); } })));
+    });
+    box.append(m);
+  }
+  const more = iconButton('more', MORE_ICON, 'More');
+  more.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const busy = inCall(bot);
+    showMenu(more, [
+      { label: 'Show in Finder', run: () => api.invoke('supervisor:reveal', bot.name).catch(() => {}) },
+      ...(bot.running ? [{ label: 'Stop', disabled: busy, title: busy ? 'Leave the call first' : 'Stop it now; it starts again when you select it',
+        run: async () => {
+          const r = await api.invoke('supervisor:stop-bot', bot.name).catch((err) => ({ ok: false, error: err.message }));
+          if (!r?.ok) rowErrors.set(bot.name, r?.error || 'Could not stop it.');
+          refresh();
+        } }] : []),
+      { label: 'Delete bot…', danger: true, disabled: bot.isDefault || busy,
+        title: bot.isDefault ? "The default bot can't be deleted" : busy ? 'Leave the call first' : 'Move it to the Trash',
+        run: async () => {
+          const r = await api.invoke('supervisor:delete-bot', bot.name).catch((err) => ({ ok: false, error: err.message }));
+          if (r && !r.ok && !r.cancelled) rowErrors.set(bot.name, r.error || 'Could not delete it.');
+          refresh();
+        } },
+    ]);
+  });
+  box.append(more);
+  return box;
+}
+
+function renderBots({ bots = [], orphans = [], selected = null, merge = [] }) {
   lastBots = bots;
   selectedBot = selected || [...starting][0] || null;
   els.bots.replaceChildren();
@@ -174,6 +260,8 @@ function renderBots({ bots = [], orphans = [], selected = null }) {
       who.append(sub);
     }
     row.append(who);
+    row.append(rowActions(bot, merge));
+    if (merge.some((t) => t.bot !== bot.name) && !inCall(bot)) row.classList.add('can-merge');
 
     // A stuck join says why when the bot told us; otherwise what we can see.
     const err = rowErrors.get(bot.name)

@@ -32,6 +32,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   copyToClipboard: (text) => ipcRenderer.send('relay:copy', String(text || '')),
 
+  // Deleting a bot is the app window's job (it stops the bot and moves its
+  // folder to the Trash), so these go to it, not to the bot.
+  deleteBot: () => ipcRenderer.invoke('relay:delete-bot'),
+  canDeleteBot: () => ipcRenderer.invoke('relay:can-delete-bot'),
+
   // This panel is shown inside the app's window, which has its own account
   // line, so the panel leaves out the app-level bits it repeats.
   hosted: true,

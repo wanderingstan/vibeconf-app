@@ -27,7 +27,7 @@ const { spawn } = require('child_process');
 
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
-const { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, upcomingForFleet, decideReaping, pickResumeBot } = require('./supervisor.js');
+const { decideWakeups, readFleet, detectedCalls, mergeTargets, launchThenAct, callPhase, upcomingForFleet, decideReaping, pickResumeBot } = require('./supervisor.js');
 const { spawnArgsForProfile } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
 const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
@@ -103,6 +103,9 @@ async function probe(port) {
       // Meet tabs this bot found in the browser. For the window only; the
       // directory strips it (see startDirectory).
       detectedMeetUrls: Array.isArray(body?.detectedMeetUrls) ? body.detectedMeetUrls : [],
+      // The call this bot is in, so another bot can be merged into it. A
+      // capability like the Meet links above: the directory strips it too.
+      currentUrl: typeof body?.currentMeetUrl === 'string' ? body.currentMeetUrl : null,
     };
   } catch {
     return null; // not listening, or too slow to be useful to a UI
@@ -202,7 +205,10 @@ async function fleetStatus() {
   const calls = browserScan.scanning
     ? detectedCalls([{ callStatus: 'idle', detectedMeetUrls: browserScan.meetUrls }])
     : detectedCalls([...running.values()]);
-  return { bots, orphans, calls, selected: relay.name || stageOutdated, defaultProfile: paths.defaultProfile };
+  // What a bot can be merged into: those browser calls, and calls other bots
+  // are in (the merge button on each row).
+  const merge = mergeTargets({ instances: [...running.values()], detected: calls });
+  return { bots, orphans, calls, merge, selected: relay.name || stageOutdated, defaultProfile: paths.defaultProfile };
 }
 
 // ── Calendar ────────────────────────────────────────────────────────────────
@@ -603,6 +609,66 @@ function whenUp(name, act) {
 const startCall = (name) => whenUp(name, () => botRequest(name, '/api/call/start', { openBrowser: true, spawnAgent: true }));
 const addToCall = (name, url) => whenUp(name, () => botRequest(name, '/api/call/join', { url, spawnAgent: true }));
 
+// ── A bot's row menu: Show in Finder, Stop, Delete ───────────────────────────
+
+function botLabel(name) {
+  const bot = readFleet(paths.profilesRoot).find((b) => b.name === name);
+  return (bot && bot.botName) || name;
+}
+
+// Stop a running bot now, rather than waiting for the reaper.
+async function stopBotNow(name) {
+  const inst = (await scanRunning()).get(name);
+  if (!inst && !botChildren.has(name)) return { ok: true, already: true };
+  if (inst && require('./call-phase.js').isBusy(inst.callStatus)) return { ok: false, error: `${botLabel(name)} is in a call. Leave it first.` };
+  if (relay.name === name) deselectBot();
+  const ok = await stopBot(inst ? inst.port : null, 4000, 'stopped from its menu', name);
+  return { ok: !!ok };
+}
+
+// Delete a bot: its whole folder (settings, agent memory, call recordings and
+// notes) goes to the Trash, so it can be restored, never erased. Asks first,
+// naming the bot. Not the default bot, and never one in a call; a running one
+// is stopped first. A bot made from a Claude Code session leaves the session
+// itself alone: that lives under ~/.claude, not in the bot's folder.
+async function deleteBot(name) {
+  if (!profileManager.isValidProfileName(name)) return { ok: false, error: 'invalid bot' };
+  const label = botLabel(name);
+  if (name === paths.defaultProfile) return { ok: false, error: `${label} is the default bot, which can't be deleted.` };
+  const inst = (await scanRunning()).get(name);
+  if (inst && require('./call-phase.js').isBusy(inst.callStatus)) return { ok: false, error: `${label} is in a call. Leave it first.` };
+  const { response } = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+    type: 'warning',
+    buttons: ['Move to Trash', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    message: `Delete ${label}?`,
+    detail: `${label}'s folder, with its settings, notes and call recordings, moves to the Trash. You can restore it from there.`,
+  });
+  if (response !== 0) return { ok: false, cancelled: true };
+  if (relay.name === name) deselectBot();
+  if (inst || botChildren.has(name)) {
+    await stopBot(inst ? inst.port : null, 4000, 'being deleted', name);
+    // Wait for it to be gone: trashing a folder a live process writes to
+    // would leave it writing into the Trash.
+    for (let i = 0; i < 20 && (botChildren.has(name) || (await scanRunning()).has(name)); i++) await new Promise((r) => setTimeout(r, 250));
+    if (botChildren.has(name) || (await scanRunning()).has(name)) return { ok: false, error: `${label} would not stop, so nothing was deleted.` };
+  }
+  try {
+    await shell.trashItem(path.join(paths.profilesRoot, name));
+  } catch (err) {
+    return { ok: false, error: `Could not move ${label} to the Trash: ${err.message}` };
+  }
+  try {
+    const reg = profileManager.loadPortRegistry(paths.baseUserData) || {};
+    if (reg[name] !== undefined) { delete reg[name]; profileManager.savePortRegistry(paths.baseUserData, reg); }
+  } catch { /* the registry only reserves a port; a stale entry is harmless */ }
+  if (store.get('lastSelectedBot') === name) store.delete('lastSelectedBot');
+  console.log(`[supervisor] deleted bot "${name}" (${label}): moved to the Trash`);
+  pushState({ deleted: name });
+  return { ok: true };
+}
+
 // ── The directory ───────────────────────────────────────────────────────────
 //
 // The one fixed address in the system: an agent asks "where is Bramble?" and
@@ -639,7 +705,7 @@ function startDirectory() {
         const running = await scanRunning();
         // Meet links are capabilities, and agents resolving a bot have no use
         // for them, so they stay in the window.
-        const instances = [...running.values()].map(({ detectedMeetUrls, ...inst }) => inst);
+        const instances = [...running.values()].map(({ detectedMeetUrls, currentUrl, ...inst }) => inst);
         return send(200, { ok: true, instances, supervisor: { port } });
       }
       // What the browser scan found, for the bots (see the scan section).
@@ -1088,6 +1154,18 @@ async function relayPost(pathname, body) {
 
 function installRelayIpc() {
   const fromPanel = (e) => panelHost && e.sender === panelHost.webContents;
+  // The pane's own "Delete <bot>" (bottom of its Edit page) acts on the bot it
+  // shows: deleting is the app window's job, not the bot's.
+  ipcMain.handle('relay:delete-bot', async (e) => {
+    if (!fromPanel(e)) throw new Error('relay:delete-bot is for the hosted panel only');
+    if (!relay.name) return { ok: false, error: 'no bot selected' };
+    return deleteBot(relay.name);
+  });
+  ipcMain.handle('relay:can-delete-bot', (e) => {
+    if (!fromPanel(e)) throw new Error('relay:can-delete-bot is for the hosted panel only');
+    if (!relay.name) return { ok: false };
+    return relay.name === paths.defaultProfile ? { ok: false, reason: 'default' } : { ok: true };
+  });
   ipcMain.handle('relay:invoke', async (e, channel, args) => {
     if (!fromPanel(e)) throw new Error('relay:invoke is for the hosted panel only');
     return (await relayPost('/api/panel/invoke', { channel, args })).result;
@@ -1388,7 +1466,11 @@ function start() {
     ipcMain.handle('supervisor:focus', (_e, name) => focusProfile(name));
     ipcMain.handle('supervisor:call', (_e, name) => startCall(name));
     ipcMain.handle('supervisor:add', (_e, name, url) => addToCall(name, url));
+    ipcMain.handle('supervisor:stop-bot', (_e, name) => stopBotNow(name));
+    ipcMain.handle('supervisor:delete-bot', (_e, name) => deleteBot(name));
     ipcMain.handle('supervisor:reveal', (_e, name) => {
+      // A profile name, never a path: nothing outside the profiles folder.
+      if (!profileManager.isValidProfileName(name)) return { ok: false, error: 'invalid bot' };
       shell.openPath(path.join(profilesRoot, String(name || ''), 'agent'));
       return { ok: true };
     });

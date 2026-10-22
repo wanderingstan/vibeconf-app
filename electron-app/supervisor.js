@@ -169,6 +169,30 @@ function detectedCalls(instances) {
   return [...byCode.values()];
 }
 
+// The calls a bot could be merged into, like conferencing in a second call on
+// a phone: calls open in the user's browser (the browser scan), and calls
+// other bots are in now. One entry per call, by link: a Meet open in the
+// browser that a bot is also in is one call, labelled by the bot. Each says
+// who is in it (`bot`, a profile) so the window can leave a bot's own call out
+// of its menu.
+function mergeTargets({ instances = [], detected = [] } = {}) {
+  const meetCode = (u) => String(u || '').match(/meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/)?.[1] || null;
+  const keyOf = (u) => meetCode(u) || String(u || '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+  const byKey = new Map();
+  for (const inst of instances) {
+    if (!inst || inst.callStatus !== 'in-call' || !/^https:\/\//i.test(inst.currentUrl || '')) continue;
+    const key = keyOf(inst.currentUrl);
+    if (byKey.has(key)) continue;
+    byKey.set(key, { url: inst.currentUrl, label: `${inst.botName || inst.profile}'s call`, bot: inst.profile || null, code: meetCode(inst.currentUrl) });
+  }
+  for (const d of detected) {
+    const key = keyOf(d.url);
+    if (byKey.has(key)) continue;
+    byKey.set(key, { url: d.url, label: d.code ? `Meet ${d.code}` : d.url, bot: null, code: d.code || meetCode(d.url) });
+  }
+  return [...byKey.values()];
+}
+
 // Call or Add on a CLOSED bot: launch it, wait until it answers, then act.
 //
 // Launch-then-HTTP rather than a new launch flag, so a closed bot and a running
@@ -312,4 +336,5 @@ function pickResumeBot({ fleet = [], last = null, defaultProfile = null } = {}) 
   return (byCall && byCall.name) || defaultProfile || null;
 }
 
-module.exports = { decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS, upcomingForFleet, decideReaping, REAP_IDLE_MS, pickResumeBot };
+module.exports = {
+  mergeTargets, decideWakeups, readFleet, detectedCalls, launchThenAct, callPhase, STUCK_JOINING_MS, upcomingForFleet, decideReaping, REAP_IDLE_MS, pickResumeBot };

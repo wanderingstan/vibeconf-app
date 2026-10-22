@@ -4487,7 +4487,38 @@ async function refreshHostedAbout() {
   } catch { hostedAbout.google.r.style.display = 'none'; }
 }
 
-if (HOSTED) setupHostedLayout();
+// The foot of a bot's Edit page in the app window: Delete <bot>. The app window
+// does the deleting (it stops the bot and moves its folder to the Trash, after
+// asking), so this only asks it to. Not shown for the default bot, which can't
+// be deleted.
+async function setupHostedDelete() {
+  if (!api.deleteBot) return;
+  const container = document.querySelector('#settingsScreen .container');
+  if (!container) return;
+  const can = await api.canDeleteBot().catch(() => null);
+  if (!can?.ok) return;
+  const zone = document.createElement('section');
+  zone.className = 'delete-bot-zone';
+  const btn = document.createElement('button');
+  btn.className = 'delete-bot-btn';
+  const label = () => `Delete ${currentBotName || 'this bot'}…`;
+  btn.textContent = label();
+  const note = document.createElement('div');
+  note.className = 'delete-bot-note';
+  note.textContent = 'Its folder, with its settings, notes and call recordings, moves to the Trash.';
+  btn.addEventListener('click', async () => {
+    btn.textContent = label();
+    const r = await api.deleteBot().catch((e) => ({ ok: false, error: e.message }));
+    if (r && !r.ok && !r.cancelled) note.textContent = r.error || 'Could not delete it.';
+  });
+  zone.append(btn, note);
+  container.append(zone);
+}
+
+if (HOSTED) {
+  setupHostedLayout();
+  setupHostedDelete();
+}
 
 // A panel can load while its bot is already in a call: in the app window,
 // selecting a bot that is in one loads its panel then (#301). Until now the

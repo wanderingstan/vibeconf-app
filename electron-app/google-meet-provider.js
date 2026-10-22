@@ -178,6 +178,80 @@ function findByAriaLabel(label) {
   return document.querySelector(MEET.ariaLabelSelector(label));
 }
 
+// ── Captions: Meet's old toggle and its new pop-up (2026-10-22) ──
+//
+// Old Meet: one toolbar button, "Turn on captions" / "Turn off captions".
+// New Meet: a "Captions and translation" toolbar button (aria-haspopup=dialog)
+// whose aria-pressed says whether captions are on; the toggle itself is inside
+// the pop-up it opens ("Turn on captions" / "Turn off live captions"). Every
+// caption check goes through these three, so both versions keep working.
+
+// The new toolbar button: by its icon (language-independent), else its label.
+function findCaptionsToolbarButton() {
+  for (const b of document.querySelectorAll('button[aria-haspopup="dialog"][aria-pressed]')) {
+    const icon = (b.querySelector('i') && b.querySelector('i').textContent || '').trim();
+    if (MEET.captions.toolbarIcons.includes(icon)) return b;
+  }
+  return document.querySelector(`button[aria-label="${MEET.captions.toolbarLabelEn}"]`);
+}
+
+// 'on' | 'off' | 'unknown' (no captions control at all yet).
+function captionsState() {
+  const toolbar = findCaptionsToolbarButton();
+  if (toolbar) return toolbar.getAttribute('aria-pressed') === 'true' ? 'on' : 'off';
+  if (document.querySelector(MEET.captions.onSelector)
+    || findByAriaLabel(MEET.captions.disableLabelEn) || findByAriaLabel(MEET.captions.disableLabelEs)) return 'on';
+  if (findByAriaLabel(MEET.captions.enableLabelEn) || findByAriaLabel(MEET.captions.enableLabelEs)) return 'off';
+  return 'unknown';
+}
+
+function captionsToggleAvailable() { return captionsState() !== 'unknown'; }
+
+// The toggle inside the new pop-up: its first button that opens nothing (the
+// translation and settings buttons both declare aria-haspopup).
+function findCaptionsPopupToggle(toolbar) {
+  const label = toolbar && toolbar.getAttribute('aria-label');
+  for (const d of document.querySelectorAll('[role="dialog"]')) {
+    if (label && d.getAttribute('aria-label') !== label) continue;
+    const t = d.querySelector('button:not([aria-haspopup])');
+    if (t) return t;
+  }
+  return null;
+}
+
+// Turn captions on or off. Does nothing when they already are, so it can never
+// toggle them the wrong way. Resolves to whether it acted.
+function setCaptions(on) {
+  const state = captionsState();
+  if (state === (on ? 'on' : 'off')) return Promise.resolve(false);
+  const toolbar = findCaptionsToolbarButton();
+  if (!toolbar) {
+    const btn = on
+      ? (findByAriaLabel(MEET.captions.enableLabelEn) || findByAriaLabel(MEET.captions.enableLabelEs))
+      : (findByAriaLabel(MEET.captions.disableLabelEn) || findByAriaLabel(MEET.captions.disableLabelEs));
+    if (!btn) return Promise.resolve(false);
+    btn.click();
+    return Promise.resolve(true);
+  }
+  return new Promise((resolve) => {
+    const wasOpen = toolbar.getAttribute('aria-expanded') === 'true';
+    if (!wasOpen) toolbar.click();
+    let tries = 0;
+    const step = () => {
+      const toggle = findCaptionsPopupToggle(toolbar);
+      if (!toggle && ++tries < 12) { setTimeout(step, 150); return; }
+      if (toggle) toggle.click();
+      else console.warn('[electron-meet] [CC] captions pop-up opened but its toggle was not found');
+      // Close the pop-up again, the way a person would: the same button.
+      setTimeout(() => {
+        if (!wasOpen && toolbar.getAttribute('aria-expanded') === 'true') toolbar.click();
+        resolve(!!toggle);
+      }, 250);
+    };
+    setTimeout(step, 150);
+  });
+}
+
 // The last-resort aria-label match for the JOIN button. `joinLabel` is "Join",
 // and ariaLabelSelector is a SUBSTRING match, so a naive query also returns
 // Meet's "Other ways to join" expander — clicking it opens a submenu and the
@@ -744,11 +818,13 @@ function dumpCaptionDiagnostics(reason) {
     ));
     const ccOn = !!findByAriaLabel(MEET.captions.enableLabelEn) || !!findByAriaLabel(MEET.captions.enableLabelEs);
     const ccOff = !!findByAriaLabel(MEET.captions.disableLabelEn) || !!findByAriaLabel(MEET.captions.disableLabelEs);
+    const ccState = captionsState();
+    const ccToolbar = !!findCaptionsToolbarButton();
     const moreMenu = !!findByAriaLabel(MEET.studioSound.moreOptionsLabelEn) || !!findByAriaLabel(MEET.studioSound.moreOptionsLabelEs);
     const guestNameInput = !!document.querySelector(MEET.join.nameInputLoose);
     console.warn('[electron-meet] [CC-diag] ' + reason +
       ' — tiles=' + visiblePeopleTileCount() +
-      ' ccOnBtn=' + ccOn + ' ccOffBtn=' + ccOff + ' moreMenuBtn=' + moreMenu +
+      ' ccOnBtn=' + ccOn + ' ccOffBtn=' + ccOff + ' ccToolbar=' + ccToolbar + ' ccState=' + ccState + ' moreMenuBtn=' + moreMenu +
       ' guestNameInput=' + guestNameInput +
       ' totalToolbarBtns=' + uniqLabels.length +
       ' url=' + location.href);
@@ -1794,17 +1870,18 @@ function clickCaptionsWhenReady() {
 
   const attempt = () => {
     if (settled) return true;
-    const offBtn = findByAriaLabel(MEET.captions.disableLabelEn) || findByAriaLabel(MEET.captions.disableLabelEs);
-    if (offBtn) {
+    const state = captionsState();
+    if (state === 'on') {
       settled = true; cleanup();
       console.log('[electron-meet] [CC] Already on, no click needed (', Date.now() - startTime, 'ms after admission)');
       return true;
     }
-    const onBtn = findByAriaLabel(MEET.captions.enableLabelEn) || findByAriaLabel(MEET.captions.enableLabelEs);
-    if (onBtn) {
+    if (state === 'off') {
       settled = true; cleanup();
-      onBtn.click();
-      console.log('[electron-meet] [CC] Clicked "Turn on captions" at', Date.now() - startTime, 'ms after admission (observer)');
+      setCaptions(true).then((acted) => {
+        console.log('[electron-meet] [CC] Turned captions on at', Date.now() - startTime, 'ms after admission (observer;',
+          findCaptionsToolbarButton() ? 'via the Captions and translation pop-up)' : 'via the toggle)', acted ? '' : '[nothing to click]');
+      });
       return true;
     }
     return false;
@@ -2239,6 +2316,7 @@ async function autoJoin(botName) {
         findByAriaLabel(MEET.join.leaveCallLabel) ||
         findByAriaLabel(MEET.captions.enableLabelEn) ||
         findByAriaLabel(MEET.captions.disableLabelEn) ||
+        findCaptionsToolbarButton() ||
         document.querySelector(MEET.join.leaveCallTooltip);
       // #330/#376: the WAITING ROOM shows a Leave-call control too (so `inCallUI`
       // is truthy there), but NOT the People / Chat toolbar buttons — those only
@@ -3348,13 +3426,11 @@ class CaptionScraper {
   }
 
   _enableCaptions() {
-    const ccButton = findByAriaLabel(MEET.captions.enableLabelEn) || findByAriaLabel(MEET.captions.enableLabelEs);
-    const offBtn = findByAriaLabel(MEET.captions.disableLabelEn) || findByAriaLabel(MEET.captions.disableLabelEs);
-    if (ccButton) {
-      console.log('[electron-meet] [CC] _enableCaptions: clicking "Turn on captions"');
-      ccButton.click();
-      console.log('[electron-meet] [CC] _enableCaptions: click() returned at', Date.now());
-    } else if (offBtn) {
+    const state = captionsState();
+    if (state === 'off') {
+      console.log('[electron-meet] [CC] _enableCaptions: turning captions on');
+      setCaptions(true).then((acted) => console.log('[electron-meet] [CC] _enableCaptions: done at', Date.now(), acted ? '' : '(nothing to click)'));
+    } else if (state === 'on') {
       console.log('[electron-meet] [CC] _enableCaptions: already on');
     } else {
       console.warn('[electron-meet] [CC] _enableCaptions: no captions button in DOM');
@@ -3372,17 +3448,17 @@ class CaptionScraper {
     const now = Date.now();
     if (now - (this._lastRecoverAt || 0) < 45000) return; // at most once / 45s
     this._lastRecoverAt = now;
-    const offBtn = findByAriaLabel(MEET.captions.disableLabelEn) || findByAriaLabel(MEET.captions.disableLabelEs);
-    if (!offBtn) {
-      console.warn('[caption-stall] recover: no "Turn off captions" button — trying enable only');
+    if (captionsState() !== 'on') {
+      console.warn('[caption-stall] recover: captions not on: trying enable only');
       try { this._enableCaptions(); } catch { /* non-fatal */ }
       return;
     }
     console.warn('[caption-stall] recover: toggling captions OFF→ON to rebuild a frozen caption region');
-    try { offBtn.click(); } catch (e) { console.warn('[caption-stall] recover off-click failed: ' + e.message); }
-    setTimeout(() => {
-      try { this._enableCaptions(); } catch (e) { console.warn('[caption-stall] recover re-enable failed: ' + e.message); }
-    }, 1200);
+    setCaptions(false).catch((e) => console.warn('[caption-stall] recover off failed: ' + e.message)).then(() => {
+      setTimeout(() => {
+        try { this._enableCaptions(); } catch (e) { console.warn('[caption-stall] recover re-enable failed: ' + e.message); }
+      }, 1200);
+    });
   }
 
   // The toolbar's caption button labels itself "Turn off captions" only when
@@ -3406,9 +3482,7 @@ class CaptionScraper {
     const maxPolls = ROUND_POLLS[round] || 200;
     let attempts = 0;
     const poll = setInterval(() => {
-      const captionsAreOn = !!document.querySelector(MEET.captions.onSelector)
-        || !!findByAriaLabel(MEET.captions.disableLabelEn)
-        || !!findByAriaLabel(MEET.captions.disableLabelEs);
+      const captionsAreOn = captionsState() === 'on';
       if (captionsAreOn) {
         clearInterval(poll);
         console.log('[electron-meet] [CC] Captions confirmed on at', Date.now(),
@@ -3427,8 +3501,7 @@ class CaptionScraper {
         // Was there anything to click this round? No button (or no admission
         // yet) means we never actually attempted anything — don't spend budget.
         const admitted = inCallToolbarPresent();
-        const buttonPresent = !!findByAriaLabel(MEET.captions.enableLabelEn)
-          || !!findByAriaLabel(MEET.captions.enableLabelEs);
+        const buttonPresent = captionsToggleAvailable();
         if (!admitted || !buttonPresent) {
           // #417: waiting forever is only right while there is still a call to
           // wait for. Once we HAVE seen the in-call toolbar, its sustained
@@ -3554,9 +3627,7 @@ class CaptionScraper {
   // 2026-06-05, 24 minutes). Detect the flip, notify main, try to re-click.
   // TODO(#226): fold into a consolidated health tick.
   _checkCaptionsButton() {
-    const on = !!document.querySelector(MEET.captions.onSelector)
-      || !!findByAriaLabel(MEET.captions.disableLabelEn)
-      || !!findByAriaLabel(MEET.captions.disableLabelEs);
+    const on = captionsState() === 'on';
     if (on !== this._captionsOn) {
       this._captionsOn = on;
       console.warn('[electron-meet] [CC] captions flipped', on ? 'ON' : 'OFF', 'mid-call');
@@ -3575,8 +3646,7 @@ class CaptionScraper {
         // would write that dump to the session log every 5s for the rest of the
         // call. Click when there's a button; otherwise note it at most once a
         // minute and keep watching.
-        const btn = findByAriaLabel(MEET.captions.enableLabelEn) || findByAriaLabel(MEET.captions.enableLabelEs);
-        if (btn) {
+        if (captionsToggleAvailable()) {
           this._enableCaptions();
         } else if (now - (this._lastNoButtonNoteAt || 0) > 60000) {
           this._lastNoButtonNoteAt = now;

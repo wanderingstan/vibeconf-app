@@ -62,6 +62,14 @@ const MEET = {
     disableLabelEs: 'Desactivar subtítulos',
     // Direct querySelector form of the "captions are on" check.
     onSelector: '[aria-label="Turn off captions" i]',
+    // 2026-10-22: Meet replaced the toggle with a "Captions and translation"
+    // toolbar button that opens a pop-up; the on/off toggle ("Turn on captions"
+    // / "Turn off live captions") lives inside it. The toolbar button carries
+    // aria-pressed="true" while captions are on, which is the state signal now.
+    // Found by its icon name rather than its (localized) label; the English
+    // label is the fallback.
+    toolbarIcons: ['translate_cc', 'closed_caption', 'closed_caption_off'],
+    toolbarLabelEn: 'Captions and translation',
     // Caption "speaker" label Meet uses for the bot's own TTS — filtered out
     // (we record our own speech authoritatively elsewhere). Distinct from the
     // people-tile "(You)" marker.

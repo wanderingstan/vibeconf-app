@@ -21,6 +21,13 @@ Or grab a build for macOS, Linux or Windows from the **[latest release](https://
 
 Your agent is the brain; the app is the body. The agent calls MCP tools (or raw HTTP) to speak, listen and draw. The app does the real-time media work: it plays synthesized speech into a virtual mic, renders the avatar and whiteboard into a virtual camera, and drives the call's web UI so the bot shows up as a normal participant. Dashed boxes are planned or in progress.
 
+**Processes and boundaries.** One level down, the app window is one process and the parent of every bot: it starts each bot as its own child process, sees it exit and why, and shows the selected bot's panel on its stage. Each bot joins its own call. Each agent session runs its own MCP server (a stdio child of the session), which talks to its bot's local port with that bot's token, and finds the bot through the app's directory on `:7864`.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/processes-dark.svg">
+  <img alt="Process diagram, read left to right. On this Mac, each agent session (Charlie's agent in Claude Code, started with /join-call; Bob's agent in Codex, asked in plain language) runs an MCP server as its stdio child; it finds its bot through the app's directory on port 7864 and talks to the bot's local API over HTTP with a token. The vibeconferencing app is one region containing a main process (stage, sidebar, directory, bot children) and the bot processes Charlie (a Fluent emoji face, port 7885) and Bob (a red panda, port 7887), each with a local API, a panel and a call view. The main process spawns each bot as its own child over a private channel, relays the selected bot's panel onto its stage over HTTP and SSE, and finds other bots it did not start, such as one launched by hand with a --profile flag, by scanning ports. The bots join Google Meet, Zoom, Microsoft Teams and Slack Huddles, outside the machine boundary, as participants." src="media/processes-light.svg">
+</picture>
+
 ## Not notes. The thing.
 
 Most bots send a summary after everyone leaves. This one works **in the call**. Because the bot **is** your Claude Code / Codex / Cursor session, it can do anything your agent can do in a normal session, live in the room: research a question, send the email, update the website, analyze the data, or build the thing you're discussing. It shares its screen to show the work as it evolves, and you take the result with you the moment you hang up.
@@ -149,24 +156,7 @@ Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issue
 | `extension/` | Injected page scripts (Runway avatar bridge, LiveKit client). Bundled into the app. |
 | `scripts/`, `tests/`, `docs/` | Test harness (fleet + nightly), unit/e2e tests, and user docs. The visual system for the app and the website is in [docs/STYLE-GUIDE.md](docs/STYLE-GUIDE.md). |
 
-**How it works** (see the [diagram](#how-it-works) above)
-
-```
- AI agent (Claude Code)  ──MCP──▶  mcp-server  ──HTTP──▶  Electron app  ──▶  Meet / Zoom / Teams / Slack
-   (speak, listen,                 (bundled)              (audio in/out,        (as a real
-    whiteboard, …)                                        virtual camera)        participant)
-```
-
-The agent never touches WebRTC. It calls MCP tools; the app does the real-time media work (plays synthesized speech into a virtual mic, renders the avatar/whiteboard into a virtual camera) and drives the call's web UI (Meet, Zoom, Teams or Slack).
-
-**Processes and boundaries.** The app window is one process and the parent of every bot: it starts each bot as its own child process, sees it exit and why, and shows the selected bot's panel on its stage. Each bot joins its own call. Each agent session runs its own MCP server (a stdio child of the session), which talks to its bot's local port with that bot's token, and finds the bot through the app's directory on `:7864`.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="media/processes-dark.svg">
-  <img alt="Process diagram, read left to right. On this Mac, each agent session (Charlie's agent in Claude Code, started with /join-call; Bob's agent in Codex, asked in plain language) runs an MCP server as its stdio child; it finds its bot through the app's directory on port 7864 and talks to the bot's local API over HTTP with a token. The vibeconferencing app is one region containing a main process (stage, sidebar, directory, bot children) and the bot processes Charlie (a Fluent emoji face, port 7885) and Bob (a red panda, port 7887), each with a local API, a panel and a call view. The main process spawns each bot as its own child over a private channel, relays the selected bot's panel onto its stage over HTTP and SSE, and finds other bots it did not start, such as one launched by hand with a --profile flag, by scanning ports. The bots join Google Meet, Zoom, Microsoft Teams and Slack Huddles, outside the machine boundary, as participants." src="media/processes-light.svg">
-</picture>
-
-Regenerate with `python3 media/processes-diagram.py`.
+**How it works:** see the two diagrams under [How it works](#how-it-works) above. Both are generated: `python3 media/restyle-fluent.py` for the architecture pair, `python3 media/processes-diagram.py` for the process pair (the latter needs ImageMagick for the bot faces).
 
 **Build** (Node ≥ 18 and [pnpm](https://pnpm.io)):
 

@@ -626,6 +626,33 @@ async function stopBotNow(name) {
   return { ok: !!ok };
 }
 
+// Restart a bot started by an older build (one with no panel relay, so the
+// stage can't show it: selectBot's 'outdated'). Such a process predates the
+// child channel and /api/panel/quit, so it is stopped the way a person would:
+// SIGTERM to the process listening on its port, which Electron turns into an
+// ordinary quit. Then it starts fresh, as this window's child, and comes onto
+// the stage. Never while it is in a call.
+async function restartOutdatedBot(name) {
+  if (!profileManager.isValidProfileName(name)) return { ok: false, error: 'invalid bot' };
+  const label = botLabel(name);
+  const inst = (await scanRunning()).get(name);
+  if (inst) {
+    if (require('./call-phase.js').isBusy(inst.callStatus)) return { ok: false, error: `${label} is in a call. Restart it after the call.` };
+    let pid = null;
+    try {
+      const out = require('child_process').execFileSync('lsof', ['-nP', `-iTCP:${inst.port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8', timeout: 4000 });
+      pid = Number(String(out).trim().split('\n')[0]) || null;
+    } catch { /* lsof found nothing */ }
+    if (!pid || pid === process.pid) return { ok: false, error: `Couldn't find ${label}'s process to stop it.` };
+    console.log(`[supervisor] restarting outdated bot "${name}": SIGTERM to pid ${pid} on port ${inst.port}`);
+    try { process.kill(pid, 'SIGTERM'); } catch (err) { return { ok: false, error: `Couldn't stop ${label}: ${err.message}` }; }
+    for (let i = 0; i < 40 && (await scanRunning()).has(name); i++) await new Promise((r) => setTimeout(r, 250));
+    if ((await scanRunning()).has(name)) return { ok: false, error: `${label} didn't stop. Quit it by hand, then select it again.` };
+  }
+  stageOutdated = null;
+  return openBot(name);
+}
+
 // Delete a bot: its whole folder (settings, agent memory, call recordings and
 // notes) goes to the Trash, so it can be restored, never erased. Asks first,
 // naming the bot. Not the default bot, and never one in a call; a running one
@@ -1468,6 +1495,7 @@ function start() {
     ipcMain.handle('supervisor:add', (_e, name, url) => addToCall(name, url));
     ipcMain.handle('supervisor:stop-bot', (_e, name) => stopBotNow(name));
     ipcMain.handle('supervisor:delete-bot', (_e, name) => deleteBot(name));
+    ipcMain.handle('supervisor:restart-bot', (_e, name) => restartOutdatedBot(name));
     ipcMain.handle('supervisor:reveal', (_e, name) => {
       // A profile name, never a path: nothing outside the profiles folder.
       if (!profileManager.isValidProfileName(name)) return { ok: false, error: 'invalid bot' };

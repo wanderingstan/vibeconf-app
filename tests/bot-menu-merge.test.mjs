@@ -70,3 +70,21 @@ test('a bot\'s current call reaches the window but not the agents\' directory', 
   assert.match(sup, /currentUrl: typeof body\?\.currentMeetUrl === 'string' \? body\.currentMeetUrl : null,/);
   assert.match(sup, /\(\{ detectedMeetUrls, currentUrl, \.\.\.inst \}\) => inst/);
 });
+
+test('the … menu closes on a second click of its button, and when the bot pane is clicked', () => {
+  const js = read('electron-app/renderer/supervisor.js');
+  assert.match(js, /if \(openMenu && openMenu\.__anchor === anchor\) \{ closeMenu\(\); return; \}/);
+  assert.match(js, /window\.addEventListener\('blur', closeMenu\);/, 'the pane is another page: this one only sees focus leave');
+});
+
+test('a bot from an older build can be restarted from the stage, never mid-call', () => {
+  const sup = read('electron-app/supervisor-app.js');
+  const fn = sup.slice(sup.indexOf('async function restartOutdatedBot('));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /isBusy\(inst\.callStatus\)\) return \{ ok: false/);
+  assert.match(body, /if \(!pid \|\| pid === process\.pid\) return \{ ok: false/, 'never signals the app itself');
+  assert.match(body, /process\.kill\(pid, 'SIGTERM'\)/);
+  assert.match(body, /return openBot\(name\);/, 'comes back as this window\'s child, on the stage');
+  const js = read('electron-app/renderer/supervisor.js');
+  assert.match(js, /action: busy \? null : \{ label: `Restart \$\{label\}`/);
+});

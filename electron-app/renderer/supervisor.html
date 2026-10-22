@@ -110,6 +110,13 @@
     }
     .bot.selectable { cursor: pointer; }
 
+    .stage-action {
+      margin-top: 4px; padding: 8px 18px; border-radius: 999px; border: 1.5px solid var(--ink);
+      background: var(--paper); color: var(--ink); font-family: var(--font-display); font-weight: 700; font-size: 14px; cursor: pointer;
+    }
+    .stage-action:hover:not(:disabled) { background: var(--paper-lo); }
+    .stage-action:disabled { opacity: .6; cursor: default; }
+
     /* ── Row actions: merge into a call, and the … menu ──
        Hidden until the row is hovered or selected, like Claude's own sidebar;
        merge stays visible whenever there is a call it can join, since that is

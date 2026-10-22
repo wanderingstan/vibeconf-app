@@ -93,7 +93,7 @@ const starting = new Set();
 // The stage behind the panel view. While a bot wakes up it shows that bot's
 // face and name, straight from disk, so selecting a closed bot looks like a
 // tab loading rather than a separate "start the bot" step.
-function showStage(bot, { note = 'Waking up…', pulse = true } = {}) {
+function showStage(bot, { note = 'Waking up…', pulse = true, action = null } = {}) {
   const stage = document.getElementById('stage');
   stage.replaceChildren();
   stage.classList.remove('has-session');
@@ -109,6 +109,18 @@ function showStage(bot, { note = 'Waking up…', pulse = true } = {}) {
     face.append(el('span', null, (labelOf(bot).trim().charAt(0) || '?').toUpperCase()));
   }
   card.append(face, el('div', 'waking-name', labelOf(bot)), el('div', `waking-note${pulse ? '' : ' still'}`, note));
+  // One button when there is something to do about it (Restart, for a bot
+  // from an older build), with any failure said under it.
+  if (action) {
+    const b = el('button', 'stage-action', action.label);
+    const err = el('div', 'waking-note still');
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      const r = await action.run().catch((e) => ({ ok: false, error: e.message }));
+      if (r && !r.ok) { b.disabled = false; err.textContent = r.error || 'That didn\'t work.'; }
+    });
+    card.append(b, err);
+  }
   stage.append(card);
 }
 
@@ -146,9 +158,14 @@ let openMenu = null;
 function closeMenu() { if (openMenu) { openMenu.remove(); openMenu = null; } }
 document.addEventListener('click', (e) => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+// A click in the bot's pane lands in another web page (the stage is its own
+// view), so this page only learns of it by losing focus. Close then too.
+window.addEventListener('blur', closeMenu);
 
 // A small menu under `anchor`: items are { label, run, disabled, danger, title }.
 function showMenu(anchor, items) {
+  // A second click on the button that opened it closes it, like any menu.
+  if (openMenu && openMenu.__anchor === anchor) { closeMenu(); return; }
   closeMenu();
   const menu = el('div', 'row-menu');
   for (const it of items) {
@@ -162,6 +179,7 @@ function showMenu(anchor, items) {
   const r = anchor.getBoundingClientRect();
   menu.style.top = `${Math.round(r.bottom + 4)}px`;
   menu.style.left = `${Math.round(Math.max(8, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 8)))}px`;
+  menu.__anchor = anchor;
   openMenu = menu;
 }
 
@@ -489,9 +507,14 @@ api.on('supervisor-state', (state) => {
   if (state && state.outdated) {
     const bot = lastBots.find((b) => b.name === state.outdated);
     selectedBot = state.outdated;
+    const label = bot ? labelOf(bot) : state.outdated;
+    const busy = bot && inCall(bot);
     showStage(bot || { name: state.outdated }, {
-      note: `${bot ? labelOf(bot) : state.outdated} is running an older version of the app. Quit it, then select it again to show it here.`,
+      note: busy
+        ? `${label} is running an older version of the app, so it can't show here. Restart it after its call.`
+        : `${label} is running an older version of the app, so it can't show here until it restarts.`,
       pulse: false,
+      action: busy ? null : { label: `Restart ${label}`, run: () => api.invoke('supervisor:restart-bot', state.outdated) },
     });
   }
   // Not every push is a calendar tick: a change in the browser's open calls

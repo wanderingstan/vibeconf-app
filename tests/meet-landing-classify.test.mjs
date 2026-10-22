@@ -92,3 +92,30 @@ test('meeting-code matching is shape-based, not merely non-empty', () => {
   assert.equal(classify('https://meet.google.com/ab-defg-hij'), 'meet-home');
   assert.equal(classify('https://meet.google.com/abc-def-hij'), 'meet-home');
 });
+
+test('THE 2026-10-21 REGRESSION: /meet/<code> is a meeting, not Meet home', () => {
+  // A signed-out bot joining via join_call (call mfz-tozx-zws-20261021T200000Z)
+  // was redirected to this exact URL; the start-anchored pattern called it
+  // Meet home and the join was abandoned before "Ask to join".
+  assert.equal(classify('https://meet.google.com/meet/mfz-tozx-zws'), 'meeting');
+  assert.equal(classify('https://meet.google.com/meet/abc-defg-hij'), 'meeting');
+  assert.equal(classify('https://meet.google.com/meet/abc-defg-hij?authuser=0'), 'meeting');
+  // The prefix alone, or with a non-code, is still not a meeting.
+  assert.equal(classify('https://meet.google.com/meet'), 'meet-home');
+  assert.equal(classify('https://meet.google.com/meet/'), 'meet-home');
+  assert.equal(classify('https://meet.google.com/meet/new'), 'meet-home');
+  // A code-shaped prefix with trailing letters is not a code.
+  assert.equal(classify('https://meet.google.com/abc-defg-hijk'), 'meet-home');
+});
+
+test('meetingCodeFromPath yields the bare code for both path shapes', () => {
+  assert.equal(MEET.meetingCodeFromPath('/abc-defg-hij'), 'abc-defg-hij');
+  assert.equal(MEET.meetingCodeFromPath('/meet/mfz-tozx-zws'), 'mfz-tozx-zws');
+  assert.equal(MEET.meetingCodeFromPath('/MEET/ABC-DEFG-HIJ'), 'abc-defg-hij');
+  assert.equal(MEET.meetingCodeFromPath('/abc-defg-hij/'), 'abc-defg-hij');
+  assert.equal(MEET.meetingCodeFromPath('/'), null);
+  assert.equal(MEET.meetingCodeFromPath('/meet'), null);
+  assert.equal(MEET.meetingCodeFromPath('/meet/'), null);
+  assert.equal(MEET.meetingCodeFromPath('/landing'), null);
+  assert.equal(MEET.meetingCodeFromPath(''), null);
+});

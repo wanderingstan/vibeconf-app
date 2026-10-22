@@ -4406,7 +4406,8 @@ function enterInCallState() {
   installCallHealthTick();
 
   // Start sync + announce arrival.
-  const meetCode = window.location.pathname.replace('/', '');
+  // Not pathname.replace('/', ''): on /meet/<code> that yielded "meet/<code>".
+  const meetCode = MEET.meetingCodeFromPath(window.location.pathname);
   if (meetCode) {
     ipcRenderer.send('start-sync', { meetCode, botName: BOT_NAME });
     meetProvider.emit(CALL_EVENTS.botJoinedCall, { meetCode, botName: BOT_NAME });

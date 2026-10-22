@@ -89,3 +89,8 @@ test('join_call actually calls the parser', () => {
   assert.match(src, /import \{ parseMeetRoomId \} from ["']\.\/meet-room\.js["']/);
   assert.match(src, /parseMeetRoomId\(room_id\)/);
 });
+
+test('a /meet/<code> URL yields the bare code', () => {
+  assert.deepEqual(parseMeetRoomId('https://meet.google.com/meet/mfz-tozx-zws'), { ok: true, roomId: 'mfz-tozx-zws' });
+  assert.deepEqual(parseMeetRoomId('meet.google.com/meet/ABC-DEFG-HIJ?authuser=0'), { ok: true, roomId: 'abc-defg-hij' });
+});

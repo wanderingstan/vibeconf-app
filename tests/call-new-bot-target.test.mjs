@@ -315,3 +315,10 @@ test('the browser scan used by /call-new-bot is the SAME script as the backgroun
   assert.match(poll.slice(0, 4000), /const \{ scanBrowsers, isAutomationDenied \} = require\('\.\/browser-call-scan\.js'\)/);
   assert.doesNotMatch(main, /tell application "\$\{appName\}"/, 'no inline copy of the scan script');
 });
+
+test('parseCallTarget reads the code out of a /meet/<code> URL', () => {
+  const r = parseCallTarget('https://meet.google.com/meet/mfz-tozx-zws');
+  assert.equal(r.ok, true);
+  assert.equal(r.roomId, 'mfz-tozx-zws');
+  assert.equal(r.url, 'https://meet.google.com/mfz-tozx-zws');
+});

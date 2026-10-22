@@ -80,3 +80,8 @@ test('nothing joinable → null', () => {
   assert.equal(findCallLink('see you at 3pm, link to follow'), null);
   assert.equal(findCallLink('https://example.com/j/81234567890'), null);
 });
+
+test('a /meet/<code> Meet URL canonicalises to the bare code URL', () => {
+  assert.deepEqual(findCallLink('https://meet.google.com/meet/mfz-tozx-zws?authuser=0'),
+    { provider: 'meet', url: 'https://meet.google.com/mfz-tozx-zws' });
+});

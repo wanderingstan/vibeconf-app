@@ -36,7 +36,8 @@ function parseMeetRoomId(raw) {
   if (!m) return { ok: true, roomId: trimmed };   // not ours to touch
 
   // Strip query + hash: real pasted URLs carry ?authuser=0, ?pli=1, #heading.
-  const firstSegment = m[1].split(/[?#]/)[0].replace(/\/+$/, '');
+  // A /meet/<code> path (where Meet redirects signed-out visitors) is the same room.
+  const firstSegment = m[1].split(/[?#]/)[0].replace(/\/+$/, '').replace(/^meet\//i, '');
 
   if (MEET_CODE.test(firstSegment)) return { ok: true, roomId: firstSegment.toLowerCase() };
 

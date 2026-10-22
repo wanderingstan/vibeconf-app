@@ -20,7 +20,7 @@
 (function () {
   // Each provider: does this URL point at a joinable meeting?
   const PROVIDERS = [
-    { id: 'meet', test: (u) => /(^|\.)meet\.google\.com$/i.test(u.hostname) && /^\/[a-z]+-[a-z]+-[a-z]+(\/|$)/i.test(u.pathname) },
+    { id: 'meet', test: (u) => /(^|\.)meet\.google\.com$/i.test(u.hostname) && /^\/(?:meet\/)?[a-z]+-[a-z]+-[a-z]+(\/|$)/i.test(u.pathname) },
     { id: 'slack', test: (u) => /^app\.slack\.com$/i.test(u.hostname) && /^\/client\/[^/]+\/[^/?#]+/.test(u.pathname) },
     { id: 'zoom', test: (u) => /(^|\.)zoom\.us$/i.test(u.hostname) && /\/(j|wc(\/join)?)\/\d{9,11}(\/|$)/.test(u.pathname) },
     {
@@ -65,7 +65,7 @@
       if (!p) continue;
       // One canonical Meet URL (drops "www.", a trailing slash, any query), as
       // the panel's old toMeetUrl did.
-      if (p.id === 'meet') return { provider: 'meet', url: 'https://meet.google.com/' + u.pathname.split('/')[1].toLowerCase() };
+      if (p.id === 'meet') return { provider: 'meet', url: 'https://meet.google.com/' + u.pathname.replace(/^\/meet\//i, '/').split('/')[1].toLowerCase() };
       return { provider: p.id, url: u.href };
     }
     // A bare Meet code typed or pasted on its own ("wcj-odpo-wrb"). Whole input

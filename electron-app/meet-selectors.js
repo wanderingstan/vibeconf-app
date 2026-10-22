@@ -23,7 +23,11 @@ const MEET = {
   url: {
     host: 'meet.google.com',
     // A real meeting code path: /abc-defg-hij (three-four-three letters).
-    meetingCodePath: /^\/[a-z]{3}-[a-z]{4}-[a-z]{3}/i,
+    // Meet also serves a meeting at /meet/abc-defg-hij: a signed-out bot joining
+    // via join_call was redirected there on 2026-10-21, and the old start-anchored
+    // pattern classified it as Meet home and abandoned the join.
+    // Group 1 is the code.
+    meetingCodePath: /^\/(?:meet\/)?([a-z]{3}-[a-z]{4}-[a-z]{3})(?:[/?#]|$)/i,
     // Google sign-in redirect (logged-out meet.google.com lands here).
     signInPage: /accounts\.google\.com|ServiceLogin|signin/i,
   },
@@ -435,6 +439,14 @@ MEET.classifyLanding = ({ href = '', hostname = '', pathname = '' } = {}) => {
   if (hostname !== MEET.url.host) return 'not-meet';
   if (!MEET.url.meetingCodePath.test(pathname)) return 'meet-home';
   return 'meeting';
+};
+
+// The meeting code (lowercased) from a Meet pathname, or null when the path is
+// not a meeting. Handles both /abc-defg-hij and /meet/abc-defg-hij, so the room
+// id is the bare code either way, never "meet/abc-defg-hij".
+MEET.meetingCodeFromPath = (pathname = '') => {
+  const m = String(pathname || '').match(MEET.url.meetingCodePath);
+  return m ? m[1].toLowerCase() : null;
 };
 
 module.exports = { MEET };

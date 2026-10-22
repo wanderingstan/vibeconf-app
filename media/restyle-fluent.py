@@ -21,11 +21,12 @@ LIGHT = dict(
     shadow='flood-color="#4A3140" flood-opacity="0.20"', legend_fill='#FFFDF7',
 )
 # A dark variant is an extrapolation: the guide only says on-air surfaces stay
-# dark. Ground is the Fluent set's darkest pixel (#3F2831), cards are ink.
+# dark. Ground is black (Stan, 2026-10-22); cards are ink, their inset rows the
+# Fluent set's darkest pixel (#3F2831).
 DARK = dict(
-    bg='#3F2831', paper='#4A3140', paper_lo='#6B5566', ink='#FFF4DA', soft='#F1D9A4',
+    bg='#000000', paper='#4A3140', paper_lo='#6B5566', ink='#FFF4DA', soft='#F1D9A4',
     faint='#9A8798', pink='#E62776', pink_deep='#B31199', magenta='#9F0BA4', line='#6B5566',
-    card_stroke='#FFE7B3', planned_fill='#3F2831', planned_stroke='#9A8798', planned_text='#F1D9A4',
+    card_stroke='#FFE7B3', planned_fill='#000000', planned_stroke='#9A8798', planned_text='#F1D9A4',
     row_fill='#3F2831', row_stroke='#6B5566', pill_fill='#E62776', pill_text='#FFF4DA',
     wire='#FFE7B3', eyebrow='#E62776', star='#FFE7B3', mono_icon='#FFF4DA',
     shadow='flood-color="#000000" flood-opacity="0.35"', legend_fill='#4A3140',

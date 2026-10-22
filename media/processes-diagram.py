@@ -24,11 +24,11 @@ LIGHT = dict(
     eyebrow='#9F0BA4', star='#E62776', mono_icon='#000', region='#9A8798',
     shadow='flood-color="#4A3140" flood-opacity="0.20"',
 )
-# As in restyle-fluent.py: ground is the Fluent set's darkest pixel, cards are ink.
+# As in restyle-fluent.py: ground is black, cards are ink, inset rows the Fluent set's darkest pixel.
 DARK = dict(
-    bg='#3F2831', paper='#4A3140', ink='#FFF4DA', soft='#F1D9A4', faint='#9A8798',
+    bg='#000000', paper='#4A3140', ink='#FFF4DA', soft='#F1D9A4', faint='#9A8798',
     pink='#E62776', pink_deep='#B31199', magenta='#9F0BA4', line='#6B5566',
-    card_stroke='#FFE7B3', planned_fill='#3F2831', planned_stroke='#9A8798', planned_text='#F1D9A4',
+    card_stroke='#FFE7B3', planned_fill='#000000', planned_stroke='#9A8798', planned_text='#F1D9A4',
     row_fill='#3F2831', row_stroke='#6B5566', wire='#FFE7B3', owner='#E62776', owner_text='#FF7BB0',
     eyebrow='#E62776', star='#FFE7B3', mono_icon='#FFF4DA', region='#9A8798',
     shadow='flood-color="#000000" flood-opacity="0.35"',

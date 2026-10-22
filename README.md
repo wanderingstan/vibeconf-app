@@ -144,8 +144,7 @@ Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issue
 
 ## For developers
 
-<details>
-<summary>Repo layout, how it works, building, and tests</summary>
+Repo layout, how it works, building, and tests.
 
 **What's in here**
 
@@ -189,8 +188,6 @@ npm test      # 196 unit tests: config scoping, profile resolution, turn-taking 
 ```
 
 `tests/e2e/` drives real Meet/Slack calls via the fleet harness (`scripts/`); the nightly runner is `scripts/scheduled-meet-test.sh` (see `scripts/SCHEDULING.md`).
-
-</details>
 
 ## Backend
 

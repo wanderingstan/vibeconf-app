@@ -3949,6 +3949,14 @@ function pushEmojiSet(value) {
 // writes a config.json nothing will accept afterwards.
 const AVATAR_BG_MAX_CHARS = 1_000_000;
 
+// The bundled background presets (new-bot seeding + the Bot Settings dropdown).
+// Packaged builds ship them as an extraResource, outside the asar.
+function backgroundPresetsDir() {
+  return __dirname.includes('.asar')
+    ? path.join(process.resourcesPath, 'backgrounds', 'presets')
+    : path.join(__dirname, 'backgrounds', 'presets');
+}
+
 // Wrap a picked image file in a 16:9 background SVG, inlined as a data URI.
 //
 // Inlined rather than referenced as file://: a reference breaks the moment the
@@ -9495,9 +9503,7 @@ app.whenReady().then(async () => {
         currentSvg: profileStore.get('avatarBackgroundSvg'),
       })) {
         try {
-          const bgDir = __dirname.includes('.asar')
-            ? path.join(process.resourcesPath, 'backgrounds', 'presets')
-            : path.join(__dirname, 'backgrounds', 'presets');
+          const bgDir = backgroundPresetsDir();
           const chosen = nbb.pickBackgroundPreset(fs.readdirSync(bgDir));
           if (chosen) {
             const svg = await buildBackgroundSvgFromImage(path.join(bgDir, chosen));
@@ -13071,16 +13077,60 @@ function setupIPC() {
   // Bot Settings → "Choose image…". The agent can already set a background
   // mid-call via set_preference, but that means authoring SVG; this is the
   // by-hand path for people who just want to point at a file.
+  // The bundled presets, for the Bot Settings dropdown. Same folder new bots
+  // draw their random background from, so the two can never disagree.
+  ipcMain.handle('list-avatar-background-presets', () => {
+    try {
+      const nbb = require('./new-bot-background.js');
+      return fs.readdirSync(backgroundPresetsDir())
+        .filter((f) => nbb.BACKGROUND_EXTS.test(f))
+        .sort()
+        .map((file) => ({ file, name: nbb.presetCaption(file) }));
+    } catch (err) {
+      console.warn('[electron] Could not list background presets:', err.message);
+      return [];
+    }
+  });
+
+  ipcMain.handle('set-avatar-background-preset', async (_event, file) => {
+    // Basename only: the renderer names a preset, it never picks a path.
+    const name = path.basename(String(file || ''));
+    const nbb = require('./new-bot-background.js');
+    if (!nbb.BACKGROUND_EXTS.test(name)) return { ok: false, error: 'Not a background preset' };
+    try {
+      const svg = await buildBackgroundSvgFromImage(path.join(backgroundPresetsDir(), name));
+      store.set('avatarBackgroundSvg', svg);
+      // Caption doubles as the dropdown's memory of which preset is on.
+      store.set('avatarBackgroundCaption', nbb.presetCaption(name));
+      pushAvatarBackground(svg);
+      return { ok: true, svg, name: nbb.presetCaption(name) };
+    } catch (err) {
+      console.warn('[electron] Background preset failed:', err.message);
+      return { ok: false, error: err.message };
+    }
+  });
+
   ipcMain.handle('choose-avatar-background-image', async () => {
-    const parent = BrowserWindow.getFocusedWindow() || mainWindow;
-    const { canceled, filePaths } = await dialog.showOpenDialog(parent, {
+    // Hosted in the app window, this bot's own mainWindow is hidden, and a sheet
+    // on it would drag it back on screen (the old-style window behind the
+    // picker). So float the dialog instead, after bringing this process forward
+    // so it doesn't open behind the app window that was clicked.
+    let parent = BrowserWindow.getFocusedWindow() || mainWindow;
+    if (HEADLESS) {
+      parent = null;
+      try { app.focus({ steal: true }); } catch { /* not on this platform */ }
+    }
+    const opts = {
       title: 'Choose a background image',
       message: 'Shown behind the bot\'s face on its camera (16:9, centre-cropped).',
       properties: ['openFile'],
       // SVG first: it is the native format for this preference and the only one
       // that stays sharp at any size, so it leads the list.
       filters: [{ name: 'Images', extensions: ['svg', 'png', 'jpg', 'jpeg', 'gif', 'webp'] }],
-    });
+    };
+    const { canceled, filePaths } = parent
+      ? await dialog.showOpenDialog(parent, opts)
+      : await dialog.showOpenDialog(opts);
     if (canceled || !filePaths || !filePaths.length) return { canceled: true };
     const filePath = filePaths[0];
     try {

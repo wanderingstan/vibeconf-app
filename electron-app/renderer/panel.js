@@ -403,7 +403,7 @@ function paintAvatarBg(el, svg) {
 const avatarBgPreview = document.getElementById('avatarBgPreview');
 const avatarBgStatus = document.getElementById('avatarBgStatus');
 const chooseAvatarBgBtn = document.getElementById('chooseAvatarBgBtn');
-const clearAvatarBgBtn = document.getElementById('clearAvatarBgBtn');
+const avatarBgPreset = document.getElementById('avatarBgPreset');
 
 // Unlike the avatar tiles, this preview is ALREADY 16:9 — the camera's shape —
 // so cover-fitting it is a no-op for a well-authored background and only crops
@@ -423,12 +423,11 @@ function paintAvatarBgPreview(svg) {
   } else {
     // No background set → show the SAME default gradient the camera falls back
     // to, not a "nothing here" message. Empty is a real look the bot can wear,
-    // so the preview should show it rather than describe it. (The Clear button
-    // hides itself below, which is what signals "nothing set".)
+    // so the preview should show it rather than describe it. (The preset
+    // dropdown reading "Default gradient" is what signals "nothing set".)
     art.innerHTML = '';
   }
   avatarBgPreview.classList.toggle('is-default', !has);
-  if (clearAvatarBgBtn) clearAvatarBgBtn.style.display = has ? '' : 'none';
 }
 
 // The resting face, over the background — so this previews the whole picture the
@@ -470,6 +469,7 @@ chooseAvatarBgBtn?.addEventListener('click', async () => {
       // both wear this background, and waiting out the 60s timer would read as
       // the change not having taken.
       for (const el of agentAvatarEls) paintAvatarBg(el, r.svg);
+      syncAvatarBgPreset(r.svg, r.name);
       setAvatarBgStatus('Set from ' + (r.name || 'image'));
     } else {
       setAvatarBgStatus(r?.error || 'Could not load that image', true);
@@ -481,15 +481,62 @@ chooseAvatarBgBtn?.addEventListener('click', async () => {
   }
 });
 
-clearAvatarBgBtn?.addEventListener('click', async () => {
+// Built-in presets dropdown. Which preset is on is read back from the caption
+// (main sets it to the preset's name), so a hand-picked image or an
+// agent-authored SVG shows as "Custom image" rather than a stale preset.
+const avatarBgPresetsReady = (async () => {
+  if (!avatarBgPreset) return;
+  let presets = [];
+  try { presets = await api.invoke('list-avatar-background-presets') || []; } catch { /* none */ }
+  for (const p of presets) {
+    const opt = document.createElement('option');
+    opt.value = p.file;
+    opt.textContent = p.name.replace(/[-_]+/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    opt.dataset.caption = p.name;
+    avatarBgPreset.appendChild(opt);
+  }
+})();
+
+async function syncAvatarBgPreset(svg, caption) {
+  if (!avatarBgPreset) return;
+  await avatarBgPresetsReady;
+  let value = '';
+  if (svg && svg.trim()) {
+    const match = [...avatarBgPreset.options].find((o) => o.dataset.caption && o.dataset.caption === caption);
+    value = match ? match.value : '__custom';
+  }
+  const custom = avatarBgPreset.querySelector('option[value="__custom"]');
+  if (custom) custom.hidden = value !== '__custom';
+  avatarBgPreset.value = value;
+}
+
+avatarBgPreset?.addEventListener('change', async () => {
+  const file = avatarBgPreset.value;
+  if (file === '__custom') return;
+  avatarBgPreset.disabled = true;
+  setAvatarBgStatus('');
   try {
-    await setConfig('avatarBackgroundSvg', '');
-    await setConfig('avatarBackgroundCaption', '');
-    paintAvatarBgPreview('');
-    for (const el of agentAvatarEls) paintAvatarBg(el, '');
-    setAvatarBgStatus('Cleared — back to the default gradient');
+    if (!file) {
+      // "Default gradient" is the old Clear button: empty is a real look.
+      await setConfig('avatarBackgroundSvg', '');
+      await setConfig('avatarBackgroundCaption', '');
+      paintAvatarBgPreview('');
+      for (const el of agentAvatarEls) paintAvatarBg(el, '');
+      syncAvatarBgPreset('', '');
+      return;
+    }
+    const r = await api.invoke('set-avatar-background-preset', file);
+    if (r?.ok) {
+      paintAvatarBgPreview(r.svg);
+      for (const el of agentAvatarEls) paintAvatarBg(el, r.svg);
+      syncAvatarBgPreset(r.svg, r.name);
+    } else {
+      setAvatarBgStatus(r?.error || 'Could not set that background', true);
+    }
   } catch (err) {
-    setAvatarBgStatus(err?.message || 'Could not clear', true);
+    setAvatarBgStatus(err?.message || 'Could not set that background', true);
+  } finally {
+    avatarBgPreset.disabled = false;
   }
 });
 
@@ -629,9 +676,10 @@ async function renderAgentAvatar() {
   let svg = '';
   let emojiSet = 'native';
   try {
-    const cfg = await api.invoke('get-config', ['avatarBackgroundSvg', 'emojiSet']);
+    const cfg = await api.invoke('get-config', ['avatarBackgroundSvg', 'avatarBackgroundCaption', 'emojiSet']);
     svg = (cfg && cfg.avatarBackgroundSvg) || '';
     emojiSet = (cfg && cfg.emojiSet) || 'native';
+    syncAvatarBgPreset(svg, (cfg && cfg.avatarBackgroundCaption) || '');
   } catch { /* ignore — fall back to gradient + native glyph */ }
 
   // Fire-and-forget: the first call kicks off the load and repaints when ready.

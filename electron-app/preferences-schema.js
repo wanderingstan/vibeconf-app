@@ -221,7 +221,7 @@ const PREFERENCES = {
   sessionPerCalendarInvitees: {
     type: 'boolean',
     default: false,
-    label: 'One session per calendar meeting',
+    label: 'Separate sessions for each calendar meeting',
     description:
       'A bot normally keeps ONE Claude session, so everyone it ever talks to ' +
       'shares one pile of context — no continuity per person, and no isolation ' +

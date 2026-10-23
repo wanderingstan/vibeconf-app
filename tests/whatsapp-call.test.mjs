@@ -66,6 +66,16 @@ test('the preload taps only WhatsApp\'s playback worklet, and keeps the RTC hook
   assert.equal((inject.match(/outputTapTracks\(\)\)/g) || []).length, 2, 'both the STT tap and the recorder read the output taps');
 });
 
+test('one calling app answers at a time: switching one on switches the others off', () => {
+  const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+  const hook = main.slice(main.indexOf("if (key === 'telegramAnswerCalls' || key === 'whatsappAnswerCalls')"));
+  const body = hook.slice(0, hook.indexOf('refreshCallingAppStandby('));
+  assert.match(body, /for \(const app of CALLING_APP_ORDER\)/);
+  assert.match(body, /store\.set\(other, false\)/);
+  const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
+  assert.match(panel, /if \(other !== app && box\) box\.checked = false;/);
+});
+
 test('main isolates WhatsApp Web so its calling engine gets SharedArrayBuffer', () => {
   const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
   assert.match(main, /web\\\.whatsapp\\\.com/);

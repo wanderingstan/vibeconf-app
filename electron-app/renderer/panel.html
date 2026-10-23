@@ -488,7 +488,7 @@
           </label>
           <label for="whatsappAllowedCallers" style="margin-top:6px">Allowed callers</label>
           <textarea id="whatsappAllowedCallers" rows="3" placeholder="Phone numbers with country code, one per line"></textarea>
-          <div class="conn-note">Only these numbers get answered; everyone else just rings out. The bot can't change this list. If Telegram calls are on too, the bot waits on Telegram for now.</div>
+          <div class="conn-note">Only these numbers get answered; everyone else just rings out. The bot can't change this list. A bot answers one app at a time: turning this on turns Telegram calls off.</div>
         </div>
         <!-- Telegram calls (#843): who may call this bot. Read by main when a
              call rings; deliberately not an agent-settable preference. -->
@@ -499,7 +499,7 @@
           </label>
           <label for="telegramAllowedCallers" style="margin-top:6px">Allowed callers</label>
           <textarea id="telegramAllowedCallers" rows="3" placeholder="@username or numeric user id, one per line"></textarea>
-          <div class="conn-note">Only these people get answered; everyone else just rings out. The bot can't change this list.</div>
+          <div class="conn-note">Only these people get answered; everyone else just rings out. The bot can't change this list. A bot answers one app at a time: turning this on turns WhatsApp calls off.</div>
         </div>
 
         <!-- Calendar auto-join identity (#299): add this address as a guest on

@@ -79,6 +79,8 @@ window.__vibeconf_getScreenShareSource = async function () {
 // Call recording: start/stop the page recorder and carry its tracks to main
 // (#814). Without this a Zoom recording was silent video.
 require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[zoom]' });
+// Speech-to-text tap → main, for hearing calls by transcribing their audio (#850).
+require('./preload-stt-bridge').installSttBridge(ipcRenderer);
 
 const provider = new ZoomProvider();
 try { window.zoomProvider = provider; window.ZOOM = ZOOM; } catch { /* window not ready */ }

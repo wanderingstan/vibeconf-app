@@ -4255,6 +4255,116 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Speech-to-text tap (#850 phase 2): the call's REMOTE audio as 16 kHz mono
+  // PCM, streamed to main, where AudioTranscription (caption-source.js) gates it
+  // for speech and runs the on-device engine. This is how the bot hears a call
+  // that has no captions of its own (calling apps, #843), and how it can be
+  // compared against captions on a call that does.
+  //
+  // Same two places the recorder finds remote audio: the RTCPeerConnection hook
+  // (Meet), or, where that hook is off (Slack/Zoom/Teams/calling apps), every
+  // live audio track on an <audio>/<video> element's srcObject. The bot's own
+  // voice is in neither, so the transcript never contains the bot.
+  //
+  // ScriptProcessorNode, not an AudioWorklet: a worklet loads from a module URL
+  // (blob:/data:), which a call client's Content-Security-Policy can refuse, and
+  // a processor needs nothing loaded. A 16 kHz AudioContext does the resampling.
+  // Each chunk: 4096 samples (256 ms) as Int16, posted as 'stt-audio' and
+  // forwarded to main by the provider preload (preload-stt-bridge.js).
+  // Dormant until main sends 'start-stt-tap'.
+  // ---------------------------------------------------------------------------
+  const sttTap = (() => {
+    const RATE = 16000;
+    const FRAME = 4096;
+    let on = false, ctx = null, sink = null, timer = null;
+    const taps = new Map(); // track.id -> { name, src, proc, track }
+    let mediaCount = 0;
+    const post = (payload) => window.postMessage({ __botsInCalls: true, action: 'stt-audio', payload }, '*');
+
+    function remoteTracks() {
+      const out = [];
+      try {
+        for (const [id, pa] of audioCaptureManager.participants) {
+          if (pa && pa.track && pa.track.readyState === 'live') out.push({ track: pa.track, hint: `remote-${id}` });
+        }
+      } catch { /* stub manager */ }
+      if (window.__vibeconf_disableAudioCapture) {
+        try {
+          for (const el of document.querySelectorAll('audio, video')) {
+            const src = el.srcObject;
+            if (!src || typeof src.getAudioTracks !== 'function') continue;
+            for (const t of src.getAudioTracks()) if (t.readyState === 'live') out.push({ track: t, hint: null });
+          }
+        } catch { /* DOM not ready */ }
+      }
+      return out;
+    }
+
+    function attach(track, hint) {
+      if (taps.has(track.id)) return;
+      const name = hint || `remote-media-${++mediaCount}`;
+      try {
+        const src = ctx.createMediaStreamSource(new MediaStream([track]));
+        const proc = ctx.createScriptProcessor(FRAME, 1, 1);
+        proc.onaudioprocess = (e) => {
+          if (!on) return;
+          const f = e.inputBuffer.getChannelData(0);
+          const pcm = new Int16Array(f.length);
+          for (let i = 0; i < f.length; i++) {
+            const v = f[i] < -1 ? -1 : f[i] > 1 ? 1 : f[i];
+            pcm[i] = v < 0 ? v * 0x8000 : v * 0x7fff;
+          }
+          post({ stream: name, rate: RATE, at: Date.now(), pcm });
+        };
+        src.connect(proc);
+        proc.connect(sink); // a processor only runs while connected; sink is silent
+        taps.set(track.id, { name, src, proc, track });
+        track.addEventListener('ended', () => detach(track.id));
+        post({ stream: name, rate: RATE, at: Date.now(), event: 'attached' });
+      } catch (err) {
+        console.warn('[bots-in-calls] stt tap: cannot attach', name, err && err.message);
+      }
+    }
+
+    function detach(id) {
+      const t = taps.get(id);
+      if (!t) return;
+      try { t.proc.onaudioprocess = null; t.src.disconnect(); t.proc.disconnect(); } catch { /* gone */ }
+      taps.delete(id);
+      post({ stream: t.name, rate: RATE, at: Date.now(), event: 'detached' });
+    }
+
+    function poll() { for (const { track, hint } of remoteTracks()) attach(track, hint); }
+
+    return {
+      start() {
+        if (on) return;
+        on = true;
+        try {
+          ctx = ctx || new AudioContext({ sampleRate: RATE });
+          if (!sink) { sink = ctx.createGain(); sink.gain.value = 0; sink.connect(ctx.destination); }
+          ctx.resume().catch(() => {});
+        } catch (err) { console.warn('[bots-in-calls] stt tap: no AudioContext', err && err.message); on = false; return; }
+        poll();
+        timer = setInterval(poll, 1500);
+        console.log('[bots-in-calls] stt tap started');
+      },
+      stop() {
+        if (!on) return;
+        on = false;
+        if (timer) { clearInterval(timer); timer = null; }
+        for (const id of [...taps.keys()]) detach(id);
+        console.log('[bots-in-calls] stt tap stopped');
+      },
+    };
+  })();
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || !event.data?.__botsInCalls) return;
+    if (event.data.action === 'start-stt-tap') sttTap.start();
+    else if (event.data.action === 'stop-stt-tap') sttTap.stop();
+  });
+
   // Initialize transcription (Web Speech STT; don't start until requested). Also
   // skipped when capture is disabled (Slack uses DOM captions) — a stub keeps the
   // botSpeaking suppression + start/stop/get calls working as no-ops, so the TTS

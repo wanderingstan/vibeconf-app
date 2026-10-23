@@ -92,20 +92,25 @@ test('every provider we ship has captions; an unknown one does not', () => {
   assert.equal(CallProvider.capabilities.captions, false, 'the abstract base claims nothing');
 });
 
-test('listen source: platform when captions exist, null (reported) when not', () => {
+test('listen source: platform captions when they exist, our own transcription when not (#850 phase 2)', () => {
   assert.equal(resolveListenSource({ pref: 'auto', providerId: 'zoom' }).source, 'platform');
   assert.equal(resolveListenSource({ pref: 'platform', providerId: 'meet' }).reason, 'preference');
   assert.equal(resolveListenSource({ pref: 'bogus', providerId: 'teams' }).source, 'platform');
-  const none = resolveListenSource({ pref: 'auto', providerId: 'telegram' });
-  assert.equal(none.source, null);
-  assert.match(none.reason, /no captions/);
+  const calling = resolveListenSource({ pref: 'auto', providerId: 'telegram' });
+  assert.equal(calling.source, 'audio');
+  assert.match(calling.reason, /no captions/);
+  // 'platform' on a platform without captions can't be honoured; it hears anyway.
+  assert.equal(resolveListenSource({ pref: 'platform', providerId: 'whatsapp' }).source, 'audio');
+  // 'audio' forces our own transcription even where captions exist (comparison, #836).
+  assert.deepEqual(resolveListenSource({ pref: 'audio', providerId: 'meet' }), { source: 'audio', reason: 'preference' });
 });
 
-test('the preference offers only sources that exist', () => {
+test('the preference offers exactly the sources that exist', () => {
   const p = PREFERENCES.listenSource;
   assert.equal(p.default, 'auto');
   assert.deepEqual(p.enum, LISTEN_SOURCES);
-  assert.ok(!p.enum.includes('audio'), "'audio' arrives with phase 2, not before");
+  assert.ok(p.enum.includes('audio'));
+  for (const v of p.enum) assert.ok(p.enumLabels && p.enumLabels[v], `no label for ${v}`);
 });
 
 test('main.js hears through the source, not the provider channels', () => {

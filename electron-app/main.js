@@ -105,14 +105,20 @@ const {
 // sides of the IPC wire (provider impl in google-meet-provider.js). Values are
 // byte-identical to the prior literals — same wire.
 const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider.js');
-const { PlatformCaptions, SOURCE_EVENTS, resolveListenSource } = require('./caption-source.js');
+const {
+  PlatformCaptions, AudioTranscription, CaptionRouter, SOURCE_EVENTS, resolveListenSource, oneToOneSpeaker,
+} = require('./caption-source.js');
 
-// Where the bot hears the call from (#850). Today always the platform's own
-// captions, so this is a straight re-emit of the provider's caption events;
-// the point is that the handlers below listen to a SOURCE, not to a provider,
-// so a source that transcribes call audio can stand in for calls without
-// captions. Built on first use: sendCallCmd and callViewRequest are below.
+// Where the bot hears the call from (#850). The handlers below listen to ONE
+// source, a router, which wraps whichever real source this call uses: the
+// platform's own captions (Meet, Zoom, Teams, Slack), or AudioTranscription,
+// which transcribes the call's remote audio on this computer (calling apps with
+// no captions; or anywhere, with listenSource 'audio'). Chosen per call when it
+// goes in-call (applyListenSource). Built on first use: sendCallCmd and
+// callViewRequest are below.
 let _captionSource = null;
+let _platformCaptions = null;
+let _audioTranscription = null;
 // The live call platform, by the short names the panel uses.
 function activeProviderName() {
   return slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : teamsProviderMode ? 'teams' : 'meet';
@@ -120,10 +126,51 @@ function activeProviderName() {
 
 function captionSource() {
   if (!_captionSource) {
-    _captionSource = new PlatformCaptions({ ipcMain, sendCallCmd, callViewRequest });
+    _platformCaptions = new PlatformCaptions({ ipcMain, sendCallCmd, callViewRequest });
+    _captionSource = new CaptionRouter(_platformCaptions);
     _captionSource.start();
   }
   return _captionSource;
+}
+
+// The on-device transcription source, built the first time a call needs it
+// (the engine downloads its ~18 MB model then, not at app start).
+function audioTranscription() {
+  if (_audioTranscription) return _audioTranscription;
+  const { WhistleEngine, whistleLanguage } = require('./stt-whistle.js');
+  const engine = new WhistleEngine({
+    root: path.join(app.getPath('userData'), 'stt', 'whistle'),
+    log: (m) => console.log(ts(), m),
+  });
+  _audioTranscription = new AudioTranscription({
+    ipcMain,
+    engine,
+    startTap: () => sendExtMsg({ action: 'start-stt-tap' }),
+    stopTap: () => sendExtMsg({ action: 'stop-stt-tap' }),
+    // 1:1 only for now (#839): the one other human in the roster.
+    attribute: () => oneToOneSpeaker(localServer.participants, { selfName: getActiveBotName() }),
+    // The bot's own name decides whether it notices being addressed, and names
+    // are what the engine gets wrong unbiased ("Jenny" for "Jimmy", #845).
+    keywords: () => [...new Set([getActiveBotName(), ...(localServer.participants || []).map((p) => p && p.name)].filter(Boolean))],
+    engineLanguage: whistleLanguage,
+    log: (m) => console.log(ts(), m),
+  });
+  return _audioTranscription;
+}
+
+// Pick how this call is heard, now that it's live (and the provider is known).
+function applyListenSource() {
+  const listen = resolveListenSource({ pref: store.get('listenSource'), providerId: activeProviderName() });
+  const router = captionSource();
+  if (listen.source === 'audio') {
+    const audio = audioTranscription();
+    router.use(audio);
+    const lang = String(store.get('captionLanguage') || '').trim();
+    if (lang) audio.setLanguage(lang).then((r) => { if (!r.ok) console.warn(ts(), '[stt]', r.error); });
+  } else {
+    router.use(_platformCaptions);
+  }
+  console.log(`[electron] Hearing this call through ${listen.source === 'audio' ? 'on-device transcription of the call audio' : 'the platform\'s captions'} (${listen.reason})`);
 }
 
 // MCP server location and launcher, shared with the app window: agent-integration.js (#301).
@@ -3022,12 +3069,8 @@ const localServer = new globalThis.LocalServer({
       // Say it early: the room should learn the bot is typing-only before they
       // spend the call waiting for it to answer out loud.
       announceNoVoiceOnce();
-      // #850: which source the bot hears through. Every provider has captions
-      // today, so this only ever says "platform"; a provider without them says
-      // loudly that nothing can hear the call, rather than sitting deaf.
-      const listen = resolveListenSource({ pref: store.get('listenSource'), providerId: activeProviderName() });
-      if (listen.source) console.log(`[electron] Hearing this call through ${listen.source} captions (${listen.reason})`);
-      else console.warn(`[electron] Nothing can hear this call: ${listen.reason}`);
+      // #850: which source the bot hears through, for this call.
+      applyListenSource();
     }
     // Kick off ack-cache prewarming (tts.js) as early in the call lifecycle as
     // possible — 'navigating' fires well before the agent is ready to speak,
@@ -3037,7 +3080,11 @@ const localServer = new globalThis.LocalServer({
     // every route in and out of a call — panel, calendar, CLI, agent — is
     // covered by one place rather than each remembering.
     reconcileScreenSettleWatcher();
-    if (isFinished(status)) { _noVoiceAnnouncedFor = null; ackCachePrewarmedForCall = false; }
+    if (isFinished(status)) {
+      _noVoiceAnnouncedFor = null; ackCachePrewarmedForCall = false;
+      // Back to the platform's captions between calls; stops the audio tap.
+      if (_captionSource && _platformCaptions) _captionSource.use(_platformCaptions);
+    }
     // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
     // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the
     // in-call toolbar (More options ⋮) finish rendering. Default leaves it ON.

@@ -1692,6 +1692,7 @@
   const EMOJI_SETS = {
     fluent3d: { dir: 'fluent3d', file: (e) => _canon(e) + '.png' },
     redpanda: { dir: 'redpanda', file: (e) => _canon(e) + '.png' },
+    'felt-puppet': { dir: 'felt-puppet', file: (e) => _canon(e) + '.png' },
   };
 
   // twemoji / openmoji / noto ship as COLOUR FONTS, not ~11,900 files. Each set

@@ -649,7 +649,7 @@ const PREFERENCES = {
   emojiSet: {
     type: 'string',
     default: 'fluent3d',
-    enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d', 'redpanda'],
+    enum: ['native', 'twemoji', 'openmoji', 'noto', 'fluent3d', 'redpanda', 'felt-puppet'],
     enumPattern: /^(font:[A-Za-z0-9 _-]{1,120}(#[0-9A-Fa-f]{3,8})?|dir:[~/][^\n"']{0,400})$/,
     description:
       'How the avatar\'s face is drawn. Either a bundled set, or "font:<Family>" to '
@@ -679,6 +679,8 @@ const PREFERENCES = {
       'Google Noto Emoji. "fluent3d" = Microsoft Fluent 3D (a curated face set — ' +
       'hand/person emojis fall back to native). "redpanda" = a claymation red panda ' +
       'librarian character (a curated face set, same fallback behavior as fluent3d). ' +
+      '"felt-puppet" = a fuzzy teal felt TV-style puppet (a curated face set, same ' +
+      'fallback behavior; pairs with the "felt-puppet-sky" background preset). ' +
       'All bundled in the app — no network. ' +
       'Any emoji not in the chosen set falls back to the native glyph. Reskin the ' +
       'bot\'s face (#316).',

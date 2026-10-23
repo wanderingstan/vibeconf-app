@@ -36,7 +36,7 @@ test('every preload that evals page-inject.js installs the emoji resolvers', () 
 test('installPageResolvers gives page-inject a working face for the image sets', () => {
   const A = require(ASSETS);
   const g = A.installPageResolvers({}, APP);
-  for (const set of ['fluent3d', 'redpanda']) {
+  for (const set of ['fluent3d', 'redpanda', 'felt-puppet']) {
     const uri = g.__vibeEmojiDataUri(A.relPathFor(set, '\u{1F642}'));
     assert.match(uri || '', /^data:image\/png;base64,/, `${set}: 🙂 resolves to an image`);
   }

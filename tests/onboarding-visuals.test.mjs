@@ -47,6 +47,9 @@ test('the app can hand the agent real paths to its own sample art', () => {
     assert.ok(existsSync(b.path), `${b.name} missing at ${b.path}`);
   }
   assert.ok(v.backgrounds.some((b) => b.name === 'snowy-hills'), 'the named presets should be there');
+  // felt-puppet ships as a pair: the face set and its matching sky.
+  assert.ok(v.emojiSets.some((e) => e.set === 'felt-puppet'), 'felt-puppet should be offered in the picker');
+  assert.ok(v.backgrounds.some((b) => b.name === 'felt-puppet-sky'), 'felt-puppet-sky should be a preset');
 });
 
 test('presets are listed whatever image format they are authored in', () => {

@@ -6611,14 +6611,32 @@ function configureMeetSession(sess) {
     delete headers['Content-Security-Policy'];
     delete headers['content-security-policy-report-only'];
     delete headers['Content-Security-Policy-Report-Only'];
+    // WhatsApp Web calling needs SharedArrayBuffer, so a cross-origin isolated
+    // page. WhatsApp gets that from Document-Isolation-Policy, which Chromium
+    // 130 (Electron 33) doesn't implement: the page came up unisolated and
+    // WhatsApp said "your browser doesn't support calling" (its log: "voip:
+    // [browser] no SharedArrayBuffer"). Its COEP is already require-corp, so
+    // tightening its COOP to same-origin isolates it the classic way.
+    if (details.resourceType === 'mainFrame' && /^https:\/\/web\.whatsapp\.com\//.test(details.url)) {
+      for (const k of Object.keys(headers)) if (k.toLowerCase() === 'cross-origin-opener-policy') delete headers[k];
+      headers['Cross-Origin-Opener-Policy'] = ['same-origin'];
+    }
     callback({ responseHeaders: headers });
   });
 
-  sess.setPermissionRequestHandler((webContents, permission, callback) => {
+  // Notifications, for the calling apps only (#843): WhatsApp Web reads them
+  // as "call notifications are off" and Telegram the same, and both use them
+  // to tell you about calls and messages. Everything else stays denied.
+  const NOTIFYING_ORIGINS = ['https://web.whatsapp.com', 'https://web.telegram.org'];
+  const mayNotify = (origin) => NOTIFYING_ORIGINS.some((o) => String(origin || '').startsWith(o));
+
+  sess.setPermissionRequestHandler((webContents, permission, callback, details) => {
+    if (permission === 'notifications') return callback(mayNotify(details?.requestingUrl));
     callback(['media', 'microphone', 'camera', 'display-capture'].includes(permission));
   });
 
-  sess.setPermissionCheckHandler((webContents, permission) => {
+  sess.setPermissionCheckHandler((webContents, permission, requestingOrigin) => {
+    if (permission === 'notifications') return mayNotify(requestingOrigin);
     return ['media', 'microphone', 'camera', 'display-capture'].includes(permission);
   });
 

@@ -121,7 +121,7 @@ let _platformCaptions = null;
 let _audioTranscription = null;
 // The live call platform, by the short names the panel uses.
 function activeProviderName() {
-  return slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : teamsProviderMode ? 'teams' : telegramProviderMode ? 'telegram' : 'meet';
+  return slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : teamsProviderMode ? 'teams' : callingAppMode || 'meet';
 }
 
 function captionSource() {
@@ -281,10 +281,11 @@ let slackSurface = null;
 let zoomProviderMode = false;
 // Microsoft Teams: single surface like Zoom (preload-teams.js on meetView).
 let teamsProviderMode = false;
-// Telegram (#843): single surface too (preload-telegram.js on meetView), but
-// with no link to join. While on, the view sits in the bot's Telegram account
-// waiting for calls ("standby"); an allowed caller turns it into a call.
-let telegramProviderMode = false;
+// Calling apps (#843): Telegram or WhatsApp, a single surface too (its preload
+// on meetView), but with no link to join. While set, the view sits in the
+// bot's own account waiting for calls ("standby"); an allowed caller turns it
+// into a call. Holds the app's id ('telegram' | 'whatsapp'), null otherwise.
+let callingAppMode = null;
 // In Slack mode, ONLY these commands target the huddle POPUP (huddle-UI / DOM
 // ops handled by SlackProvider). Everything else — TTS/play-* (VirtualMic),
 // avatar/engagement (VirtualCamera), etc. — is a page-inject op on the MAIN
@@ -618,7 +619,7 @@ function cropCallRecordingEnabled() {
 // <video> elements, which on Zoom/Teams can be a fraction of the picture
 // (#814). Everywhere else, record the whole view.
 function recordingCropApplies() {
-  return cropCallRecordingEnabled() && !slackProviderMode && !zoomProviderMode && !teamsProviderMode && !telegramProviderMode;
+  return cropCallRecordingEnabled() && !slackProviderMode && !zoomProviderMode && !teamsProviderMode && !callingAppMode;
 }
 
 // force=true is the explicit request (start_recording MCP tool): record
@@ -10581,16 +10582,16 @@ app.whenReady().then(async () => {
     });
   }
 
-  ipcMain.handle('telegram-incoming-call', (_event, caller = {}) => {
-    const verdict = decideTelegramCall(caller);
-    console.log('[electron] Telegram call from', JSON.stringify({ id: caller.id, name: caller.name, usernames: caller.usernames }),
+  ipcMain.handle('calling-app-incoming-call', (_event, { app, caller = {} } = {}) => {
+    const verdict = decideCallingAppCall(app, caller);
+    console.log('[electron] ' + app + ' call from', JSON.stringify(caller),
       '→', verdict.answer ? 'answering (room ' + verdict.room + ')' : 'not answering: ' + verdict.reason);
     return verdict;
   });
-  // Answered, but it never connected: undo the room and agent decideTelegramCall set up.
-  ipcMain.on('telegram-call-missed', (_event, { reason } = {}) => {
-    console.log('[electron] Telegram call missed (' + (reason || '?') + ') — tearing down');
-    performLeaveTeardown('telegram call missed');
+  // Answered, but it never connected: undo the room and agent decideCallingAppCall set up.
+  ipcMain.on('calling-app-call-missed', (_event, { app, reason } = {}) => {
+    console.log('[electron] ' + app + ' call missed (' + (reason || '?') + ') — tearing down');
+    performLeaveTeardown(app + ' call missed');
   });
 
   // /call-new-bot: a new bot launched straight into a call. Not --meet-url,
@@ -11519,7 +11520,7 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
   slackProviderMode = true;
   zoomProviderMode = false;
   teamsProviderMode = false;
-  telegramProviderMode = false;
+  callingAppMode = null;
   slackSurface = surface;
   mainWindow.addBrowserView(meetView);
   layoutViews();
@@ -11531,14 +11532,14 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
 // Ensure the embedded view is a Google Meet view (switching back from Slack if
 // needed) before loading a Meet URL.
 function activateMeetProvider() {
-  if (!slackProviderMode && !zoomProviderMode && !teamsProviderMode && !telegramProviderMode && meetView && !meetView.webContents.isDestroyed()) return;
+  if (!slackProviderMode && !zoomProviderMode && !teamsProviderMode && !callingAppMode && meetView && !meetView.webContents.isDestroyed()) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ', zoom=' + zoomProviderMode + ', teams=' + teamsProviderMode + ', telegram=' + telegramProviderMode + ')');
+  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ', zoom=' + zoomProviderMode + ', teams=' + teamsProviderMode + ', calling app=' + callingAppMode + ')');
   destroyProviderView();
   slackProviderMode = false;
   zoomProviderMode = false;
   teamsProviderMode = false;
-  telegramProviderMode = false;
+  callingAppMode = null;
   slackSurface = null;
   // #347: follows the active partition, so a provider switch mid-fallback
   // doesn't silently drop the bot back onto the blocked account.
@@ -11606,7 +11607,7 @@ function activateTeamsProvider(teamsUrl) {
   slackProviderMode = false;
   slackSurface = null;
   zoomProviderMode = false;
-  telegramProviderMode = false;
+  callingAppMode = null;
   teamsProviderMode = true;
   ensureMeetSessionConfigured(SESSION_PARTITION);
   meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-teams.js' });
@@ -11656,81 +11657,106 @@ function activateTeamsProvider(teamsUrl) {
   return room;
 }
 
-// --- Telegram calls (#843) ---------------------------------------------------
-// Standby: the call view shows the bot's own Telegram (preload-telegram.js),
-// which watches for incoming calls. Wanted when the bot is signed in to
-// Telegram AND its owner switched "Answer Telegram calls" on in Settings.
-function telegramStandbyWanted() {
+// --- Calling-app calls (#843): Telegram, WhatsApp ----------------------------
+// Standby: the call view shows the bot's own account in that app (its
+// preload), which watches for incoming calls. Wanted when the bot is signed in
+// to the app AND its owner switched "Answer <app> calls" on in Settings. One
+// app at a time for now (there is one call view); with both on, the first in
+// CALLING_APP_ORDER waits.
+const CALLING_APP_CALLS = {
+  telegram: { label: 'Telegram', preload: 'preload-telegram.js', module: './telegram-call', callerKey: (c) => c && c.id },
+  whatsapp: { label: 'WhatsApp', preload: 'preload-whatsapp.js', module: './whatsapp-call', callerKey: (c) => c && c.phone },
+};
+const CALLING_APP_ORDER = ['telegram', 'whatsapp'];
+
+// Which app this bot should be waiting in, or null.
+function callingAppStandbyWanted() {
   try {
-    return !!(store && store.get('telegramAnswerCalls') && store.get('callingAppAccounts')?.telegram);
-  } catch { return false; }
+    if (!store) return null;
+    const accounts = store.get('callingAppAccounts') || {};
+    return CALLING_APP_ORDER.find((app) => store.get(app + 'AnswerCalls') && accounts[app]) || null;
+  } catch { return null; }
 }
 
-function activateTelegramStandby(reason) {
+function activateCallingAppStandby(app, reason) {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
-  const { TELEGRAM_WEB_URL } = require('./telegram-call');
-  console.log('[electron] Telegram standby (' + reason + '): waiting for calls');
+  const spec = CALLING_APP_CALLS[app];
+  if (!spec) return false;
+  const { WEB_URL } = require(spec.module);
+  console.log('[electron] ' + spec.label + ' standby (' + reason + '): waiting for calls');
   destroyProviderView();
   slackProviderMode = false;
   slackSurface = null;
   zoomProviderMode = false;
   teamsProviderMode = false;
-  telegramProviderMode = true;
+  callingAppMode = app;
   ensureMeetSessionConfigured(SESSION_PARTITION);
-  meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-telegram.js' });
+  meetView = createMeetView(SESSION_PARTITION, { preload: spec.preload });
   pushInitialAvatarStateOnLoad(meetView); // #828
-  // Telegram checks the browser before it will show the app; present as
+  // These apps check the browser before they'll show the app; present as
   // current Chrome in the string and the client-hint headers (slack-ua.js).
   const browserId = require('./slack-ua');
   meetView.webContents.setUserAgent(browserId.UA);
   try { browserId.installHeaderSpoof(session.fromPartition(SESSION_PARTITION)); } catch { /* best effort */ }
+  const tag = '[' + app + ']';
   meetView.webContents.on('console-message', (_e, _level, message) => {
-    if (typeof message === 'string' && (message.includes('[telegram]') || message.includes('[bots-in-calls]'))) console.log(message);
+    if (typeof message === 'string' && (message.includes(tag) || message.includes('[bots-in-calls]'))) console.log(message);
   });
   attachMeetViewForState();
   layoutViews();
-  meetView.webContents.loadURL(TELEGRAM_WEB_URL);
+  meetView.webContents.loadURL(WEB_URL);
   return true;
 }
 
-// Leave standby (the owner switched calls off, or signed out of Telegram).
-// Only while idle: a live call is never cut by a settings change.
-function deactivateTelegramStandby(reason) {
-  if (!telegramProviderMode) return;
+// Leave standby (the owner switched calls off, or signed out). Only while
+// idle: a live call is never cut by a settings change.
+function deactivateCallingAppStandby(reason) {
+  if (!callingAppMode) return;
   const status = localServer?.callStatus;
   if (status && status !== 'idle' && status !== 'call-complete') return;
-  console.log('[electron] Telegram standby off (' + reason + ')');
+  console.log('[electron] ' + CALLING_APP_CALLS[callingAppMode].label + ' standby off (' + reason + ')');
   activateMeetProvider();
-  loadIdlePage('Telegram standby off');
+  loadIdlePage('calling-app standby off');
+}
+
+// Re-pick standby after a settings or account change, between calls only.
+function refreshCallingAppStandby(reason) {
+  const status = localServer?.callStatus;
+  if (status && status !== 'idle' && status !== 'call-complete') return;
+  const want = callingAppStandbyWanted();
+  if (want && want !== callingAppMode) activateCallingAppStandby(want, reason);
+  else if (!want) deactivateCallingAppStandby(reason);
 }
 
 // The page reports an incoming call; MAIN decides. The allowlist is read here,
 // from the profile store, and is not a preference the agent can set (it is
 // not in preferences-schema.js, so /api/preferences rejects it).
-function decideTelegramCall(caller) {
-  const tg = require('./telegram-call');
-  if (!telegramProviderMode) return { answer: false, reason: 'not in Telegram standby' };
-  if (!store || !store.get('telegramAnswerCalls')) return { answer: false, reason: 'answering Telegram calls is off' };
+function decideCallingAppCall(app, caller) {
+  const spec = CALLING_APP_CALLS[app];
+  if (!spec) return { answer: false, reason: 'unknown calling app: ' + app };
+  const mod = require(spec.module);
+  if (callingAppMode !== app) return { answer: false, reason: 'not in ' + spec.label + ' standby' };
+  if (!store || !store.get(app + 'AnswerCalls')) return { answer: false, reason: 'answering ' + spec.label + ' calls is off' };
   const status = localServer?.callStatus;
   // After-call work does not make the bot busy: a phone that won't pick up for
   // half an hour after every call isn't reachable. Taking the call ends the
   // write-up (launchClaudeTerminal's lame-duck path resumes the same session,
   // so the work stays in its history), as an early rejoin does on Meet.
   if (status && !['idle', 'call-complete', 'after-call-work'].includes(status)) return { answer: false, reason: 'busy (' + status + ')' };
-  const allow = tg.parseAllowlist(store.get('telegramAllowedCallers') || '');
-  if (!caller || !caller.id) return { answer: false, reason: 'could not read the caller\'s Telegram id' };
-  if (!tg.isCallerAllowed(allow, caller)) return { answer: false, reason: 'caller ' + caller.id + ' is not on the allowlist' };
+  const key = spec.callerKey(caller);
+  if (!key) return { answer: false, reason: 'could not read who is calling' };
+  const allow = mod.parseAllowlist(store.get(app + 'AllowedCallers') || '');
+  if (!mod.isCallerAllowed(allow, caller)) return { answer: false, reason: 'caller ' + key + ' is not on the allowlist' };
   if (_afterCallWorkTimer) {
-    console.log('[electron] Telegram call during after-call work — cutting the write-up short');
+    console.log('[electron] ' + spec.label + ' call during after-call work — cutting the write-up short');
     clearTimeout(_afterCallWorkTimer);
     _afterCallWorkTimer = null;
   }
   // A callback is a NEW call, not the last one resumed: the room id is per
-  // caller (telegram-<id>), so without this setRoom would keep the old call's
-  // transcript and its spent "call ended" guard, and the next hang-up would go
-  // unnoticed.
+  // caller, so without this setRoom would keep the old call's transcript and
+  // its spent "call ended" guard, and the next hang-up would go unnoticed.
   if (status === 'after-call-work') localServer.clearRoom();
-  const room = registerProviderRoom('Telegram', tg.roomCodeForCaller(caller.id), tg.TELEGRAM_WEB_URL);
+  const room = registerProviderRoom(spec.label, mod.roomCodeForCaller(key), mod.WEB_URL);
   if (!room) return { answer: false, reason: 'could not set up the room' };
   launchClaudeTerminal(room);
   return { answer: true, room };
@@ -11759,7 +11785,7 @@ function activateZoomProvider(zoomUrl) {
   slackProviderMode = false;
   slackSurface = null;
   teamsProviderMode = false;
-  telegramProviderMode = false;
+  callingAppMode = null;
   zoomProviderMode = true;
   ensureMeetSessionConfigured(SESSION_PARTITION);
   meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-zoom.js' });
@@ -12710,7 +12736,8 @@ function createMainWindow() {
   // Zoom mode activateZoomProvider already loaded the meeting.
   // A bot answering Telegram calls waits in Telegram instead (#843).
   if (!slackMode && !zoomProviderMode && !teamsProviderMode) {
-    if (telegramStandbyWanted()) activateTelegramStandby('app start');
+    const standby = callingAppStandbyWanted();
+    if (standby) activateCallingAppStandby(standby, 'app start');
     else loadIdlePage('main-window created');
   }
 
@@ -12750,7 +12777,8 @@ function showIdle() {
   if (!meetView || meetView.webContents.isDestroyed()) return;
   // After any call, a bot that answers Telegram calls goes back to waiting in
   // Telegram (a fresh load, so no state carries over from the last call).
-  if (telegramStandbyWanted()) activateTelegramStandby('call teardown');
+  const standby = callingAppStandbyWanted();
+  if (standby) activateCallingAppStandby(standby, 'call teardown');
   else loadIdlePage('showIdle — call teardown');
   sync.stopPolling();
   closeWhiteboardWindow('call teardown');
@@ -12899,7 +12927,7 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
   meetView = createMeetView(activeMeetPartition);
   zoomProviderMode = false; // a Meet view replaces any Zoom one (#318)
   teamsProviderMode = false; // ... or Teams one
-  telegramProviderMode = false; // ... or the Telegram standby
+  callingAppMode = null; // ... or a calling app's standby
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 
@@ -13186,13 +13214,9 @@ function setupIPC() {
     const beforePair = sessionKeyed ? agentSessionPair() : null;
     store.set(key, value);
     if (sessionKeyed) forgetStaleAgentSession(beforePair, agentSessionPair());
-    // Telegram calls (#843): switching answering on/off takes effect now, but
-    // only between calls (both helpers check the call status themselves).
-    if (key === 'telegramAnswerCalls') {
-      const idle = ['idle', 'call-complete'].includes(localServer?.callStatus);
-      if (value && telegramStandbyWanted() && idle && !telegramProviderMode) activateTelegramStandby('answering switched on');
-      else if (!value) deactivateTelegramStandby('answering switched off');
-    }
+    // Calling-app calls (#843): switching answering on/off takes effect now,
+    // but only between calls (refreshCallingAppStandby checks the status).
+    if (key === 'telegramAnswerCalls' || key === 'whatsappAnswerCalls') refreshCallingAppStandby(key + ' ' + (value ? 'on' : 'off'));
     // Every key, not only the ones with a live-apply hook below — the panel shows
     // more prefs than this function specially handles, and the wizard writes
     // several of them.
@@ -14780,7 +14804,7 @@ function setupIPC() {
       return { ok: false, error: err.message };
     }
     setCallingAppAccount(which, null);
-    if (which === 'telegram') deactivateTelegramStandby('signed out of Telegram');
+    if (callingAppMode === which) refreshCallingAppStandby('signed out of ' + which);
     return { ok: true };
   });
 

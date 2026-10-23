@@ -15,7 +15,8 @@
 // is calling and main decides, so nothing the call page (or the agent) does can
 // widen who gets answered.
 
-const TELEGRAM_WEB_URL = 'https://web.telegram.org/a/';
+const WEB_URL = 'https://web.telegram.org/a/';
+const TELEGRAM_WEB_URL = WEB_URL;
 
 // ---------------------------------------------------------------------------
 // Allowlist: one entry per line (commas also work). A numeric user id, or an
@@ -117,6 +118,7 @@ function readCaller(doc) {
 }
 
 module.exports = {
+  WEB_URL,
   TELEGRAM_WEB_URL,
   parseAllowlist,
   isCallerAllowed,

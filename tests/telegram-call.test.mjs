@@ -93,15 +93,17 @@ test('the caller id comes from the call dialog, never the chat list around it', 
 
 test('the decision is made in main from the profile store, not by a preference the agent can set', () => {
   const schema = readFileSync(join(root, 'electron-app/preferences-schema.js'), 'utf8');
-  assert.doesNotMatch(schema, /telegramAllowedCallers|telegramAnswerCalls/,
-    'the allowlist must not be reachable through set_preference');
+  assert.doesNotMatch(schema, /(telegram|whatsapp)(AllowedCallers|AnswerCalls)/,
+    'the allowlists must not be reachable through set_preference');
   const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
-  const fn = main.slice(main.indexOf('function decideTelegramCall('));
+  const fn = main.slice(main.indexOf('function decideCallingAppCall('));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  assert.match(body, /store\.get\('telegramAllowedCallers'\)/);
+  assert.match(body, /store\.get\(app \+ 'AllowedCallers'\)/);
   assert.match(body, /isCallerAllowed\(allow, caller\)/);
-  assert.match(main, /ipcMain\.handle\('telegram-incoming-call'/);
-  const preload = readFileSync(join(root, 'electron-app/preload-telegram.js'), 'utf8');
-  assert.match(preload, /ipcRenderer\.invoke\('telegram-incoming-call', caller\)/);
-  assert.doesNotMatch(preload, /parseAllowlist|isCallerAllowed/, 'the page must not decide for itself');
+  assert.match(main, /ipcMain\.handle\('calling-app-incoming-call'/);
+  for (const [file, app] of [['preload-telegram.js', 'telegram'], ['preload-whatsapp.js', 'whatsapp']]) {
+    const preload = readFileSync(join(root, 'electron-app', file), 'utf8');
+    assert.match(preload, new RegExp(`ipcRenderer\\.invoke\\('calling-app-incoming-call', \\{ app: '${app}', caller \\}\\)`));
+    assert.doesNotMatch(preload, /parseAllowlist|isCallerAllowed/, `${file}: the page must not decide for itself`);
+  }
 });

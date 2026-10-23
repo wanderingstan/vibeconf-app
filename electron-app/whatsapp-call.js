@@ -1,0 +1,108 @@
+// WhatsApp 1:1 calls (#843): WhatsApp Web's call state, and who may call.
+//
+// Recon (live, 2026-10-23):
+//   - Calling only works once the page is cross-origin isolated (main.js
+//     tightens its COOP; Chromium 130 ignores its Document-Isolation-Policy).
+//   - An incoming call shows a pop-up with buttons labelled (aria-label)
+//     "Accept" / "Decline"; a plain click answers. In the call: "Mute
+//     microphone" / "Unmute microphone", "Turn camera on", "End call".
+//   - The call itself is read from WhatsApp's own module system:
+//     require('WAWebCallCollection').activeCall has peerJid (a "…@lid" privacy
+//     id), outgoing, wasEverConnected; it goes back to null at hang-up.
+//   - The caller's PHONE NUMBER comes from require('WAWebApiContact')
+//     .getPhoneNumber(peerJid) → "19175752435@c.us". The allowlist keys on that:
+//     the display name is the caller's own choice and proves nothing.
+//   - Audio never becomes a track or a media element: WhatsApp's WASM engine
+//     plays it through an AudioWorklet named
+//     "voip-shared-buffer-playback-processor" (16 kHz mono), which
+//     preload-whatsapp.js copies for transcription.
+//
+// The allowlist logic is pure and runs in MAIN; the page only reports.
+
+const WEB_URL = 'https://web.whatsapp.com/';
+
+// The worklet WhatsApp plays the other side of the call through.
+const PLAYBACK_WORKLET = 'voip-shared-buffer-playback-processor';
+
+// ---------------------------------------------------------------------------
+// Allowlist: one phone number per line (commas also work), any formatting
+// ("+1 (917) 575-2435", "19175752435"). Include the country code: numbers are
+// compared digit for digit. "# name" comments are allowed.
+// ---------------------------------------------------------------------------
+function phoneDigits(text) {
+  const digits = String(text || '').replace(/@.*$/, '').replace(/\D/g, '');
+  return digits.length >= 7 && digits.length <= 15 ? digits : null;
+}
+
+function parseAllowlist(text) {
+  const phones = new Set();
+  for (const raw of String(text || '').split(/[\n,]+/)) {
+    const entry = raw.replace(/#.*$/, '').trim();
+    const d = phoneDigits(entry);
+    if (d) phones.add(d);
+  }
+  return { phones };
+}
+
+// caller: { phone } (digits, from WhatsApp's own lid → number mapping).
+function isCallerAllowed(allow, caller) {
+  if (!allow || !caller) return false;
+  const d = phoneDigits(caller.phone);
+  return !!d && allow.phones.has(d);
+}
+
+function roomCodeForCaller(phone) {
+  const d = phoneDigits(phone);
+  return d ? `whatsapp-${d}` : null;
+}
+
+// ---------------------------------------------------------------------------
+// Page side (runs in WhatsApp Web's own realm; `win` is its window).
+// ---------------------------------------------------------------------------
+function findButton(doc, label) {
+  for (const b of doc.querySelectorAll('button, [role="button"]')) {
+    if ((b.getAttribute('aria-label') || '').trim().toLowerCase() === label.toLowerCase()) return b;
+  }
+  return null;
+}
+
+// { phase: 'none' | 'ringing' | 'connecting' | 'active' | 'outgoing', peerJid,
+//   phone, name }. 'ringing' = incoming and not yet answered (Accept on
+// screen); 'connecting' = answered, media not up yet.
+function readCall(win) {
+  let coll;
+  try { coll = win.require('WAWebCallCollection'); } catch { return { phase: 'none' }; }
+  const call = coll && coll.activeCall;
+  if (!call) return { phase: 'none' };
+  const a = call.attributes || call;
+  const peer = a.peerJid;
+  const peerJid = peer ? (peer._serialized || String(peer)) : null;
+  let phone = null;
+  try {
+    const pn = win.require('WAWebApiContact').getPhoneNumber(peer);
+    phone = phoneDigits(pn ? (pn._serialized || String(pn)) : null);
+  } catch { /* not mapped yet */ }
+  if (!phone && peerJid && /@c\.us$/.test(peerJid)) phone = phoneDigits(peerJid);
+  let name = null;
+  try {
+    const c = win.require('WAWebCollections').Contact.get(peer);
+    name = (c && (c.pushname || c.name || c.formattedName)) || null;
+  } catch { /* no contact */ }
+  let phase;
+  if (a.outgoing) phase = 'outgoing';
+  else if (a.wasEverConnected) phase = 'active';
+  else if (findButton(win.document, 'accept')) phase = 'ringing';
+  else phase = 'connecting';
+  return { phase, peerJid, phone, name };
+}
+
+module.exports = {
+  WEB_URL,
+  PLAYBACK_WORKLET,
+  phoneDigits,
+  parseAllowlist,
+  isCallerAllowed,
+  roomCodeForCaller,
+  findButton,
+  readCall,
+};

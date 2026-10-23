@@ -479,6 +479,17 @@
             <button id="telegramSignOutBtn" data-calling-app-sign-out="telegram" style="display:none">Disconnect</button>
           </div>
         </div>
+        <!-- WhatsApp calls (#843): same shape as Telegram's, keyed on phone
+             numbers. Read by main when a call rings; not agent-settable. -->
+        <div id="whatsappCallsBlock" class="field" style="display:none; margin-top:8px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="whatsappAnswerCalls" />
+            Answer WhatsApp calls
+          </label>
+          <label for="whatsappAllowedCallers" style="margin-top:6px">Allowed callers</label>
+          <textarea id="whatsappAllowedCallers" rows="3" placeholder="Phone numbers with country code, one per line"></textarea>
+          <div class="conn-note">Only these numbers get answered; everyone else just rings out. The bot can't change this list. If Telegram calls are on too, the bot waits on Telegram for now.</div>
+        </div>
         <!-- Telegram calls (#843): who may call this bot. Read by main when a
              call rings; deliberately not an agent-settable preference. -->
         <div id="telegramCallsBlock" class="field" style="display:none; margin-top:8px">

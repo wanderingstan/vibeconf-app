@@ -405,46 +405,99 @@
         </div>
       </div>
 
-      <!-- Optional platform logins. Both are edge cases — Meet works as a guest,
-           and huddles are the only reason to touch Slack — so this is just the
-           buttons plus one line of why. The guest-vs-account explainer that used
-           to live here is gone; signing in visibly overrides the name above. -->
+      <!-- Bot accounts: how this bot signs in to each service, as a
+           connected-accounts list. Guest-capable services first (they work
+           with no account), then the ones that need the bot's own account,
+           then the calendar address. These must be accounts made for the bot,
+           never the user's own: everything the bot does there, it does as
+           that account. Element ids are unchanged from the old button stack,
+           so panel.js's sign-in/out wiring still finds them. -->
       <div class="section">
-        <h2>Identity</h2>
-        <p class="helper-text" style="margin:0 0 8px">
-          Sign the bot into calling providers. Not required for Google or Zoom.
+        <h2>Bot accounts</h2>
+        <p class="helper-text" style="margin:0 0 4px">
+          Sign in with accounts made for this bot, never your personal ones. Whatever the bot says or shares on a service, it does as the account signed in here.
         </p>
-        <div id="meetAccountEmail" class="account-email" style="display:none"></div>
-        <button id="meetSignInBtn" class="provider-meet">Sign in to Google as bot</button>
-        <button id="meetSignOutBtn" class="provider-meet" style="display:none">Sign out (use as guest)</button>
-        <button id="slackSignInBtn" class="provider-slack">Sign into Slack as bot</button>
-        <button id="slackSignOutBtn" class="provider-slack" style="display:none">Sign out of Slack</button>
-        <button id="zoomSignInBtn" class="provider-zoom">Sign into Zoom as bot</button>
-        <button id="zoomSignOutBtn" class="provider-zoom" style="display:none">Sign out of Zoom</button>
-        <!-- Calling apps (#843): the bot's own WhatsApp / Telegram account, so
-             people can call it. Its own number, never a personal one. -->
-        <div id="whatsappAccount" class="account-email" data-calling-app-account="whatsapp" style="display:none"></div>
-        <button id="whatsappSignInBtn" class="provider-whatsapp" data-calling-app="whatsapp">Sign into WhatsApp as bot</button>
-        <button id="whatsappSignOutBtn" class="provider-whatsapp" data-calling-app-sign-out="whatsapp" style="display:none">Sign out of WhatsApp</button>
-        <div id="telegramAccount" class="account-email" data-calling-app-account="telegram" style="display:none"></div>
-        <button id="telegramSignInBtn" class="provider-telegram" data-calling-app="telegram">Sign into Telegram as bot</button>
-        <button id="telegramSignOutBtn" class="provider-telegram" data-calling-app-sign-out="telegram" style="display:none">Sign out of Telegram</button>
-        <p id="callingAppSignOutNote" class="helper-text" style="display:none; margin:4px 0 8px"></p>
+
+        <div class="conn-group-label">Works as a guest</div>
+        <div class="conn-list">
+          <div class="conn-row" id="meetConnRow">
+            <span class="conn-logo provider-meet"></span>
+            <div class="conn-text">
+              <div class="conn-name">Google Meet</div>
+              <div class="conn-status ok" id="meetAccountEmail">✓ Joins as a guest</div>
+            </div>
+            <button id="meetSignInBtn">Connect</button>
+            <button id="meetSignOutBtn" style="display:none">Disconnect</button>
+          </div>
+          <div class="conn-row" id="zoomConnRow">
+            <span class="conn-logo provider-zoom"></span>
+            <div class="conn-text">
+              <div class="conn-name">Zoom</div>
+              <div class="conn-status ok" id="zoomStatus">✓ Joins as a guest</div>
+            </div>
+            <button id="zoomSignInBtn">Connect</button>
+            <button id="zoomSignOutBtn" style="display:none">Disconnect</button>
+          </div>
+          <div class="conn-row">
+            <span class="conn-logo provider-teams"></span>
+            <div class="conn-text">
+              <div class="conn-name">Microsoft Teams</div>
+              <div class="conn-status ok">✓ Joins as a guest</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="conn-group-label">Needs a bot account</div>
+        <div class="conn-list">
+          <div class="conn-row unusable" id="slackConnRow">
+            <span class="conn-logo provider-slack"></span>
+            <div class="conn-text">
+              <div class="conn-name">Slack</div>
+              <div class="conn-status" id="slackStatus">Not connected</div>
+            </div>
+            <button id="slackSignInBtn">Connect</button>
+            <button id="slackSignOutBtn" style="display:none">Disconnect</button>
+          </div>
+          <!-- Calling apps (#843): the bot's own WhatsApp / Telegram account,
+               so people can call it. Its own number, never a personal one. -->
+          <div class="conn-row unusable" data-calling-app-row="whatsapp">
+            <span class="conn-logo provider-whatsapp"></span>
+            <div class="conn-text">
+              <div class="conn-name">WhatsApp</div>
+              <div class="conn-status" data-calling-app-account="whatsapp">Not connected</div>
+            </div>
+            <button id="whatsappSignInBtn" data-calling-app="whatsapp">Connect</button>
+            <button id="whatsappSignOutBtn" data-calling-app-sign-out="whatsapp" style="display:none">Disconnect</button>
+          </div>
+          <div class="conn-row unusable" data-calling-app-row="telegram">
+            <span class="conn-logo provider-telegram"></span>
+            <div class="conn-text">
+              <div class="conn-name">Telegram</div>
+              <div class="conn-status" data-calling-app-account="telegram">Not connected</div>
+            </div>
+            <button id="telegramSignInBtn" data-calling-app="telegram">Connect</button>
+            <button id="telegramSignOutBtn" data-calling-app-sign-out="telegram" style="display:none">Disconnect</button>
+          </div>
+        </div>
 
         <!-- Calendar auto-join identity (#299): add this address as a guest on
              a Google Calendar event (it never needs to resolve to a real
              mailbox) to have this bot auto-join that meeting. A
              #vibeconf:<name> tag in the event title or description works too,
-             with no field to fill in here. Auto-filled from the bot's
-             signed-in Google account above, if any, when this field is still
-             empty — see refreshAccountEmail() in panel.js. -->
-        <div class="field" id="calendarIdentityEmailField" style="margin-top:16px">
-          <label for="calendarIdentityEmail">Calendar invite email</label>
-          <input type="text" id="calendarIdentityEmail" value="" placeholder="e.g. jimmy@example.com" />
-          <div style="font-size:11px;color:#6B5566;margin-top:2px" id="calendarIdentityEmailCaption">
-            Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn't need to be a real, working email. You can also put <code>#vibeconf:&lt;this bot's name&gt;</code> in the event's title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.
+             with no field to fill in here. Locked to the bot's Google account
+             while it's connected — see lockCalendarIdentityToAccount(). -->
+        <div class="conn-group-label">Calendar</div>
+        <div class="conn-list">
+          <div class="conn-row" id="calendarIdentityEmailField">
+            <span class="conn-logo" aria-hidden="true" style="font-size:15px;line-height:18px;text-align:center">📅</span>
+            <div class="conn-text">
+              <label class="conn-name" for="calendarIdentityEmail">Calendar invite address</label>
+              <input type="text" id="calendarIdentityEmail" value="" placeholder="jimmy@example.com" />
+            </div>
           </div>
         </div>
+        <p class="conn-note" id="calendarIdentityEmailCaption"></p>
+
         <div class="field">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="sessionPerCalendarInvitees" />

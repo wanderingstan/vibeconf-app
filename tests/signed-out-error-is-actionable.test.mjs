@@ -98,7 +98,7 @@ test('the App Settings warning ends at a visible button', () => {
   // button is the same dead end in a smaller place.
   const fn = panelJs.slice(panelJs.indexOf('function refreshAccountEmail(mode)'));
   const body = fn.slice(0, fn.indexOf('\n}\n'));
-  const bad = body.slice(body.indexOf('no Google session detected'));
+  const bad = body.slice(body.indexOf('Google session not found'));
   assert.match(bad, /meetSignInBtn\.style\.display = ''/,
     'the signed-out branch must un-hide the sign-in button');
   // ...and the signed-in branches must put it back, since they run after

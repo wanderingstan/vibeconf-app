@@ -3518,7 +3518,20 @@ function applyCallingAppStatus(status) {
   for (const row of document.querySelectorAll('[data-calling-app-row]')) {
     row.classList.toggle('unusable', !status?.[row.dataset.callingAppRow]);
   }
+  const tgBlock = document.getElementById('telegramCallsBlock');
+  if (tgBlock) tgBlock.style.display = status?.telegram ? '' : 'none';
 }
+
+// Telegram calls (#843): the switch and the allowlist. Written through
+// set-config (panel only); main reads them when a call rings.
+const telegramAnswerCallsInput = document.getElementById('telegramAnswerCalls');
+const telegramAllowedCallersInput = document.getElementById('telegramAllowedCallers');
+api.invoke('get-config', ['telegramAnswerCalls', 'telegramAllowedCallers']).then((cfg) => {
+  if (telegramAnswerCallsInput) telegramAnswerCallsInput.checked = !!cfg?.telegramAnswerCalls;
+  if (telegramAllowedCallersInput) telegramAllowedCallersInput.value = cfg?.telegramAllowedCallers || '';
+}).catch(() => {});
+telegramAnswerCallsInput?.addEventListener('change', () => setConfig('telegramAnswerCalls', telegramAnswerCallsInput.checked));
+telegramAllowedCallersInput?.addEventListener('change', () => setConfig('telegramAllowedCallers', telegramAllowedCallersInput.value));
 api.invoke('calling-app-status').then(applyCallingAppStatus).catch(() => {});
 api.on('calling-app-status', applyCallingAppStatus);
 

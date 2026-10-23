@@ -20,7 +20,7 @@ const fnBody = (name) => {
   return next < 0 ? main.slice(i) : main.slice(i, i + 1 + next);
 };
 
-for (const provider of ['activateZoomProvider', 'activateTeamsProvider', 'activateSlackProvider']) {
+for (const provider of ['activateZoomProvider', 'activateTeamsProvider', 'activateSlackProvider', 'activateTelegramStandby']) {
   test(`${provider} pushes the avatar state on its call view's page loads`, () => {
     const body = fnBody(provider);
     const created = body.search(/meetView = (createMeetView\(|surface\.view)/);

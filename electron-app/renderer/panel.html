@@ -479,6 +479,17 @@
             <button id="telegramSignOutBtn" data-calling-app-sign-out="telegram" style="display:none">Disconnect</button>
           </div>
         </div>
+        <!-- Telegram calls (#843): who may call this bot. Read by main when a
+             call rings; deliberately not an agent-settable preference. -->
+        <div id="telegramCallsBlock" class="field" style="display:none; margin-top:8px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="telegramAnswerCalls" />
+            Answer Telegram calls
+          </label>
+          <label for="telegramAllowedCallers" style="margin-top:6px">Allowed callers</label>
+          <textarea id="telegramAllowedCallers" rows="3" placeholder="@username or numeric user id, one per line"></textarea>
+          <div class="conn-note">Only these people get answered; everyone else just rings out. The bot can't change this list.</div>
+        </div>
 
         <!-- Calendar auto-join identity (#299): add this address as a guest on
              a Google Calendar event (it never needs to resolve to a real

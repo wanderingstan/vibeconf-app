@@ -81,8 +81,9 @@ every other frame inherits it:
 - Zoom out enough that the **top of the head and the chin are both fully in frame**, with a
   little shoulder/outfit visible. A tight face-only crop looks wrong once you can't see hair
   or chin — this was the #1 mistake generating the reference set for this skill.
-- Ask for a **flat, single-color background** ("pure white, studio shoot" worked well) —
-  needed for the best-effort transparency step later.
+- Ask for a **flat, pure white background** ("pure white, studio shoot"). White is the
+  most neutral colour to leave behind as a fringe — any halo the keying leaves reads as a
+  soft glow, where a chroma green/magenta fringe reads as a defect (Stan, 2026-10-20).
 - Bake the theme's styling into the prompt once here; every derived frame will inherit it
   automatically by being edited *from* this image rather than re-describing the outfit each
   time.
@@ -92,6 +93,13 @@ Save it as `<set-dir>/_anchor.png` and also save the theme description as
 "add more emoji later" flow in Step 5.
 
 ## Step 3: Derive every other state from the anchor
+
+**Never overwrite a frame — keep every take.** Before writing a frame that already exists
+(a redo after feedback, a regenerate), move the old file to `<set-dir>/_versions/` as
+`<name>.v<N>.png` (N = 1, 2, …). The user will want to A/B earlier takes, and a redo that
+came out worse is otherwise unrecoverable (Stan, 2026-10-20: several redone felt-puppet
+frames were lost this way). A rejected take may also suit a *different* glyph — e.g. a
+hands-over-mouth 🤐 attempt is a good 🤭 (`1f92d`) — so offer that before discarding it.
 
 For each remaining glyph, call `generate_image` in **edit mode**: pass `_anchor.png` (or
 the previous frame — anchor is usually safer, less drift) as `input_image_path_1`, and
@@ -131,9 +139,20 @@ Not required — a flat-colored square behind each face can look fine, even funk
 If `magick`/`convert` is available (`command -v magick`), key out the flat background on
 each face file:
 
+Flood-fill the white **from the corners** — never key white globally, or white eyes,
+teeth and highlights get punched out:
+
 ```
-magick <file> -fuzz 8% -transparent white <file>
+magick <file> -alpha set -fuzz 8% -fill none \
+  -draw "color 0,0 floodfill" -draw "color %[fx:w-1],0 floodfill" \
+  -draw "color 0,%[fx:h-1] floodfill" -draw "color %[fx:w-1],%[fx:h-1] floodfill" <file>
 ```
+
+**Known limitation:** a flood fill can't reach white pockets *enclosed* by the character —
+gaps inside fuzzy hair/fur, between fingers. The 2026-10-20 felt-puppet set has white specks
+in its hair tuft for this reason. If that matters for a theme, clear small enclosed
+near-white islands that sit *outside* the face (hair, hands) as a second pass, and leave the
+eyes alone; or prompt for slicked-back/solid hair so there are no gaps to trap.
 
 (Tune the fuzz percent if edges look chewed up — hair against a flat background rarely
 keys perfectly, and that's OK for this look.) If ImageMagick isn't installed, don't try to

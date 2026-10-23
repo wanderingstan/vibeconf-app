@@ -46,12 +46,15 @@ const PHASE_TEXT = {
   stuck: 'Stuck joining',
   waiting: 'Waiting to be let in',
   'in-call': 'In a call',
-  wrapping: 'Wrapping up the call',
+  wrapping: 'Call ended · writing it up',
 };
 function describeState(bot) {
   if (!bot.busy) return null;
   const where = bot.roomId && bot.phase !== 'wrapping' ? ` · ${bot.roomId}` : '';
-  return { cls: bot.phase === 'stuck' ? 'stuck' : 'call', text: `${PHASE_TEXT[bot.phase] || 'Busy'}${where}` };
+  // Wrapping up is after the call: muted, not call-green, so it doesn't read as
+  // still being in one.
+  const cls = bot.phase === 'stuck' ? 'stuck' : bot.phase === 'wrapping' ? 'wrap' : 'call';
+  return { cls, text: `${PHASE_TEXT[bot.phase] || 'Busy'}${where}` };
 }
 
 // In a call (or joining, waiting, wrapping up) first, then most recently in a

@@ -88,3 +88,12 @@ test('a bot from an older build can be restarted from the stage, never mid-call'
   const js = read('electron-app/renderer/supervisor.js');
   assert.match(js, /action: busy \? null : \{ label: `Restart \$\{label\}`/);
 });
+
+test('after a call the agent\'s write-up reads as that, not as still in the call or Ready', () => {
+  const js = read('electron-app/renderer/supervisor.js');
+  assert.match(js, /bot\.phase === 'wrapping' \? 'wrap' : 'call'/);
+  assert.match(read('electron-app/renderer/supervisor.html'), /\.sub \.state\.wrap \{ color: var\(--dim\);/);
+  const panel = read('electron-app/renderer/panel.js');
+  assert.match(panel, /wrappingUp = status === 'after-call-work';/);
+  assert.match(panel, /joiningNow \? 'Joining…' : wrappingUp \? 'Wrapping up…' : 'Ready'/);
+});

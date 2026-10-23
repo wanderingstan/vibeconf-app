@@ -11690,10 +11690,24 @@ function decideTelegramCall(caller) {
   if (!telegramProviderMode) return { answer: false, reason: 'not in Telegram standby' };
   if (!store || !store.get('telegramAnswerCalls')) return { answer: false, reason: 'answering Telegram calls is off' };
   const status = localServer?.callStatus;
-  if (status && status !== 'idle' && status !== 'call-complete') return { answer: false, reason: 'busy (' + status + ')' };
+  // After-call work does not make the bot busy: a phone that won't pick up for
+  // half an hour after every call isn't reachable. Taking the call ends the
+  // write-up (launchClaudeTerminal's lame-duck path resumes the same session,
+  // so the work stays in its history), as an early rejoin does on Meet.
+  if (status && !['idle', 'call-complete', 'after-call-work'].includes(status)) return { answer: false, reason: 'busy (' + status + ')' };
   const allow = tg.parseAllowlist(store.get('telegramAllowedCallers') || '');
   if (!caller || !caller.id) return { answer: false, reason: 'could not read the caller\'s Telegram id' };
   if (!tg.isCallerAllowed(allow, caller)) return { answer: false, reason: 'caller ' + caller.id + ' is not on the allowlist' };
+  if (_afterCallWorkTimer) {
+    console.log('[electron] Telegram call during after-call work — cutting the write-up short');
+    clearTimeout(_afterCallWorkTimer);
+    _afterCallWorkTimer = null;
+  }
+  // A callback is a NEW call, not the last one resumed: the room id is per
+  // caller (telegram-<id>), so without this setRoom would keep the old call's
+  // transcript and its spent "call ended" guard, and the next hang-up would go
+  // unnoticed.
+  if (status === 'after-call-work') localServer.clearRoom();
   const room = registerProviderRoom('Telegram', tg.roomCodeForCaller(caller.id), tg.TELEGRAM_WEB_URL);
   if (!room) return { answer: false, reason: 'could not set up the room' };
   launchClaudeTerminal(room);

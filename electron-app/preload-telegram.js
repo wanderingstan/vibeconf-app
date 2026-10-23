@@ -67,6 +67,24 @@ require('./preload-stt-bridge').installSttBridge(ipcRenderer);
 
 try { window.telegramCall = telegramCall; } catch { /* window not ready */ }
 
+// The call's own peer connections, so the camera can wait for "connected".
+// Wraps page-inject's wrapper (installed just above); the realtime voice
+// session uses the native constructor and so is not counted.
+const callConnections = [];
+(function trackCallConnections() {
+  const Wrapped = window.RTCPeerConnection;
+  if (!Wrapped) return;
+  window.RTCPeerConnection = function (...args) {
+    const pc = new Wrapped(...args);
+    callConnections.push(pc);
+    if (callConnections.length > 8) callConnections.shift();
+    return pc;
+  };
+  window.RTCPeerConnection.prototype = Wrapped.prototype;
+  for (const k of Object.keys(Wrapped)) { try { window.RTCPeerConnection[k] = Wrapped[k]; } catch { /* read-only */ } }
+})();
+const callConnected = () => callConnections.some((pc) => pc.connectionState === 'connected');
+
 function emit(channel, payload) {
   try {
     if (payload === undefined) ipcRenderer.send(channel);
@@ -81,13 +99,25 @@ function setMicMuted(muted) {
   return btn ? telegramCall.pressButton(btn) : false;
 }
 
+// Camera: page-inject's getUserMedia hands Telegram the VirtualCamera (the
+// bot's face), so turning video on is just Telegram's own button. Its label
+// while video is on wasn't seen in recon, so try the likely ones.
+function setCameraOn(on) {
+  const labels = on ? ['start video'] : ['stop video', 'video off', 'turn off video'];
+  for (const l of labels) {
+    const btn = telegramCall.findCallButton(document, l);
+    if (btn) { console.log('[telegram] camera', on ? 'on' : 'off', '(' + l + ')'); return telegramCall.pressButton(btn); }
+  }
+  return false;
+}
+
 ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
   if (!message) return;
   switch (message.action) {
     case CALL_COMMANDS.ACTIONS.unmuteMic: setMicMuted(false); break;
     case CALL_COMMANDS.ACTIONS.muteMic: setMicMuted(true); break;
-    case CALL_COMMANDS.ACTIONS.cameraOn:
-    case CALL_COMMANDS.ACTIONS.cameraOff: break; // voice calls only, for now
+    case CALL_COMMANDS.ACTIONS.cameraOn: setCameraOn(true); break;
+    case CALL_COMMANDS.ACTIONS.cameraOff: setCameraOn(false); break;
     default:
       window.postMessage({ __botsInCalls: true, __fromExtension: true, ...message }, '*');
   }
@@ -161,10 +191,13 @@ let state = 'idle';   // idle | deciding | ignoring | answering | in-call
 let ringSeenAt = 0;
 let caller = null;
 let answerPressedAt = 0;
+let cameraStarted = false;
 
 // How long to wait for the caller's avatar (and so their id) to draw before
 // deciding without it. Without an id the call is not answered.
 const ID_WAIT_MS = 3000;
+// How long an answered call may take to connect before the bot gives up.
+const CONNECT_TIMEOUT_MS = 20000;
 
 async function decide() {
   const seen = telegramCall.readCaller(document);
@@ -215,10 +248,22 @@ function tick() {
     return;
   }
 
-  // phase === 'active'
+  // phase === 'active': answered, but only a call once the media connects.
+  // Reporting in-call earlier started the agent talking into a call the
+  // caller never got (live, 2026-10-23).
+  if (state === 'answering' && !callConnected()) {
+    if (Date.now() - answerPressedAt > CONNECT_TIMEOUT_MS) {
+      console.warn('[telegram] answered but the call never connected — hanging up');
+      telegramCall.pressButton(telegramCall.findCallButton(document, 'end call'));
+      emit('telegram-call-missed', { reason: 'never connected' });
+      state = 'ignoring';
+    }
+    return;
+  }
   if (state === 'answering') {
     state = 'in-call';
     ringSeenAt = 0;
+    cameraStarted = false;
     setMicMuted(false);
     const name = (caller && caller.name) || 'Caller';
     emit(CALL_EVENTS.statusUpdate, 'In call (Telegram)');
@@ -228,6 +273,14 @@ function tick() {
       { name: botName || 'Bot', speaking: false, isSelf: true },
     ]);
     console.log('[telegram] in the call with', name);
+  }
+  // Show the bot's face, as on Meet, Zoom and Teams, but only once the call
+  // has connected: pressing "start video" while Telegram was still connecting
+  // left the call stuck there, and the caller never got an answer (live,
+  // 2026-10-23; without the camera it connected in half a second).
+  if (state === 'in-call' && !cameraStarted && callConnected()) {
+    cameraStarted = true;
+    setCameraOn(true);
   }
 }
 

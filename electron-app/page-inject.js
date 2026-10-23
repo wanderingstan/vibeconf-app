@@ -3990,6 +3990,11 @@
           }
         } catch { /* DOM not ready — poll retries */ }
       }
+      for (const t of outputTapTracks()) {
+        const key = mediaTrackNames.get(t.id) || `remote-media-${++mediaTrackCount}`;
+        mediaTrackNames.set(t.id, key);
+        recordTrack(key, t);
+      }
       // The shared tab/screen's own audio, when a share is live. A fresh id means
       // a new share session (they come and go mid-call) → a new track name, so
       // separate shares land in separate files instead of concatenating into one.
@@ -4274,6 +4279,14 @@
   // forwarded to main by the provider preload (preload-stt-bridge.js).
   // Dormant until main sends 'start-stt-tap'.
   // ---------------------------------------------------------------------------
+  // Live tracks a provider preload copied off the page's audio output (see the
+  // sttTap and the recorder, which both read them).
+  function outputTapTracks() {
+    try {
+      return (window.__vibeconf_outputTapTracks || []).filter((t) => t && t.readyState === 'live');
+    } catch { return []; }
+  }
+
   const sttTap = (() => {
     const RATE = 16000;
     const FRAME = 4096;
@@ -4298,6 +4311,10 @@
           }
         } catch { /* DOM not ready */ }
       }
+      // Providers whose call audio never becomes a track or a media element
+      // (WhatsApp plays it from a WASM engine through an AudioWorklet) publish
+      // a copy of it here; see preload-whatsapp.js.
+      for (const t of outputTapTracks()) out.push({ track: t, hint: null });
       return out;
     }
 

@@ -65,7 +65,7 @@ test('installDomProbe is a no-op when not switched on', () => {
 });
 
 test('every provider page installs it, tagged with a prefix its console forwarder keeps', () => {
-  for (const [file, tag] of [['preload-teams.js', '[teams]'], ['preload-telegram.js', '[telegram]'], ['preload-zoom.js', '[zoom]'], ['preload-meet.js', '[bots-in-calls]'], ['preload-slack-main.js', '[slack]']]) {
+  for (const [file, tag] of [['preload-teams.js', '[teams]'], ['preload-telegram.js', '[telegram]'], ['preload-whatsapp.js', '[whatsapp]'], ['preload-zoom.js', '[zoom]'], ['preload-meet.js', '[bots-in-calls]'], ['preload-slack-main.js', '[slack]']]) {
     const src = readFileSync(join(root, 'electron-app', file), 'utf8');
     assert.ok(src.includes(`installDomProbe({ tag: '${tag}'`), `${file} should install the probe with tag ${tag}`);
   }

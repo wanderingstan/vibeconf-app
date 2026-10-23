@@ -57,7 +57,7 @@ test('the page recorder taps media-element audio only where the WebRTC hook is o
 test('the measured crop is Meet-only', () => {
   const main = read('main.js');
   const fn = main.slice(main.indexOf('function recordingCropApplies'), main.indexOf('function recordingCropApplies') + 400);
-  for (const flag of ['slackProviderMode', 'zoomProviderMode', 'teamsProviderMode', 'telegramProviderMode']) {
+  for (const flag of ['slackProviderMode', 'zoomProviderMode', 'teamsProviderMode', 'callingAppMode']) {
     assert.ok(fn.includes('!' + flag), `crop still applies on ${flag}`);
   }
   // The measuring loop is what crops; it must only start where the crop applies.

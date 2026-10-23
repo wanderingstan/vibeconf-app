@@ -209,7 +209,7 @@ async function decide() {
   if (!seen.id && Date.now() - ringSeenAt < ID_WAIT_MS) { state = 'idle'; return; } // retry next tick
   caller = { id: seen.id, name: seen.name, usernames: seen.id ? await lookupUsernames(seen.id) : [] };
   let verdict = { answer: false, reason: 'no reply from the app' };
-  try { verdict = await ipcRenderer.invoke('telegram-incoming-call', caller); } catch (err) { verdict = { answer: false, reason: err.message }; }
+  try { verdict = await ipcRenderer.invoke('calling-app-incoming-call', { app: 'telegram', caller }); } catch (err) { verdict = { answer: false, reason: err.message }; }
   if (telegramCall.callPhase(document) !== 'ringing') { state = 'idle'; return; } // they gave up meanwhile
   if (!verdict || !verdict.answer) {
     console.log('[telegram] not answering:', verdict && verdict.reason);
@@ -232,7 +232,7 @@ function tick() {
       emit(CALL_EVENTS.statusUpdate, 'Call ended: the Telegram call was hung up');
     } else if (state === 'answering') {
       console.log('[telegram] the call went away before it connected');
-      emit('telegram-call-missed', { reason: 'hung up while answering' });
+      emit('calling-app-call-missed', { app: 'telegram', reason: 'hung up while answering' });
     }
     state = 'idle';
     caller = null;
@@ -260,7 +260,7 @@ function tick() {
     if (Date.now() - answerPressedAt > CONNECT_TIMEOUT_MS) {
       console.warn('[telegram] answered but the call never connected — hanging up');
       telegramCall.pressButton(telegramCall.findCallButton(document, 'end call'));
-      emit('telegram-call-missed', { reason: 'never connected' });
+      emit('calling-app-call-missed', { app: 'telegram', reason: 'never connected' });
       state = 'ignoring';
     }
     return;

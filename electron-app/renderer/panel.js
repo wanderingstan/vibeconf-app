@@ -3518,20 +3518,24 @@ function applyCallingAppStatus(status) {
   for (const row of document.querySelectorAll('[data-calling-app-row]')) {
     row.classList.toggle('unusable', !status?.[row.dataset.callingAppRow]);
   }
-  const tgBlock = document.getElementById('telegramCallsBlock');
-  if (tgBlock) tgBlock.style.display = status?.telegram ? '' : 'none';
+  for (const app of ['telegram', 'whatsapp']) {
+    const block = document.getElementById(app + 'CallsBlock');
+    if (block) block.style.display = status?.[app] ? '' : 'none';
+  }
 }
 
-// Telegram calls (#843): the switch and the allowlist. Written through
+// Calling-app calls (#843): each app's switch and allowlist. Written through
 // set-config (panel only); main reads them when a call rings.
-const telegramAnswerCallsInput = document.getElementById('telegramAnswerCalls');
-const telegramAllowedCallersInput = document.getElementById('telegramAllowedCallers');
-api.invoke('get-config', ['telegramAnswerCalls', 'telegramAllowedCallers']).then((cfg) => {
-  if (telegramAnswerCallsInput) telegramAnswerCallsInput.checked = !!cfg?.telegramAnswerCalls;
-  if (telegramAllowedCallersInput) telegramAllowedCallersInput.value = cfg?.telegramAllowedCallers || '';
-}).catch(() => {});
-telegramAnswerCallsInput?.addEventListener('change', () => setConfig('telegramAnswerCalls', telegramAnswerCallsInput.checked));
-telegramAllowedCallersInput?.addEventListener('change', () => setConfig('telegramAllowedCallers', telegramAllowedCallersInput.value));
+for (const app of ['telegram', 'whatsapp']) {
+  const answer = document.getElementById(app + 'AnswerCalls');
+  const allowed = document.getElementById(app + 'AllowedCallers');
+  api.invoke('get-config', [app + 'AnswerCalls', app + 'AllowedCallers']).then((cfg) => {
+    if (answer) answer.checked = !!cfg?.[app + 'AnswerCalls'];
+    if (allowed) allowed.value = cfg?.[app + 'AllowedCallers'] || '';
+  }).catch(() => {});
+  answer?.addEventListener('change', () => setConfig(app + 'AnswerCalls', answer.checked));
+  allowed?.addEventListener('change', () => setConfig(app + 'AllowedCallers', allowed.value));
+}
 api.invoke('calling-app-status').then(applyCallingAppStatus).catch(() => {});
 api.on('calling-app-status', applyCallingAppStatus);
 

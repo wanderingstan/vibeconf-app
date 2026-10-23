@@ -2212,9 +2212,15 @@ window.addEventListener('focus', refreshVoiceBanner);
 // silent. Warning someone who IS signed in is worse than not warning at all,
 // because it teaches people that this banner is noise.
 const claudeAuthBanner = document.getElementById('claudeAuthBanner');
+const claudeSignInBtn = document.getElementById('claudeSignInBtn');
 function paintClaudeAuth(state) {
   if (claudeAuthBanner) claudeAuthBanner.style.display = state?.authed === false ? 'flex' : 'none';
+  // #871: only where main can actually open a Terminal for it.
+  if (claudeSignInBtn) claudeSignInBtn.style.display = state?.canSignIn ? '' : 'none';
 }
+// Opens `claude auth login` in Terminal. Nothing to do on return: the banner
+// clears itself via the signed-out poll, or on refocus once the login is done.
+claudeSignInBtn?.addEventListener('click', () => api.invoke('claude-sign-in').catch(() => {}));
 // `refresh` asks main to re-check behind the answer it hands back, so the panel
 // paints from cache immediately and corrects itself a moment later. Main
 // throttles it, so alt-tabbing cannot spawn a login shell per focus event.

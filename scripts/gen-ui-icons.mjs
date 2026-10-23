@@ -76,6 +76,9 @@ const DRAWN = {
   terminal: '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5 L10 12 L7 14.5 M12.5 15 L17 15"/>',
   copy: '<rect x="8.5" y="8.5" width="11.5" height="11.5" rx="2"/><path d="M15.5 8.5 L15.5 5.5 Q15.5 4 14 4 L5.5 4 Q4 4 4 5.5 L4 14 Q4 15.5 5.5 15.5 L8.5 15.5"/>',
   play: '<path d="M8 5.5 L18.5 12 L8 18.5 Z"/>',
+  // ⚠ the "Claude Code isn't signed in" notice (#871). Drawn because OpenMoji's
+  // 26A0 isn't in the bundled set, and 🚧 — what it used — means troubleshooting.
+  warning: '<path d="M12 3.5 L21.5 20 L2.5 20 Z M12 9.5 L12 14 M12 17 L12 17"/>',
   pencil: '<path d="M4 20 L4.8 16 L15.8 5 Q17 3.8 18.2 5 L19 5.8 Q20.2 7 19 8.2 L8 19.2 Z M13.8 7 L17 10.2"/>',
 };
 

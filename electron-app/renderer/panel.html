@@ -75,9 +75,14 @@
                A persistent indicator beats a one-shot dialog here: this is a
                durable state, so it should be visible and self-clearing rather
                than dismissible and forgotten. Shown ONLY on an explicit false;
-               "couldn't tell" stays silent. -->
+               "couldn't tell" stays silent.
+               #871: a warning icon, not 🚧 (that one means troubleshooting),
+               and a button that opens `claude auth login` in a Terminal so the
+               fix is one click rather than a CLI command to know. Hidden where
+               main can't open a Terminal (canSignIn). -->
           <div class="hero-notice notice-warn" id="claudeAuthBanner" style="display:none">
-            <span><i class="ui-icon ui-icon-construction ui-icon--lead"></i>Claude Code isn't signed in. Your bot will join calls but nothing will drive it.</span>
+            <span><i class="ui-icon ui-icon-warning ui-icon--lead"></i>Claude Code isn't signed in. Your bot will join calls but nothing will drive it.</span>
+            <button id="claudeSignInBtn" class="notice-action" style="display:none">Sign in →</button>
           </div>
 
           <!-- Calendar auto-join (#299): the next matching event within the

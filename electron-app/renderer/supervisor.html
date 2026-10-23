@@ -110,6 +110,41 @@
     }
     .bot.selectable { cursor: pointer; }
 
+    .stage-action {
+      margin-top: 4px; padding: 8px 18px; border-radius: 999px; border: 1.5px solid var(--ink);
+      background: var(--paper); color: var(--ink); font-family: var(--font-display); font-weight: 700; font-size: 14px; cursor: pointer;
+    }
+    .stage-action:hover:not(:disabled) { background: var(--paper-lo); }
+    .stage-action:disabled { opacity: .6; cursor: default; }
+
+    /* ── Row actions: merge into a call, and the … menu ──
+       Hidden until the row is hovered or selected, like Claude's own sidebar;
+       merge stays visible whenever there is a call it can join, since that is
+       exactly when you reach for it. */
+    .row-actions { margin-left: auto; display: flex; gap: 2px; flex: none; }
+    .row-act {
+      width: 30px; height: 30px; padding: 0; border: none; border-radius: 8px; background: none;
+      color: var(--dim); display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+      visibility: hidden;
+    }
+    .row-act svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .row-act.more svg { fill: currentColor; stroke: none; }
+    .row-act:hover { background: var(--paper); color: var(--text); }
+    .bot:hover .row-act, .bot.selected .row-act, .bot.can-merge .row-act.merge { visibility: visible; }
+    .row-act.merge { color: var(--go-deep); }
+    .row-menu {
+      position: fixed; z-index: 50; min-width: 170px; padding: 4px;
+      background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
+      box-shadow: -1px 2px 8px rgba(74, 49, 64, 0.22); display: flex; flex-direction: column;
+    }
+    .row-menu-item {
+      text-align: left; padding: 7px 10px; border: none; border-radius: 5px; background: none;
+      font: inherit; font-size: 13px; color: var(--text); cursor: pointer;
+    }
+    .row-menu-item:hover:not(:disabled) { background: var(--paper-lo); }
+    .row-menu-item:disabled { color: var(--faint); cursor: default; }
+    .row-menu-item.danger { color: var(--warn); }
+
     /* ── Sessions: the user's Claude Code sessions, below the bots ── */
     .section-head {
       margin: 18px 8px 6px; font-family: var(--font-mono, 'JetBrains Mono', monospace); font-size: 11px; font-weight: 700;
@@ -238,6 +273,7 @@
     .sub .state.up { color: var(--up); }
     .sub .state.call { color: var(--call); }
     .sub .state.stuck { color: var(--warn); }
+    .sub .state.wrap { color: var(--dim); font-style: italic; }
 
     /* Pill buttons, as in the panel. */
     button {

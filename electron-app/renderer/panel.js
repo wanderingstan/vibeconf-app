@@ -11,6 +11,7 @@ if (HOSTED) document.documentElement.classList.add('hosted');
 let callNowBtn = null;
 // A join under way per the bot's call status (see syncJoiningFlag).
 let joiningStatus = false;
+let wrappingUp = false; // the call is over and the agent is writing it up (after-call-work)
 
 // The user's hour-cycle preference, resolved by main (a renderer cannot read
 // macOS's AppleICUForce24HourTime itself). Null until it arrives; formatTime
@@ -1516,6 +1517,7 @@ window.addEventListener('keydown', async (e) => {
 });
 
 function updateJoinBtnState() {
+  try { syncMeetUrlExtras(); } catch { /* declared further down; first paint */ }
   syncCallNowBtn();
   if (inCall) return; // in-call UI owns the button
   if (joinPhase) {
@@ -1647,6 +1649,42 @@ meetUrlInput.addEventListener('input', () => {
   if (!meetUrlInput.value.trim()) dismissCallUrl();
   else updateJoinBtnState();
 });
+// The Meeting link field says where its link came from, and can be cleared in
+// one click. "(found in browser)" while the link is the call the browser scan
+// found and nobody has edited it. The ⓧ is the same dismissal as emptying the
+// field by hand, so the scan doesn't put it straight back while that tab stays
+// open.
+const meetUrlSource = (() => {
+  const label = document.querySelector('label[for="meetUrl"]');
+  if (!label) return null;
+  const span = document.createElement('span');
+  span.className = 'url-source';
+  span.textContent = ' (found in browser)';
+  label.append(span);
+  return span;
+})();
+const meetUrlClear = (() => {
+  if (!meetUrlInput || !meetUrlInput.parentElement) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'url-input-wrap';
+  meetUrlInput.before(wrap);
+  wrap.append(meetUrlInput);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'url-clear';
+  btn.title = 'Clear the meeting link';
+  btn.setAttribute('aria-label', 'Clear the meeting link');
+  btn.append(Object.assign(document.createElement('i'), { className: 'ui-icon ui-icon-close' }));
+  btn.addEventListener('click', () => { dismissCallUrl(); meetUrlInput.focus(); });
+  wrap.append(btn);
+  return btn;
+})();
+function syncMeetUrlExtras() {
+  const value = meetUrlInput ? meetUrlInput.value.trim() : '';
+  if (meetUrlSource) meetUrlSource.style.display = value && detectedCallUrl && value === detectedCallUrl.trim() ? '' : 'none';
+  if (meetUrlClear) meetUrlClear.style.display = value ? '' : 'none';
+}
+
 updateJoinBtnState(); // paint the initial label (the markup ships a neutral one)
 
 // With the title bar hidden (macOS only — see titleBarOptions in main.js)
@@ -4188,7 +4226,11 @@ api.on('meet-status', (status) => {
 
 api.on('call-status-changed', ({ status, provider }) => {
   joiningStatus = status === 'navigating' || status === 'joining' || status === 'waiting-to-be-admitted';
+  // After the call, the agent is still writing up: the status line says so
+  // rather than "Ready", since a new call now would cut that short.
+  wrappingUp = status === 'after-call-work';
   syncJoiningFlag();
+  try { if (HOSTED) document.dispatchEvent(new Event('hosted-status')); } catch { /* not set up yet */ }
   // Authoritative call-state signal from the local server. Only show Leave Call
   // once we're actually in the meeting; hide it once the bot has left.
   if (status === 'in-call') {
@@ -4367,10 +4409,11 @@ function setupHostedLayout() {
     if (inCallNow) {
       status.replaceChildren(el('span', 'live-dot'), document.createTextNode(`In a call · ${elapsed(Date.now() - callSince)}`));
     } else {
-      status.textContent = joiningNow ? 'Joining…' : 'Ready';
+      status.textContent = joiningNow ? 'Joining…' : wrappingUp ? 'Wrapping up…' : 'Ready';
     }
   };
   new MutationObserver(syncStatus).observe(document.body, { attributes: true, attributeFilter: ['data-call-state'] });
+  document.addEventListener('hosted-status', syncStatus);
   new MutationObserver(syncStatus).observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
   syncStatus();
 
@@ -4487,7 +4530,38 @@ async function refreshHostedAbout() {
   } catch { hostedAbout.google.r.style.display = 'none'; }
 }
 
-if (HOSTED) setupHostedLayout();
+// The foot of a bot's Edit page in the app window: Delete <bot>. The app window
+// does the deleting (it stops the bot and moves its folder to the Trash, after
+// asking), so this only asks it to. Not shown for the default bot, which can't
+// be deleted.
+async function setupHostedDelete() {
+  if (!api.deleteBot) return;
+  const container = document.querySelector('#settingsScreen .container');
+  if (!container) return;
+  const can = await api.canDeleteBot().catch(() => null);
+  if (!can?.ok) return;
+  const zone = document.createElement('section');
+  zone.className = 'delete-bot-zone';
+  const btn = document.createElement('button');
+  btn.className = 'delete-bot-btn';
+  const label = () => `Delete ${currentBotName || 'this bot'}…`;
+  btn.textContent = label();
+  const note = document.createElement('div');
+  note.className = 'delete-bot-note';
+  note.textContent = 'Its folder, with its settings, notes and call recordings, moves to the Trash.';
+  btn.addEventListener('click', async () => {
+    btn.textContent = label();
+    const r = await api.deleteBot().catch((e) => ({ ok: false, error: e.message }));
+    if (r && !r.ok && !r.cancelled) note.textContent = r.error || 'Could not delete it.';
+  });
+  zone.append(btn, note);
+  container.append(zone);
+}
+
+if (HOSTED) {
+  setupHostedLayout();
+  setupHostedDelete();
+}
 
 // A panel can load while its bot is already in a call: in the app window,
 // selecting a bot that is in one loads its panel then (#301). Until now the
@@ -4504,6 +4578,9 @@ if (!IS_POPOUT_WINDOW) {
       if (Number.isFinite(started)) hostedCallStartedAt = started;
       if (snap.currentMeetUrl && !meetUrlInput.value) meetUrlInput.value = snap.currentMeetUrl;
       enterCallState(snap.roomId || '');
+    } else if (snap.callStatus === 'after-call-work') {
+      wrappingUp = true;
+      try { document.dispatchEvent(new Event('hosted-status')); } catch { /* fine */ }
     } else if (['navigating', 'joining', 'waiting-to-be-admitted'].includes(snap.callStatus)) {
       joiningStatus = true;
       syncJoiningFlag();

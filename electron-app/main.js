@@ -104,7 +104,7 @@ const {
 // constant rather than raw channel string, so the contract is shared on both
 // sides of the IPC wire (provider impl in google-meet-provider.js). Values are
 // byte-identical to the prior literals — same wire.
-const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider.js');
+const { CALL_EVENTS, CALL_COMMANDS, providerCapabilities } = require('./call-provider.js');
 const {
   PlatformCaptions, AudioTranscription, CaptionRouter, SOURCE_EVENTS, resolveListenSource, oneToOneSpeaker,
 } = require('./caption-source.js');
@@ -167,10 +167,51 @@ function applyListenSource() {
     router.use(audio);
     const lang = String(store.get('captionLanguage') || '').trim();
     if (lang) audio.setLanguage(lang).then((r) => { if (!r.ok) console.warn(ts(), '[stt]', r.error); });
+    // Comparison mode (#836): transcribing a call that ALSO has captions means
+    // someone forced 'audio' to measure it. Keep the platform's captions running
+    // on the side, logged but never fed to the bot, so both transcripts of the
+    // same audio land in one session log ([heard] = ours, [compare] = theirs).
+    if (providerCapabilities(activeProviderName()).captions) startCaptionShadow();
   } else {
     router.use(_platformCaptions);
   }
   console.log(`[electron] Hearing this call through ${listen.source === 'audio' ? 'on-device transcription of the call audio' : 'the platform\'s captions'} (${listen.reason})`);
+}
+
+let _captionShadow = null;
+function startCaptionShadow() {
+  if (_captionShadow) return;
+  const shadow = new PlatformCaptions({ ipcMain, sendCallCmd, callViewRequest });
+  // Log each caption line once it stops changing for SETTLE_MS. Not "once a
+  // newer line is below it": Meet keeps a monologue as ONE growing line, so that
+  // rule logged nothing on the first live run (2026-10-23). A line that keeps
+  // growing after it was logged logs only its new words.
+  const SETTLE_MS = 2500;
+  const lines = new Map(); // turnId -> { speaker, text, logged, timer }
+  const flush = (id) => {
+    const l = lines.get(id);
+    if (!l || l.text === l.logged) return;
+    const fresh = l.logged && l.text.startsWith(l.logged) ? l.text.slice(l.logged.length).trim() : l.text;
+    l.logged = l.text;
+    if (fresh) console.log(ts(), '📝 [compare] captions', (l.speaker || 'someone') + ':', fresh);
+  };
+  shadow.on(SOURCE_EVENTS.turns, ({ turns } = {}) => {
+    for (const t of turns || []) {
+      if (!t.text) continue;
+      const l = lines.get(t.turnId) || { logged: '' };
+      if (l.text === t.text) continue;
+      l.speaker = t.speaker; l.text = t.text;
+      clearTimeout(l.timer);
+      l.timer = setTimeout(() => flush(t.turnId), SETTLE_MS);
+      lines.set(t.turnId, l);
+    }
+  });
+  shadow.start();
+  _captionShadow = shadow;
+  console.log(ts(), '[stt] comparison mode: logging the platform\'s captions beside the transcription');
+}
+function stopCaptionShadow() {
+  if (_captionShadow) { _captionShadow.stop(); _captionShadow = null; }
 }
 
 // MCP server location and launcher, shared with the app window: agent-integration.js (#301).
@@ -3084,6 +3125,7 @@ const localServer = new globalThis.LocalServer({
       _noVoiceAnnouncedFor = null; ackCachePrewarmedForCall = false;
       // Back to the platform's captions between calls; stops the audio tap.
       if (_captionSource && _platformCaptions) _captionSource.use(_platformCaptions);
+      stopCaptionShadow();
     }
     // Studio sound: if disabled by pref, turn off Meet's voice filter once in-call
     // so non-voice audio (SFX/music via play_audio) passes through. Delay lets the

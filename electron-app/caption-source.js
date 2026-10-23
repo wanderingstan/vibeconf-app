@@ -226,15 +226,23 @@ class AudioTranscription extends CaptionSource {
     st.chain = st.chain.then(async () => {
       if (!final && ticket !== st.ticket) return; // superseded partial
       let text = '';
+      let engineMs = 0;
       try {
         const r = await this._engine.transcribe(seg.audio, {
           language: this._engineLanguage(this._language),
           keywords: this._keywords(),
         });
         text = r.text;
+        engineMs = r.ms || 0;
       } catch (err) {
         this._log(`[stt] transcription failed (${stream}): ${err.message}`);
         return;
+      }
+      if (final && Number.isFinite(seg.endAt)) {
+        // The delay a person feels: from the end of what they said to the text
+        // being ready (includes the gate's pause detection and padding).
+        const secs = (seg.audio.length / 16000).toFixed(1);
+        this._log(`[stt] final ${stream}: ${secs}s of speech, engine ${engineMs} ms, ready ${Math.max(0, Date.now() - seg.endAt)} ms after it ended: "${text}"`);
       }
       if (!text) { if (final) this._drop(turn); return; }
       turn.text = text;

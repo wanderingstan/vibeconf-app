@@ -84,6 +84,8 @@ const callConnections = [];
   for (const k of Object.keys(Wrapped)) { try { window.RTCPeerConnection[k] = Wrapped[k]; } catch { /* read-only */ } }
 })();
 const callConnected = () => callConnections.some((pc) => pc.connectionState === 'connected');
+// For DevTools: what the call is sending (getStats on these).
+try { window.__vibeTelegramConnections = callConnections; } catch { /* window not ready */ }
 
 function emit(channel, payload) {
   try {
@@ -108,6 +110,9 @@ function setCameraOn(on) {
     const btn = telegramCall.findCallButton(document, l);
     if (btn) { console.log('[telegram] camera', on ? 'on' : 'off', '(' + l + ')'); return telegramCall.pressButton(btn); }
   }
+  // Telegram may already be there: it turns video on by itself when the
+  // caller's call is a video call.
+  console.log('[telegram] camera already', on ? 'on' : 'off', '(no "' + labels[0] + '" button)');
   return false;
 }
 

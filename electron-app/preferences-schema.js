@@ -176,19 +176,21 @@ const PREFERENCES = {
   listenSource: {
     type: 'string',
     default: 'auto',
-    // 'audio' (transcribing the call audio itself) joins this list with #850
-    // phase 2. Offering it before it exists would be a setting that does nothing.
-    enum: ['auto', 'platform'],
+    // Must match caption-source.js LISTEN_SOURCES (a test pins it).
+    enum: ['auto', 'platform', 'audio'],
     enumLabels: {
-      auto: 'Automatic (the call platform\'s own captions when it has them)',
+      auto: 'Automatic (the call platform\'s own captions when it has them, otherwise transcribe the audio)',
       platform: 'The call platform\'s own captions',
+      audio: 'Transcribe the call audio on this computer',
     },
     label: 'How the bot hears the call',
     description:
-      'Where the bot gets the words said in a call. Meet, Zoom, Teams and Slack all ' +
-      'caption calls themselves, and the bot reads those captions. Automatic is the ' +
-      'right choice today; transcribing the call audio directly, for calls without ' +
-      'captions, is coming (#850).',
+      'Where the bot gets the words said in a call. Meet, Zoom, Teams and Slack caption ' +
+      'calls themselves, and the bot reads those captions. Calling apps (WhatsApp, ' +
+      'Telegram) have none, so the bot transcribes the call audio itself, on this ' +
+      'computer, with no account or key (the speech model, about 18 MB, downloads the ' +
+      'first time). Automatic picks the right one per call; "Transcribe the call audio" ' +
+      'forces it everywhere, e.g. to compare it with a platform\'s captions.',
   },
   botName: {
     type: 'string',

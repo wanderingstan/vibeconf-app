@@ -74,6 +74,8 @@ window.__vibeconf_getScreenShareSource = async function () {
 // (#814). This window is the one main sends 'trigger-record' to (meetView),
 // and it owns the media; without this a Slack recording was silent video.
 require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[slack-main]' });
+// Speech-to-text tap → main, for hearing calls by transcribing their audio (#850).
+require('./preload-stt-bridge').installSttBridge(ipcRenderer);
 
 // Bridge main → page-inject (same generic forward as google-meet-provider's
 // inbound handler). The VirtualMic AND the virtual-camera avatar both live HERE

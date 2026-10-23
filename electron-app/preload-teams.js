@@ -69,6 +69,8 @@ window.__vibeconf_getScreenShareSource = async function () {
 // Call recording: start/stop the page recorder and carry its tracks to main
 // (#814). Without this a Teams recording was silent video.
 require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[teams]' });
+// Speech-to-text tap → main, for hearing calls by transcribing their audio (#850).
+require('./preload-stt-bridge').installSttBridge(ipcRenderer);
 
 const provider = new TeamsProvider();
 // NOT window.TEAMS: Teams' own app may read globals by that name, and a stray

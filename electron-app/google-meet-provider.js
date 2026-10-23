@@ -4281,6 +4281,10 @@ ipcRenderer.on('trigger-leave-call', () => {
 // #209: main tells the page-world CallRecorder to start/stop. Main owns the
 // decision (recordCallAudio pref / VIBECONF_RECORD_CALL) and the on-disk
 // session; the page just captures tracks and streams chunks back.
+// Speech-to-text tap → main, for hearing a call by transcribing its audio (#850).
+// On Meet this runs alongside the captions, which makes it the test bed (#836).
+require('./preload-stt-bridge').installSttBridge(ipcRenderer);
+
 ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt, botName } = {}) => {
   setRecordingBannerClamp(!!recording);
   window.postMessage({

@@ -1517,6 +1517,7 @@ window.addEventListener('keydown', async (e) => {
 });
 
 function updateJoinBtnState() {
+  try { syncMeetUrlExtras(); } catch { /* declared further down; first paint */ }
   syncCallNowBtn();
   if (inCall) return; // in-call UI owns the button
   if (joinPhase) {
@@ -1648,6 +1649,42 @@ meetUrlInput.addEventListener('input', () => {
   if (!meetUrlInput.value.trim()) dismissCallUrl();
   else updateJoinBtnState();
 });
+// The Meeting link field says where its link came from, and can be cleared in
+// one click. "(found in browser)" while the link is the call the browser scan
+// found and nobody has edited it. The ⓧ is the same dismissal as emptying the
+// field by hand, so the scan doesn't put it straight back while that tab stays
+// open.
+const meetUrlSource = (() => {
+  const label = document.querySelector('label[for="meetUrl"]');
+  if (!label) return null;
+  const span = document.createElement('span');
+  span.className = 'url-source';
+  span.textContent = ' (found in browser)';
+  label.append(span);
+  return span;
+})();
+const meetUrlClear = (() => {
+  if (!meetUrlInput || !meetUrlInput.parentElement) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'url-input-wrap';
+  meetUrlInput.before(wrap);
+  wrap.append(meetUrlInput);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'url-clear';
+  btn.title = 'Clear the meeting link';
+  btn.setAttribute('aria-label', 'Clear the meeting link');
+  btn.append(Object.assign(document.createElement('i'), { className: 'ui-icon ui-icon-close' }));
+  btn.addEventListener('click', () => { dismissCallUrl(); meetUrlInput.focus(); });
+  wrap.append(btn);
+  return btn;
+})();
+function syncMeetUrlExtras() {
+  const value = meetUrlInput ? meetUrlInput.value.trim() : '';
+  if (meetUrlSource) meetUrlSource.style.display = value && detectedCallUrl && value === detectedCallUrl.trim() ? '' : 'none';
+  if (meetUrlClear) meetUrlClear.style.display = value ? '' : 'none';
+}
+
 updateJoinBtnState(); // paint the initial label (the markup ships a neutral one)
 
 // With the title bar hidden (macOS only — see titleBarOptions in main.js)

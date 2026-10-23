@@ -1606,6 +1606,20 @@ html.on-air.hosted .bot-hero { border-color: #5f6368; }
 @keyframes live-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .hosted-status .live-dot { animation: none; } }
 
+/* Meeting link: where it came from, and a ⓧ to clear it (panel.js
+   syncMeetUrlExtras). The ⓧ sits inside the field's right edge. */
+.url-source { font-weight: 400; opacity: .85; }
+.hosted .url-source { opacity: 1; color: var(--ink-soft); }
+.url-input-wrap { position: relative; }
+.url-input-wrap input { padding-right: 34px; }
+button.url-clear {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  width: 24px; height: 24px; padding: 0; margin: 0; border: none; border-radius: 50%;
+  background: var(--paper-lo); color: var(--ink-soft); box-shadow: none;
+  display: inline-flex; align-items: center; justify-content: center; font-size: 11px;
+}
+button.url-clear:hover:not(:disabled) { background: var(--ink-faint); color: var(--paper); }
+
 /* Delete <bot>, at the foot of its Edit page: set apart, pink-outlined (not a
    filled button: one primary per window), with what it does spelled out. */
 .delete-bot-zone { margin: 28px 0 8px; padding-top: 16px; border-top: 1px solid var(--line); }

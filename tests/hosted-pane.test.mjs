@@ -132,3 +132,12 @@ test('Open call opens the bot\'s own call in your browser, https only', () => {
   assert.match(panel, /if \(leaveRow\) leaveRow\.after\(openCall\);/, 'under Leave, the more common act');
   assert.match(panel, /if \(share\) \{ share\.classList\.add\('card-share'\); hero\.append\(share\); \}/, 'share toggle on the card');
 });
+
+test('the Meeting link field says when its link came from the browser, and clears in one click', () => {
+  assert.match(panel, /span\.textContent = ' \(found in browser\)';/);
+  // Only while the link is the detected call, unedited.
+  assert.match(panel, /value && detectedCallUrl && value === detectedCallUrl\.trim\(\) \? '' : 'none'/);
+  // The ⓧ is the same dismissal as emptying the field, so the scan doesn't refill it.
+  assert.match(panel, /btn\.addEventListener\('click', \(\) => \{ dismissCallUrl\(\); meetUrlInput\.focus\(\); \}\);/);
+  assert.match(panel, /if \(meetUrlClear\) meetUrlClear\.style\.display = value \? '' : 'none';/);
+});

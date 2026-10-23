@@ -14558,10 +14558,34 @@ function setupIPC() {
   // window.process as its retired Electron client, #812), and it presents as
   // current Chrome in the UA string AND the client-hint headers, which these
   // web clients check before they'll show a login at all.
+  //
+  // Signed-in state can't be read from cookies (the login lives in the page's
+  // own storage), so while a sign-in window is open we poll the page for the
+  // client for the account (calling-app-accounts.js) and remember it per bot
+  // (callingAppAccounts: app → { label } or null).
   const CALLING_APP_SIGN_IN = {
-    whatsapp: { url: 'https://web.whatsapp.com/', title: 'Sign the bot into WhatsApp: scan the QR code with the bot\'s phone' },
-    telegram: { url: 'https://web.telegram.org/a/', title: 'Sign the bot into Telegram: log in with the bot\'s phone' },
+    whatsapp: {
+      url: 'https://web.whatsapp.com/',
+      origin: 'https://web.whatsapp.com',
+      title: 'Sign the bot into WhatsApp: scan the QR code with the bot\'s phone',
+    },
+    telegram: {
+      url: 'https://web.telegram.org/a/',
+      origin: 'https://web.telegram.org',
+      title: 'Sign the bot into Telegram: log in with the bot\'s phone',
+    },
   };
+  const callingAppAccounts = () => ({ whatsapp: null, telegram: null, ...(store?.get('callingAppAccounts') || {}) });
+  function setCallingAppAccount(which, account) {
+    const all = callingAppAccounts();
+    if (JSON.stringify(all[which]) === JSON.stringify(account)) return;
+    all[which] = account;
+    store?.set('callingAppAccounts', all);
+    console.log(`[electron] ${which}: bot is ${account ? `signed in as ${account.label}` : 'signed out'}`);
+    broadcastToRenderers('calling-app-status', all);
+  }
+  ipcMain.handle('calling-app-status', () => callingAppAccounts());
+  const { probeSource, describeAccount } = require('./calling-app-accounts');
   const callingAppSignInWindows = {};
   ipcMain.handle('calling-app-sign-in', (_event, { app: which } = {}) => {
     const target = CALLING_APP_SIGN_IN[which];
@@ -14581,9 +14605,39 @@ function setupIPC() {
     win.on('page-title-updated', (e) => e.preventDefault()); // keep the instruction as the title
     win.webContents.setUserAgent(browserId.UA);
     win.loadURL(target.url);
-    win.on('closed', () => { delete callingAppSignInWindows[which]; });
+    const poll = setInterval(async () => {
+      if (win.isDestroyed() || win.webContents.isDestroyed()) return;
+      if (!win.webContents.getURL().startsWith(target.origin)) return;
+      try {
+        const raw = await win.webContents.executeJavaScript(probeSource(which));
+        setCallingAppAccount(which, describeAccount(which, raw));
+      } catch { /* page mid-load */ }
+    }, 2000);
+    win.on('closed', () => { clearInterval(poll); delete callingAppSignInWindows[which]; });
     callingAppSignInWindows[which] = win;
     console.log(`[electron] Opened ${which} sign-in for this bot (${target.url})`);
+    return { ok: true };
+  });
+
+  // Sign the bot out: wipe that client's storage from the partition (other
+  // logins untouched). This forgets the login on this machine only; the linked
+  // session stays listed on the phone until removed there (Telegram: Settings →
+  // Devices; WhatsApp: Linked devices), which the panel tells the user.
+  ipcMain.handle('calling-app-sign-out', async (_event, { app: which } = {}) => {
+    const target = CALLING_APP_SIGN_IN[which];
+    if (!target) return { ok: false, error: `unknown calling app: ${which}` };
+    const open = callingAppSignInWindows[which];
+    if (open && !open.isDestroyed()) open.destroy();
+    try {
+      await session.fromPartition(SESSION_PARTITION).clearStorageData({
+        origin: target.origin,
+        storages: ['cookies', 'localstorage', 'indexdb', 'cachestorage', 'serviceworkers', 'websql'],
+      });
+    } catch (err) {
+      console.warn(`[electron] ${which} sign-out failed:`, err.message);
+      return { ok: false, error: err.message };
+    }
+    setCallingAppAccount(which, null);
     return { ok: true };
   });
 

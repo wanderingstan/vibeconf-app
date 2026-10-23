@@ -423,8 +423,13 @@
         <button id="zoomSignOutBtn" class="provider-zoom" style="display:none">Sign out of Zoom</button>
         <!-- Calling apps (#843): the bot's own WhatsApp / Telegram account, so
              people can call it. Its own number, never a personal one. -->
+        <div id="whatsappAccount" class="account-email" data-calling-app-account="whatsapp" style="display:none"></div>
         <button id="whatsappSignInBtn" class="provider-whatsapp" data-calling-app="whatsapp">Sign into WhatsApp as bot</button>
+        <button id="whatsappSignOutBtn" class="provider-whatsapp" data-calling-app-sign-out="whatsapp" style="display:none">Sign out of WhatsApp</button>
+        <div id="telegramAccount" class="account-email" data-calling-app-account="telegram" style="display:none"></div>
         <button id="telegramSignInBtn" class="provider-telegram" data-calling-app="telegram">Sign into Telegram as bot</button>
+        <button id="telegramSignOutBtn" class="provider-telegram" data-calling-app-sign-out="telegram" style="display:none">Sign out of Telegram</button>
+        <p id="callingAppSignOutNote" class="helper-text" style="display:none; margin:4px 0 8px"></p>
 
         <!-- Calendar auto-join identity (#299): add this address as a guest on
              a Google Calendar event (it never needs to resolve to a real

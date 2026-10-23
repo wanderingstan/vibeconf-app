@@ -3482,6 +3482,55 @@ for (const btn of document.querySelectorAll('button[data-calling-app]')) {
   });
 }
 
+// Signed in → show which account and "Sign out of X" in place of "Sign into X".
+// Main pushes calling-app-status as the login lands.
+const CALLING_APP_NAMES = { whatsapp: 'WhatsApp', telegram: 'Telegram' };
+function applyCallingAppStatus(status) {
+  for (const btn of document.querySelectorAll('button[data-calling-app-sign-out]')) {
+    btn.style.display = status?.[btn.dataset.callingAppSignOut] ? '' : 'none';
+  }
+  // One account per bot: signed in shows sign-out instead of sign-in.
+  for (const btn of document.querySelectorAll('button[data-calling-app]')) {
+    btn.style.display = status?.[btn.dataset.callingApp] ? 'none' : '';
+  }
+  for (const el of document.querySelectorAll('[data-calling-app-account]')) {
+    const which = el.dataset.callingAppAccount;
+    const account = status?.[which];
+    el.textContent = account ? `${CALLING_APP_NAMES[which]}: ${account.label}` : '';
+    el.style.display = account ? '' : 'none';
+  }
+}
+api.invoke('calling-app-status').then(applyCallingAppStatus).catch(() => {});
+api.on('calling-app-status', applyCallingAppStatus);
+
+const CALLING_APP_DEVICES = {
+  telegram: 'Telegram → Settings → Devices',
+  whatsapp: 'WhatsApp → Linked devices',
+};
+for (const btn of document.querySelectorAll('button[data-calling-app-sign-out]')) {
+  const which = btn.dataset.callingAppSignOut;
+  const label = btn.textContent;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = label.replace('Sign out', 'Signing out') + '…';
+    try {
+      const r = await api.invoke('calling-app-sign-out', { app: which });
+      if (r && !r.ok) showError(r.error || `Could not sign out of ${which}`);
+      else {
+        const note = document.getElementById('callingAppSignOutNote');
+        if (note) {
+          note.textContent = `Signed out on this computer. To end the session fully, also remove it on the phone (${CALLING_APP_DEVICES[which]}).`;
+          note.style.display = '';
+        }
+      }
+    } catch (err) {
+      showError(`${label} failed: ` + err.message);
+    }
+    btn.disabled = false;
+    btn.textContent = label;
+  });
+}
+
 zoomSignInBtn?.addEventListener('click', async () => {
   zoomSignInBtn.disabled = true;
   zoomSignInBtn.textContent = 'Opening Zoom…';

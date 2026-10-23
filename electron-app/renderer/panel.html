@@ -365,7 +365,6 @@
           <option value="tr-TR">Turkish</option>
           <option value="vi-VN">Vietnamese</option>
         </select>
-        <div style="font-size:11px;color:#6B5566;margin-top:2px">What the bot listens for. Set this to the language people actually speak in the call.</div>
       </div>
 
       <div class="field">
@@ -393,13 +392,16 @@
           <div class="avatar-bg-preview-art"></div>
           <div class="avatar-bg-preview-face">🙂</div>
         </div>
+        <!-- Built-in presets (backgrounds/presets, the same set new bots draw
+             from). "Custom" only shows while a non-preset background is on, so
+             the select never claims a preset that isn't what the bot wears. -->
+        <select id="avatarBgPreset" style="margin-top:6px">
+          <option value="">Default gradient</option>
+          <option value="__custom" hidden>Custom image</option>
+        </select>
         <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
           <button id="chooseAvatarBgBtn" class="popout-btn">Choose image…</button>
-          <button id="clearAvatarBgBtn" class="popout-btn" style="display:none">Clear</button>
           <span id="avatarBgStatus" style="font-size:11px;color:#4A3140"></span>
-        </div>
-        <div style="font-size:11px;color:#6B5566;margin-top:4px">
-          Cropped to 16:9, so keep the subject centred. SVG, PNG, JPEG, GIF or WebP.
         </div>
       </div>
 
@@ -408,12 +410,9 @@
            buttons plus one line of why. The guest-vs-account explainer that used
            to live here is gone; signing in visibly overrides the name above. -->
       <div class="section">
-        <h2>Identity &amp; Calendar</h2>
+        <h2>Identity</h2>
         <p class="helper-text" style="margin:0 0 8px">
-          Optional. Sign the bot into Google so it's auto-admitted to invite-only
-          Meets, into Slack so it can join huddles, or into Zoom so it isn't
-          stopped by Zoom's guest CAPTCHA. Signing in uses that
-          account's name instead of the one above. Logins persist across launches.
+          Sign the bot into calling providers. Not required for Google or Zoom.
         </p>
         <div id="meetAccountEmail" class="account-email" style="display:none"></div>
         <button id="meetSignInBtn">Sign in to Google as bot</button>
@@ -440,9 +439,9 @@
         <div class="field">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="sessionPerCalendarInvitees" />
-            One session per calendar meeting
+            Separate sessions for each calendar meeting
           </label>
-          <div style="font-size:11px;color:#6B5566;margin-top:2px">Off, this bot keeps <em>one</em> session, so everyone it ever talks to shares the same context. On, a call it joined for a <em>calendar event</em> runs in its own folder named for that event's invitees — meet the same people next week and it resumes what it knew; meet different people and it doesn't. Same bot, same name, same personality either way (the <code>CLAUDE.md</code> personality below is copied into each new folder, then free to drift). The key is the invitee <em>emails</em>, never the names people type into Meet. A call with no calendar event behind it is unaffected. Note: setting a Working Directory under <strong>Launched Claude</strong> below overrides this.</div>
+          <div style="font-size:11px;color:#6B5566;margin-top:2px">If enabled, each unique set of meeting participants gets its own session. If disabled, all calendar meetings with this bot share the same session.</div>
         </div>
       </div>
 
@@ -490,14 +489,6 @@
             <span id="agentClaudeMdStatus" style="font-size:11px;color:#4A3140"></span>
           </div>
         </div>
-      </div>
-
-      <div class="section">
-        <h2>Text-to-Speech</h2>
-        <!-- The Voice picker lives up top; the machine-wide ElevenLabs API KEY
-             moved to App Settings (⌘,) since #366/#381. Only the per-profile
-             custom Voice ID override stays here. -->
-        <div class="helper-text" style="margin:0 0 8px">The ElevenLabs API key is machine-wide. Set it in <strong>App Settings</strong> (⌘,).</div>
       </div>
 
       <div class="section">

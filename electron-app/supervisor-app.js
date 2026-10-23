@@ -33,6 +33,16 @@ const { supervisorPort } = require('./supervisor-port.js');
 const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
 const { createBotChildren } = require('./bot-children.js');
 
+// The app window relays every bot's log lines to its own stdout. When whatever
+// was reading that stdout goes away (the terminal or launcher that started it),
+// the next write fails with EPIPE, and unhandled that is an "Uncaught
+// Exception" dialog over the app (seen 2026-10-23, from bot-children's
+// emitLine). Nobody is left to read the line, so drop it, as main.js and
+// session-log.js do. (No logging here: it would write to the same dead pipe.)
+for (const stream of [process.stdout, process.stderr]) {
+  stream?.on?.('error', () => { /* dead pipe: nowhere to report it */ });
+}
+
 // The bots this window started, as its own child processes (bot-children.js):
 // their PIDs, exits and output. A bot asking to be shown ('select') comes in
 // here too, and so does every exit, expected or not.

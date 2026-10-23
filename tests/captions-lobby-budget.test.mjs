@@ -35,6 +35,11 @@ const { MEET } = require('../electron-app/meet-selectors.js');
 
 const CLICK_START = src.indexOf('let captionsClickArmed = false;');
 const CLICK_END = src.indexOf('\n// Diagnostic: snapshot the full page DOM');
+// The caption helpers (captionsState, setCaptions, …) the code below calls:
+// old Meet and the 2026-10-22 pop-up alike. This fixture is old Meet.
+const HELPERS_START = src.indexOf("// ── Captions: Meet's old toggle and its new pop-up");
+const HELPERS_END = src.indexOf('// The last-resort aria-label match for the JOIN button.');
+assert.ok(HELPERS_START > 0 && HELPERS_END > HELPERS_START, 'could not slice the caption helpers out of the provider');
 const CLASS_START = src.indexOf('class CaptionScraper {');
 const CLASS_END = src.indexOf('const captionScraper = new CaptionScraper();');
 assert.ok(CLICK_START > 0 && CLICK_END > CLICK_START, 'could not slice clickCaptionsWhenReady out of the provider');
@@ -131,6 +136,7 @@ function makeWorld() {
       return !!document.querySelector(MEET.people.buttonFallback) ||
         !!document.querySelector(MEET.chat.toggle);
     }
+    ${src.slice(HELPERS_START, HELPERS_END)}
     ${src.slice(CLICK_START, CLICK_END)}
     ${src.slice(CLASS_START, CLASS_END)}
     return { clickCaptionsWhenReady, CaptionScraper };

@@ -3033,9 +3033,9 @@ function lockCalendarIdentityToAccount(email) {
     setConfig('calendarIdentityEmail', email);
   }
   calendarIdentityEmailInput.readOnly = true;
-  calendarIdentityEmailInput.title = 'Locked to the bot\'s signed-in Google account. Sign out to set a custom calendar invite email.';
+  calendarIdentityEmailInput.title = 'Set by the bot\'s Google account. Disconnect Google to use a different address.';
   if (calendarIdentityEmailCaption) {
-    calendarIdentityEmailCaption.textContent = `Locked to this bot's signed-in Google account (${email}) — that's already a valid calendar invite address. Sign out above to use a custom one instead.`;
+    calendarIdentityEmailCaption.textContent = 'Set by the bot\'s Google account. Disconnect Google to use a different address.';
   }
 }
 function unlockCalendarIdentity() {
@@ -3043,7 +3043,7 @@ function unlockCalendarIdentity() {
   calendarIdentityEmailInput.readOnly = false;
   calendarIdentityEmailInput.title = '';
   if (calendarIdentityEmailCaption) {
-    calendarIdentityEmailCaption.innerHTML = 'Add this address as a guest on a Google Calendar event to have this bot join it automatically. It doesn\'t need to be a real, working email. You can also put <code>#vibeconf:&lt;this bot\'s name&gt;</code> in the event\'s title or description instead. Filled in automatically from "Sign in to Google as bot" above, if used.';
+    calendarIdentityEmailCaption.innerHTML = 'Invite this address to a Google Calendar event and the bot joins it. It doesn\'t need to be a real mailbox. Or put <code>#vibeconf:&lt;this bot\'s name&gt;</code> in the event\'s title or description.';
   }
 }
 
@@ -3052,25 +3052,29 @@ const meetAccountEmail = document.getElementById('meetAccountEmail');
 // that hid #250 (mode said "account" while the bot was silently logged out).
 function refreshAccountEmail(mode) {
   if (!meetAccountEmail) return;
-  if (mode !== 'account') { meetAccountEmail.style.display = 'none'; unlockCalendarIdentity(); return; }
-  meetAccountEmail.style.display = '';
+  if (mode !== 'account') {
+    meetAccountEmail.textContent = '✓ Joins as a guest';
+    meetAccountEmail.className = 'conn-status ok';
+    unlockCalendarIdentity();
+    return;
+  }
   meetAccountEmail.textContent = 'Checking signed-in account…';
-  meetAccountEmail.className = 'account-email';
+  meetAccountEmail.className = 'conn-status';
   api.invoke('get-meet-account-email').then((r) => {
     if (r && r.signedIn && r.email) {
       meetAccountEmail.textContent = '✓ Signed in as ' + r.email;
-      meetAccountEmail.className = 'account-email email-ok';
+      meetAccountEmail.className = 'conn-status ok';
       if (meetSignInBtn) meetSignInBtn.style.display = 'none';
       lockCalendarIdentityToAccount(r.email);
     } else if (r && r.signedIn) {
       // Auth cookies present but we couldn't read the email — signed in for sure.
       meetAccountEmail.textContent = '✓ Signed in to Google (could not read which account)';
-      meetAccountEmail.className = 'account-email email-ok';
+      meetAccountEmail.className = 'conn-status ok';
       if (meetSignInBtn) meetSignInBtn.style.display = 'none';
       unlockCalendarIdentity();
     } else {
-      meetAccountEmail.textContent = '⚠ Mode is "account" but no Google session detected. The bot may not be signed in. Use "Sign in to Google as bot" below to fix it.';
-      meetAccountEmail.className = 'account-email email-bad';
+      meetAccountEmail.textContent = '⚠ Google session not found. Connect again to fix it.';
+      meetAccountEmail.className = 'conn-status bad';
       // #346: that sentence named a button applyMeetMode had just hidden —
       // account mode hides "Sign in to Google as bot" because a signed-in bot
       // doesn't need it, and this is precisely the account-mode case where it
@@ -3081,7 +3085,7 @@ function refreshAccountEmail(mode) {
     }
   }).catch(() => {
     meetAccountEmail.textContent = '(could not read signed-in account)';
-    meetAccountEmail.className = 'account-email';
+    meetAccountEmail.className = 'conn-status';
     unlockCalendarIdentity();
   });
 }
@@ -3207,13 +3211,23 @@ async function refreshBotIdentity(mode) {
 // --- Bot Slack identity. Like the Meet identity above, the main view no longer
 // renders a Slack status row — sign-in/out live in this bot's Settings. This
 // keeps the Settings sign-out button honest against the live cookie. ---
+// Bot accounts rows: the status line under a service's name, and (for
+// services that need an account) whether the row reads as usable yet.
+function setConnStatus(statusId, text, ok, rowId) {
+  const el = document.getElementById(statusId);
+  if (el) { el.textContent = text; el.className = ok ? 'conn-status ok' : 'conn-status'; }
+  if (rowId) document.getElementById(rowId)?.classList.toggle('unusable', !ok);
+}
+
 async function refreshSlackIdentity() {
   // Cookie-authoritative connected check (get-slack-mode → the `d` session
   // cookie). We can't read WHICH workspace/user without the huddle DOM (#283).
   let signedIn = false;
   try { signedIn = !!(await api.invoke('get-slack-mode'))?.signedIn; } catch { /* treat as unknown */ }
-  // Sign-out only makes sense while signed in — hidden otherwise.
+  // One of Connect / Disconnect, and the row's status line to match.
   if (slackSignOutBtn) slackSignOutBtn.style.display = signedIn ? '' : 'none';
+  if (slackSignInBtn) slackSignInBtn.style.display = signedIn ? 'none' : '';
+  setConnStatus('slackStatus', signedIn ? '✓ Signed in' : 'Not connected', signedIn, 'slackConnRow');
 }
 refreshSlackIdentity();
 
@@ -3222,6 +3236,9 @@ async function refreshZoomIdentity() {
   let signedIn = false;
   try { signedIn = !!(await api.invoke('get-zoom-mode'))?.signedIn; } catch { /* treat as unknown */ }
   if (zoomSignOutBtn) zoomSignOutBtn.style.display = signedIn ? '' : 'none';
+  if (zoomSignInBtn) zoomSignInBtn.style.display = signedIn ? 'none' : '';
+  // Zoom works as a guest, so "not signed in" is still a usable state.
+  setConnStatus('zoomStatus', signedIn ? '✓ Signed in' : '✓ Joins as a guest', true);
 }
 refreshZoomIdentity();
 
@@ -3421,7 +3438,7 @@ api.on('bot-view-visible', ({ visible }) => applyBotViewVisible(!!visible));
 
 meetSignInBtn?.addEventListener('click', async () => {
   meetSignInBtn.disabled = true;
-  meetSignInBtn.textContent = 'Switching to Google sign-in...';
+  meetSignInBtn.textContent = 'Opening…';
   try {
     await api.invoke('meet-sign-in-as-bot');
   } catch (err) {
@@ -3429,13 +3446,13 @@ meetSignInBtn?.addEventListener('click', async () => {
   }
   setTimeout(() => {
     meetSignInBtn.disabled = false;
-    meetSignInBtn.textContent = 'Sign in to Google as bot';
+    meetSignInBtn.textContent = 'Connect';
   }, 1500);
 });
 
 meetSignOutBtn?.addEventListener('click', async () => {
   meetSignOutBtn.disabled = true;
-  meetSignOutBtn.textContent = 'Clearing account session...';
+  meetSignOutBtn.textContent = 'Disconnecting…';
   try {
     await api.invoke('meet-sign-out-bot');
   } catch (err) {
@@ -3443,7 +3460,7 @@ meetSignOutBtn?.addEventListener('click', async () => {
   }
   setTimeout(() => {
     meetSignOutBtn.disabled = false;
-    meetSignOutBtn.textContent = 'Sign out (use as guest)';
+    meetSignOutBtn.textContent = 'Disconnect';
   }, 1500);
 });
 
@@ -3452,7 +3469,7 @@ meetSignOutBtn?.addEventListener('click', async () => {
 // check toggles it — same behavior as the Meet identity section).
 slackSignInBtn?.addEventListener('click', async () => {
   slackSignInBtn.disabled = true;
-  slackSignInBtn.textContent = 'Opening Slack…';
+  slackSignInBtn.textContent = 'Opening…';
   try {
     await api.invoke('slack-sign-in');
   } catch (err) {
@@ -3460,14 +3477,78 @@ slackSignInBtn?.addEventListener('click', async () => {
   }
   setTimeout(() => {
     slackSignInBtn.disabled = false;
-    slackSignInBtn.textContent = 'Sign into Slack as bot';
+    slackSignInBtn.textContent = 'Connect';
     refreshSlackIdentity();
   }, 1500);
 });
 
+// Calling apps (#843): open WhatsApp Web / Telegram Web on this bot's session
+// so its own account can be signed in (QR scan or phone code).
+for (const btn of document.querySelectorAll('button[data-calling-app]')) {
+  const which = btn.dataset.callingApp;
+  const label = btn.textContent;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const r = await api.invoke('calling-app-sign-in', { app: which });
+      if (r && !r.ok) showError(r.error || `Could not open ${which} sign-in`);
+    } catch (err) {
+      showError(`${label} failed: ` + err.message);
+    }
+    setTimeout(() => { btn.disabled = false; }, 1000);
+  });
+}
+
+// Signed in → the account on the status line, and Disconnect in place of
+// Connect. Main pushes calling-app-status as the login lands.
+const CALLING_APP_NAMES = { whatsapp: 'WhatsApp', telegram: 'Telegram' };
+function applyCallingAppStatus(status) {
+  for (const btn of document.querySelectorAll('button[data-calling-app-sign-out]')) {
+    btn.style.display = status?.[btn.dataset.callingAppSignOut] ? '' : 'none';
+  }
+  // One account per bot: signed in shows sign-out instead of sign-in.
+  for (const btn of document.querySelectorAll('button[data-calling-app]')) {
+    btn.style.display = status?.[btn.dataset.callingApp] ? 'none' : '';
+  }
+  for (const el of document.querySelectorAll('[data-calling-app-account]')) {
+    const account = status?.[el.dataset.callingAppAccount];
+    el.textContent = account ? `✓ ${account.label}` : 'Not connected';
+    el.className = account ? 'conn-status ok' : 'conn-status';
+  }
+  for (const row of document.querySelectorAll('[data-calling-app-row]')) {
+    row.classList.toggle('unusable', !status?.[row.dataset.callingAppRow]);
+  }
+}
+api.invoke('calling-app-status').then(applyCallingAppStatus).catch(() => {});
+api.on('calling-app-status', applyCallingAppStatus);
+
+const CALLING_APP_DEVICES = {
+  telegram: 'Telegram → Settings → Devices',
+  whatsapp: 'WhatsApp → Linked devices',
+};
+for (const btn of document.querySelectorAll('button[data-calling-app-sign-out]')) {
+  const which = btn.dataset.callingAppSignOut;
+  btn.addEventListener('click', async () => {
+    // Disconnecting only forgets the login on this computer; the linked
+    // session lives on in the phone's device list until removed there.
+    const ok = window.confirm(`Disconnect ${CALLING_APP_NAMES[which]} from this bot?\n\nThis signs it out on this computer. To end the session completely, also remove it on the phone (${CALLING_APP_DEVICES[which]}).`);
+    if (!ok) return;
+    btn.disabled = true;
+    btn.textContent = 'Disconnecting…';
+    try {
+      const r = await api.invoke('calling-app-sign-out', { app: which });
+      if (r && !r.ok) showError(r.error || `Could not disconnect ${CALLING_APP_NAMES[which]}`);
+    } catch (err) {
+      showError(`Disconnecting ${CALLING_APP_NAMES[which]} failed: ` + err.message);
+    }
+    btn.disabled = false;
+    btn.textContent = 'Disconnect';
+  });
+}
+
 zoomSignInBtn?.addEventListener('click', async () => {
   zoomSignInBtn.disabled = true;
-  zoomSignInBtn.textContent = 'Opening Zoom…';
+  zoomSignInBtn.textContent = 'Opening…';
   try {
     await api.invoke('zoom-sign-in');
   } catch (err) {
@@ -3475,14 +3556,14 @@ zoomSignInBtn?.addEventListener('click', async () => {
   }
   setTimeout(() => {
     zoomSignInBtn.disabled = false;
-    zoomSignInBtn.textContent = 'Sign into Zoom as bot';
+    zoomSignInBtn.textContent = 'Connect';
     refreshZoomIdentity();
   }, 1500);
 });
 
 zoomSignOutBtn?.addEventListener('click', async () => {
   zoomSignOutBtn.disabled = true;
-  zoomSignOutBtn.textContent = 'Signing out of Zoom…';
+  zoomSignOutBtn.textContent = 'Disconnecting…';
   try {
     await api.invoke('zoom-sign-out');
   } catch (err) {
@@ -3490,14 +3571,14 @@ zoomSignOutBtn?.addEventListener('click', async () => {
   }
   setTimeout(() => {
     zoomSignOutBtn.disabled = false;
-    zoomSignOutBtn.textContent = 'Sign out of Zoom';
+    zoomSignOutBtn.textContent = 'Disconnect';
     refreshZoomIdentity();
   }, 1500);
 });
 
 slackSignOutBtn?.addEventListener('click', async () => {
   slackSignOutBtn.disabled = true;
-  slackSignOutBtn.textContent = 'Signing out of Slack…';
+  slackSignOutBtn.textContent = 'Disconnecting…';
   try {
     await api.invoke('slack-sign-out');
   } catch (err) {
@@ -3505,7 +3586,7 @@ slackSignOutBtn?.addEventListener('click', async () => {
   }
   setTimeout(() => {
     slackSignOutBtn.disabled = false;
-    slackSignOutBtn.textContent = 'Sign out of Slack';
+    slackSignOutBtn.textContent = 'Disconnect';
     refreshSlackIdentity();
   }, 1500);
 });

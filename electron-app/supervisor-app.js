@@ -1443,9 +1443,15 @@ function start() {
     stopAllBots().finally(() => { botsStopped = true; app.quit(); });
   });
   app.on('second-instance', () => {
-    if (!win || win.isDestroyed()) { createWindow(); resumeLastBot(); return; }
-    if (win.isMinimized()) win.restore();
-    win.focus();
+    // A second launch can arrive before this one is ready (it was started
+    // --background, or is still booting): creating the window then throws
+    // "Cannot create BrowserWindow before app is ready" as a modal error in the
+    // main process (seen 2026-10-23). Wait for ready instead.
+    app.whenReady().then(() => {
+      if (!win || win.isDestroyed()) { createWindow(); resumeLastBot(); return; }
+      if (win.isMinimized()) win.restore();
+      win.focus();
+    });
   });
 
   app.whenReady().then(() => {

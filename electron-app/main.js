@@ -14500,6 +14500,43 @@ function setupIPC() {
     return { ok: true };
   });
 
+  // --- Calling-app identities (#843): sign the BOT into WhatsApp / Telegram ---
+  // A plain window on the bot's own session partition, so the login (WhatsApp
+  // Web keeps it in IndexedDB, Telegram in localStorage) is there later for the
+  // call providers to use. Deliberately NOT the call view: no preload, so
+  // nothing Node-ish is visible to the page (Teams treated a leaked
+  // window.process as its retired Electron client, #812), and it presents as
+  // current Chrome in the UA string AND the client-hint headers, which these
+  // web clients check before they'll show a login at all.
+  const CALLING_APP_SIGN_IN = {
+    whatsapp: { url: 'https://web.whatsapp.com/', title: 'Sign the bot into WhatsApp: scan the QR code with the bot\'s phone' },
+    telegram: { url: 'https://web.telegram.org/a/', title: 'Sign the bot into Telegram: log in with the bot\'s phone' },
+  };
+  const callingAppSignInWindows = {};
+  ipcMain.handle('calling-app-sign-in', (_event, { app: which } = {}) => {
+    const target = CALLING_APP_SIGN_IN[which];
+    if (!target) return { ok: false, error: `unknown calling app: ${which}` };
+    const open = callingAppSignInWindows[which];
+    if (open && !open.isDestroyed()) { open.show(); open.focus(); return { ok: true }; }
+    const browserId = require('./slack-ua');
+    const sess = session.fromPartition(SESSION_PARTITION);
+    try { browserId.installHeaderSpoof(sess); } catch { /* best effort */ }
+    const win = new BrowserWindow({
+      width: 1100,
+      height: 800,
+      title: target.title,
+      parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+      webPreferences: { partition: SESSION_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true },
+    });
+    win.on('page-title-updated', (e) => e.preventDefault()); // keep the instruction as the title
+    win.webContents.setUserAgent(browserId.UA);
+    win.loadURL(target.url);
+    win.on('closed', () => { delete callingAppSignInWindows[which]; });
+    callingAppSignInWindows[which] = win;
+    console.log(`[electron] Opened ${which} sign-in for this bot (${target.url})`);
+    return { ok: true };
+  });
+
   // --- TTS ---
   ipcMain.on('speak', (_event, text) => {
     if (!text) return;

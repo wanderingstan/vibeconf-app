@@ -416,12 +416,16 @@
           account's name instead of the one above. Logins persist across launches.
         </p>
         <div id="meetAccountEmail" class="account-email" style="display:none"></div>
-        <button id="meetSignInBtn">Sign in to Google as bot</button>
-        <button id="meetSignOutBtn" style="display:none">Sign out (use as guest)</button>
-        <button id="slackSignInBtn">Sign into Slack as bot</button>
-        <button id="slackSignOutBtn" style="display:none">Sign out of Slack</button>
-        <button id="zoomSignInBtn">Sign into Zoom as bot</button>
-        <button id="zoomSignOutBtn" style="display:none">Sign out of Zoom</button>
+        <button id="meetSignInBtn" class="provider-meet">Sign in to Google as bot</button>
+        <button id="meetSignOutBtn" class="provider-meet" style="display:none">Sign out (use as guest)</button>
+        <button id="slackSignInBtn" class="provider-slack">Sign into Slack as bot</button>
+        <button id="slackSignOutBtn" class="provider-slack" style="display:none">Sign out of Slack</button>
+        <button id="zoomSignInBtn" class="provider-zoom">Sign into Zoom as bot</button>
+        <button id="zoomSignOutBtn" class="provider-zoom" style="display:none">Sign out of Zoom</button>
+        <!-- Calling apps (#843): the bot's own WhatsApp / Telegram account, so
+             people can call it. Its own number, never a personal one. -->
+        <button id="whatsappSignInBtn" class="provider-whatsapp" data-calling-app="whatsapp">Sign into WhatsApp as bot</button>
+        <button id="telegramSignInBtn" class="provider-telegram" data-calling-app="telegram">Sign into Telegram as bot</button>
 
         <!-- Calendar auto-join identity (#299): add this address as a guest on
              a Google Calendar event (it never needs to resolve to a real

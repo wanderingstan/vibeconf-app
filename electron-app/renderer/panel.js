@@ -3417,6 +3417,23 @@ slackSignInBtn?.addEventListener('click', async () => {
   }, 1500);
 });
 
+// Calling apps (#843): open WhatsApp Web / Telegram Web on this bot's session
+// so its own account can be signed in (QR scan or phone code).
+for (const btn of document.querySelectorAll('button[data-calling-app]')) {
+  const which = btn.dataset.callingApp;
+  const label = btn.textContent;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    try {
+      const r = await api.invoke('calling-app-sign-in', { app: which });
+      if (r && !r.ok) showError(r.error || `Could not open ${which} sign-in`);
+    } catch (err) {
+      showError(`${label} failed: ` + err.message);
+    }
+    setTimeout(() => { btn.disabled = false; }, 1000);
+  });
+}
+
 zoomSignInBtn?.addEventListener('click', async () => {
   zoomSignInBtn.disabled = true;
   zoomSignInBtn.textContent = 'Opening Zoom…';

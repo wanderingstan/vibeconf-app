@@ -7507,6 +7507,7 @@ function openBotSignInWindow() {
   if (botSignInWindow && !botSignInWindow.isDestroyed()) {
     botSignInWindow.show();
     botSignInWindow.focus();
+    presentHeadlessWindow(botSignInWindow);
     return;
   }
   // Same Chrome UA and handlers the Meet view gets, or Google refuses the
@@ -7516,7 +7517,9 @@ function openBotSignInWindow() {
     width: 480,
     height: 680,
     title: 'Sign the bot in to Google',
-    parent: (mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined,
+    // Not parented to a hosted bot's hidden window, which macOS would show
+    // along with it (see calling-app-sign-in).
+    parent: (!HEADLESS && mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined,
     webPreferences: { contextIsolation: true, nodeIntegration: false, partition: SESSION_PARTITION },
   });
   botSignInWindow = win;
@@ -7537,6 +7540,7 @@ function openBotSignInWindow() {
     if (!win.isDestroyed()) win.close();
   });
   win.loadURL(MEET_SIGN_IN_URL);
+  presentHeadlessWindow(win);
 }
 
 function broadcastError(message, key, errorAction) {
@@ -14591,7 +14595,7 @@ function setupIPC() {
     const target = CALLING_APP_SIGN_IN[which];
     if (!target) return { ok: false, error: `unknown calling app: ${which}` };
     const open = callingAppSignInWindows[which];
-    if (open && !open.isDestroyed()) { open.show(); open.focus(); return { ok: true }; }
+    if (open && !open.isDestroyed()) { open.show(); open.focus(); presentHeadlessWindow(open); return { ok: true }; }
     const browserId = require('./slack-ua');
     const sess = session.fromPartition(SESSION_PARTITION);
     try { browserId.installHeaderSpoof(sess); } catch { /* best effort */ }
@@ -14599,7 +14603,10 @@ function setupIPC() {
       width: 1100,
       height: 800,
       title: target.title,
-      parent: mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+      // No parent for a hosted bot: its own window is hidden, and on macOS
+      // showing a child brings the parent up with it (the bot's whole app
+      // window appeared beside the sign-in). Same as Bot's view and Brain.
+      parent: !HEADLESS && mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
       webPreferences: { partition: SESSION_PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true },
     });
     win.on('page-title-updated', (e) => e.preventDefault()); // keep the instruction as the title
@@ -14615,6 +14622,7 @@ function setupIPC() {
     }, 2000);
     win.on('closed', () => { clearInterval(poll); delete callingAppSignInWindows[which]; });
     callingAppSignInWindows[which] = win;
+    presentHeadlessWindow(win);
     console.log(`[electron] Opened ${which} sign-in for this bot (${target.url})`);
     return { ok: true };
   });

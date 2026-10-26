@@ -12,6 +12,12 @@
 //   - The caller's PHONE NUMBER comes from require('WAWebApiContact')
 //     .getPhoneNumber(peerJid) → "19175752435@c.us". The allowlist keys on that:
 //     the display name is the caller's own choice and proves nothing.
+//   - The call runs in a floating panel inside the page. Its bar: camera,
+//     mic, pop-out, "More options" (⋮) and "End call". Screen sharing is in
+//     that ⋮ menu: role=menuitem "Share screen", and while sharing "Stop
+//     sharing screen". WhatsApp then asks getDisplayMedia, which the app
+//     answers with the whiteboard window, as on Meet.
+//   - WhatsApp turns the camera on by itself for a video call.
 //   - Audio never becomes a track or a media element: WhatsApp's WASM engine
 //     plays it through an AudioWorklet named
 //     "voip-shared-buffer-playback-processor" (16 kHz mono), which
@@ -66,6 +72,46 @@ function findButton(doc, label) {
   return null;
 }
 
+// The call bar's own "More options" (⋮): the one sharing a container with
+// "End call", not the chat header's button of the same name.
+function callMenuButton(doc) {
+  let node = findButton(doc, 'end call');
+  for (let i = 0; node && i < 8; i++) {
+    node = node.parentElement;
+    if (!node || !node.querySelectorAll) break;
+    for (const b of node.querySelectorAll('button, [role="button"]')) {
+      if ((b.getAttribute('aria-label') || '').trim().toLowerCase() === 'more options') return b;
+    }
+  }
+  return null;
+}
+
+function findMenuItem(doc, label) {
+  for (const el of doc.querySelectorAll('[role="menuitem"]')) {
+    if ((el.getAttribute('aria-label') || '').trim().toLowerCase() === label.toLowerCase()) return el;
+  }
+  return null;
+}
+
+// Open the call bar's ⋮ and pick an item. Resolves true when the item was
+// there; closes the menu again (Escape) when it wasn't.
+async function chooseCallMenuItem(win, label, { wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const doc = win.document;
+  let item = findMenuItem(doc, label);
+  if (!item) {
+    const menu = callMenuButton(doc);
+    if (!menu) return false;
+    menu.click();
+    for (let i = 0; i < 10 && !item; i++) { await wait(100); item = findMenuItem(doc, label); }
+  }
+  if (!item) {
+    try { doc.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); } catch { /* best effort */ }
+    return false;
+  }
+  item.click();
+  return true;
+}
+
 // { phase: 'none' | 'ringing' | 'connecting' | 'active' | 'outgoing', peerJid,
 //   phone, name }. 'ringing' = incoming and not yet answered (Accept on
 // screen); 'connecting' = answered, media not up yet.
@@ -104,5 +150,8 @@ module.exports = {
   isCallerAllowed,
   roomCodeForCaller,
   findButton,
+  callMenuButton,
+  findMenuItem,
+  chooseCallMenuItem,
   readCall,
 };

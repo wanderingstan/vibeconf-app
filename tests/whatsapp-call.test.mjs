@@ -76,6 +76,58 @@ test('one calling app answers at a time: switching one on switches the others of
   assert.match(panel, /if \(other !== app && box\) box\.checked = false;/);
 });
 
+// A small DOM for the call bar: elements with aria-label/role, parents, and
+// querySelectorAll over the few selectors whatsapp-call.js uses.
+function node(attrs = {}, children = []) {
+  const n = {
+    attrs, children, parentElement: null, clicks: 0,
+    getAttribute: (a) => (a in attrs ? attrs[a] : null),
+    click() { n.clicks++; if (n.onClick) n.onClick(); },
+    querySelectorAll(sel) {
+      const out = [];
+      const want = (c) => (sel.includes('menuitem') ? c.attrs.role === 'menuitem' : (c.attrs.tag === 'button' || c.attrs.role === 'button'));
+      const walk = (x) => { for (const c of x.children) { if (want(c)) out.push(c); walk(c); } };
+      walk(n);
+      return out;
+    },
+  };
+  for (const c of children) c.parentElement = n;
+  return n;
+}
+function callScreen({ sharing = false } = {}) {
+  const headerMenu = node({ tag: 'button', 'aria-label': 'More options' });
+  const callMenu = node({ tag: 'button', 'aria-label': 'More options' });
+  const end = node({ tag: 'button', 'aria-label': 'End call' });
+  const bar = node({}, [node({}, [callMenu]), node({}, [end])]);
+  const menu = node({ role: 'menu' });
+  const doc = node({}, [node({}, [headerMenu]), node({}, [bar]), menu]);
+  doc.dispatchEvent = () => {};
+  callMenu.onClick = () => {
+    const items = [sharing ? 'Stop sharing screen' : 'Share screen', 'Add people', 'Send message']
+      .map((l) => node({ role: 'menuitem', 'aria-label': l }));
+    menu.children = items;
+    for (const c of items) c.parentElement = menu;
+  };
+  return { doc, headerMenu, callMenu, menu };
+}
+const noWait = { wait: () => Promise.resolve() };
+
+test('the call bar\'s ⋮ is the one next to End call, not the chat header\'s', () => {
+  const { doc, callMenu } = callScreen();
+  assert.equal(wa.callMenuButton(doc), callMenu);
+});
+
+test('sharing picks "Share screen" from the call menu, and stopping picks "Stop sharing screen"', async () => {
+  const s = callScreen();
+  assert.equal(await wa.chooseCallMenuItem({ document: s.doc, KeyboardEvent: class {} }, 'Share screen', noWait), true);
+  assert.equal(s.headerMenu.clicks, 0, 'never the chat header menu');
+  assert.equal(s.menu.children.find((c) => c.attrs['aria-label'] === 'Share screen').clicks, 1);
+  const stop = callScreen({ sharing: true });
+  assert.equal(await wa.chooseCallMenuItem({ document: stop.doc, KeyboardEvent: class {} }, 'Stop sharing screen', noWait), true);
+  // Not sharing: the item isn't there, so it reports false rather than clicking something else.
+  assert.equal(await wa.chooseCallMenuItem({ document: callScreen().doc, KeyboardEvent: class {} }, 'Stop sharing screen', noWait), false);
+});
+
 test('main isolates WhatsApp Web so its calling engine gets SharedArrayBuffer', () => {
   const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
   assert.match(main, /web\\\.whatsapp\\\.com/);

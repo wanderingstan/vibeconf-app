@@ -2135,13 +2135,19 @@
     // Replacing the constraint with a plain `audio: true` clears the exclusions.
     // Electron only: the extension path shows the real picker, where forcing
     // audio would change what the user is prompted for.
+    //
+    // Except when the page says `audio: false` outright. Telegram does, and then
+    // takes stream.getTracks()[0] as its screencast; Chromium lists audio
+    // tracks first, so forcing audio made it "screencast" a sound and no video
+    // ever went out (live, 2026-10-26).
     const inElectron = typeof window.__vibeconf_getScreenShareSource === 'function';
+    const refusesAudio = constraints?.audio === false;
     if (inElectron) {
-      constraints = { ...(constraints || {}), audio: true };
+      constraints = { ...(constraints || {}), audio: !refusesAudio };
       if (!constraints.video) constraints.video = true; // audio-only requests are rejected
     }
     const stream = await _getDisplayMedia.call(navigator.mediaDevices, constraints);
-    if (inElectron) installShareAudioGain(stream);
+    if (inElectron && !refusesAudio) installShareAudioGain(stream);
     console.log('[bots-in-calls] getDisplayMedia →',
       stream.getVideoTracks().length, 'video,',
       stream.getAudioTracks().length, 'audio track(s)',

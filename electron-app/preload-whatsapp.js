@@ -123,7 +123,9 @@ const press = (label) => {
 function setMicMuted(muted) { return press(muted ? 'Mute microphone' : 'Unmute microphone'); }
 function setCameraOn(on) {
   const ok = press(on ? 'Turn camera on' : 'Turn camera off');
-  console.log('[whatsapp] camera', on ? 'on' : 'off', ok ? '' : '(button not found)');
+  // No button: WhatsApp has video in that state already (it turns the camera
+  // on by itself for a video call).
+  console.log('[whatsapp] camera', on ? 'on' : 'off', ok ? '' : '(already, no button to press)');
   return ok;
 }
 
@@ -148,8 +150,29 @@ ipcRenderer.on(CALL_COMMANDS.sendChat, (_e, { requestId }) => {
 ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, (_e, { requestId } = {}) => {
   emit(CALL_EVENTS.captionLanguageResult, { requestId, ok: false, error: 'WhatsApp has no captions; the bot transcribes the call audio itself' });
 });
-ipcRenderer.on(CALL_COMMANDS.triggerScreenShare, () => { console.log('[whatsapp] screen share is not supported on WhatsApp calls yet'); });
-ipcRenderer.on(CALL_COMMANDS.triggerStopSharing, () => {});
+// Screen share: WhatsApp's own ⋮ → "Share screen". It then asks
+// getDisplayMedia, which the app answers with the whiteboard window (no
+// picker), so the room sees the bot's whiteboard. Our side of the edge is
+// reported as self-presenting, so the app stops retrying once it's up.
+let sharing = false;
+function reportSharing(on) {
+  if (sharing === on) return;
+  sharing = on;
+  emit(CALL_EVENTS.selfPresenting, { presenting: on });
+  console.log('[whatsapp] self-presenting:', on);
+}
+ipcRenderer.on(CALL_COMMANDS.triggerScreenShare, async () => {
+  if (state !== 'in-call') { console.log('[whatsapp] share asked for outside a call — ignored'); return; }
+  if (whatsappCall.findMenuItem(document, 'Stop sharing screen')) { reportSharing(true); return; }
+  const ok = await whatsappCall.chooseCallMenuItem(window, 'Share screen');
+  console.log('[whatsapp] share screen →', ok ? 'started' : 'no "Share screen" in the call menu');
+  if (ok) reportSharing(true);
+});
+ipcRenderer.on(CALL_COMMANDS.triggerStopSharing, async () => {
+  const ok = await whatsappCall.chooseCallMenuItem(window, 'Stop sharing screen');
+  console.log('[whatsapp] stop sharing →', ok ? 'stopped' : 'was not sharing');
+  reportSharing(false);
+});
 ipcRenderer.on(CALL_COMMANDS.setStudioSound, () => {});
 ipcRenderer.on(CALL_COMMANDS.recoverCaptions, () => {});
 ipcRenderer.on('trigger-leave-call', () => {
@@ -212,6 +235,7 @@ function tick() {
 
   if (call.phase === 'none') {
     if (state === 'in-call') {
+      reportSharing(false);
       console.log('[whatsapp] call ended');
       emit(CALL_EVENTS.statusUpdate, 'Call ended: the WhatsApp call was hung up');
     } else if (state === 'answering') {

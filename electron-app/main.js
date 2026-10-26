@@ -11661,8 +11661,9 @@ function activateTeamsProvider(teamsUrl) {
 // Standby: the call view shows the bot's own account in that app (its
 // preload), which watches for incoming calls. Wanted when the bot is signed in
 // to the app AND its owner switched "Answer <app> calls" on in Settings. One
-// app at a time for now (there is one call view); with both on, the first in
-// CALLING_APP_ORDER waits.
+// app at a time (there is one call view): the switches are exclusive, see
+// set-config; a profile saved with both on waits in the first of
+// CALLING_APP_ORDER.
 const CALLING_APP_CALLS = {
   telegram: { label: 'Telegram', preload: 'preload-telegram.js', module: './telegram-call', callerKey: (c) => c && c.id },
   whatsapp: { label: 'WhatsApp', preload: 'preload-whatsapp.js', module: './whatsapp-call', callerKey: (c) => c && c.phone },
@@ -13216,7 +13217,18 @@ function setupIPC() {
     if (sessionKeyed) forgetStaleAgentSession(beforePair, agentSessionPair());
     // Calling-app calls (#843): switching answering on/off takes effect now,
     // but only between calls (refreshCallingAppStandby checks the status).
-    if (key === 'telegramAnswerCalls' || key === 'whatsappAnswerCalls') refreshCallingAppStandby(key + ' ' + (value ? 'on' : 'off'));
+    if (key === 'telegramAnswerCalls' || key === 'whatsappAnswerCalls') {
+      // One calling app answers at a time (there is one call view): switching
+      // one on switches the others off, here as well as in the panel, so the
+      // store can never hold two.
+      if (value) {
+        for (const app of CALLING_APP_ORDER) {
+          const other = app + 'AnswerCalls';
+          if (other !== key && store.get(other)) { store.set(other, false); notifyConfigChanged(other, false); }
+        }
+      }
+      refreshCallingAppStandby(key + ' ' + (value ? 'on' : 'off'));
+    }
     // Every key, not only the ones with a live-apply hook below — the panel shows
     // more prefs than this function specially handles, and the wizard writes
     // several of them.

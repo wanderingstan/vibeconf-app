@@ -3533,7 +3533,17 @@ for (const app of ['telegram', 'whatsapp']) {
     if (answer) answer.checked = !!cfg?.[app + 'AnswerCalls'];
     if (allowed) allowed.value = cfg?.[app + 'AllowedCallers'] || '';
   }).catch(() => {});
-  answer?.addEventListener('change', () => setConfig(app + 'AnswerCalls', answer.checked));
+  answer?.addEventListener('change', () => {
+    // One app answers at a time: checking this one clears the others
+    // (main enforces the same on write).
+    if (answer.checked) {
+      for (const other of ['telegram', 'whatsapp']) {
+        const box = document.getElementById(other + 'AnswerCalls');
+        if (other !== app && box) box.checked = false;
+      }
+    }
+    setConfig(app + 'AnswerCalls', answer.checked);
+  });
   allowed?.addEventListener('change', () => setConfig(app + 'AllowedCallers', allowed.value));
 }
 api.invoke('calling-app-status').then(applyCallingAppStatus).catch(() => {});

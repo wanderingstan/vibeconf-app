@@ -56,6 +56,27 @@ test('a chat counts as open only when it is that caller\'s (by id in the address
   assert.equal(tg.chatIsOpen(doc('#6785998012'), null), false);
 });
 
+test('Telegram calls carry no camera: as the answering side it can never reach the caller (#889)', () => {
+  const preload = readFileSync(join(root, 'electron-app/preload-telegram.js'), 'utf8');
+  assert.doesNotMatch(preload, /findCallButton\(document, 'start video'\)|setCameraOn/, 'no camera presses');
+  assert.match(preload, /case CALL_COMMANDS\.ACTIONS\.cameraOff: break;/);
+});
+
+test('page-inject honours a screen request that refuses audio (Telegram takes the first track)', () => {
+  const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+  assert.match(inject, /const refusesAudio = constraints\?\.audio === false;/);
+  assert.match(inject, /audio: !refusesAudio/);
+  assert.match(inject, /if \(inElectron && !refusesAudio\) installShareAudioGain\(stream\);/);
+});
+
+test('a request for a calling-app room that isn\'t the current call is refused, never adopted', () => {
+  const server = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
+  assert.match(server, /const CALLING_APP_ROOM_RE = \/\^\(telegram\|whatsapp\|phone\)-\/;/);
+  const guard = server.indexOf('if (CALLING_APP_ROOM_RE.test(roomId) && roomId !== this.roomId) {');
+  const adopt = server.indexOf('if (!this.roomId) {\n      this.setRoom(roomId);');
+  assert.ok(guard > 0 && adopt > guard, 'the refusal comes before the adoption');
+});
+
 test('the preload reads and sends only after checking the open chat is the caller\'s', () => {
   const preload = readFileSync(join(root, 'electron-app/preload-telegram.js'), 'utf8');
   const fn = preload.slice(preload.indexOf('async function callerChatMessages()'));

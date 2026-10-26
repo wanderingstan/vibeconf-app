@@ -67,7 +67,7 @@ require('./preload-stt-bridge').installSttBridge(ipcRenderer);
 
 try { window.telegramCall = telegramCall; } catch { /* window not ready */ }
 
-// The call's own peer connections, so the camera can wait for "connected".
+// The call's own peer connections, so "in call" waits for "connected".
 // Wraps page-inject's wrapper (installed just above); the realtime voice
 // session uses the native constructor and so is not counted.
 const callConnections = [];
@@ -87,6 +87,10 @@ const callConnected = () => callConnections.some((pc) => pc.connectionState === 
 // For DevTools: what the call is sending (getStats on these).
 try { window.__vibeTelegramConnections = callConnections; } catch { /* window not ready */ }
 
+// Type as a keyboard would, through main (webContents.insertText): works when
+// the page's own editing commands don't, in a view without keyboard focus.
+const keyboardType = (text) => ipcRenderer.invoke('calling-app-insert-text', { text });
+
 function emit(channel, payload) {
   try {
     if (payload === undefined) ipcRenderer.send(channel);
@@ -101,28 +105,18 @@ function setMicMuted(muted) {
   return btn ? telegramCall.pressButton(btn) : false;
 }
 
-// Camera: page-inject's getUserMedia hands Telegram the VirtualCamera (the
-// bot's face), so turning video on is just Telegram's own button. Its label
-// while video is on wasn't seen in recon, so try the likely ones.
-function setCameraOn(on) {
-  const labels = on ? ['start video'] : ['stop video', 'video off', 'turn off video'];
-  for (const l of labels) {
-    const btn = telegramCall.findCallButton(document, l);
-    if (btn) { console.log('[telegram] camera', on ? 'on' : 'off', '(' + l + ')'); return telegramCall.pressButton(btn); }
-  }
-  // Telegram may already be there: it turns video on by itself when the
-  // caller's call is a video call.
-  console.log('[telegram] camera already', on ? 'on' : 'off', '(no "' + labels[0] + '" button)');
-  return false;
-}
+// No camera on Telegram calls. As the answering side, Telegram Web can't add
+// video: its renegotiation offer is never answered, and pressing "start video"
+// only leaves the negotiation wedged (audio carries on). The caller-side
+// workaround didn't hold up either. Full write-up: #889.
 
 ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
   if (!message) return;
   switch (message.action) {
     case CALL_COMMANDS.ACTIONS.unmuteMic: setMicMuted(false); break;
     case CALL_COMMANDS.ACTIONS.muteMic: setMicMuted(true); break;
-    case CALL_COMMANDS.ACTIONS.cameraOn: setCameraOn(true); break;
-    case CALL_COMMANDS.ACTIONS.cameraOff: setCameraOn(false); break;
+    case CALL_COMMANDS.ACTIONS.cameraOn:
+    case CALL_COMMANDS.ACTIONS.cameraOff: break; // no video on Telegram calls (#889)
     default:
       window.postMessage({ __botsInCalls: true, __fromExtension: true, ...message }, '*');
   }
@@ -158,7 +152,7 @@ ipcRenderer.on(CALL_COMMANDS.readChat, async (_e, { requestId }) => {
 ipcRenderer.on(CALL_COMMANDS.sendChat, async (_e, { requestId, text }) => {
   try {
     await callerChatMessages(); // opens and verifies the caller's chat
-    await telegramCall.sendChatMessage(document, text);
+    await telegramCall.sendChatMessage(document, text, { typeText: keyboardType });
     console.log('[telegram] sent a chat message to', caller.name || caller.id);
     emit(CALL_EVENTS.chatResult, { requestId, ok: true });
   } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
@@ -223,7 +217,6 @@ let state = 'idle';   // idle | deciding | ignoring | answering | in-call
 let ringSeenAt = 0;
 let caller = null;
 let answerPressedAt = 0;
-let cameraStarted = false;
 
 // How long to wait for the caller's avatar (and so their id) to draw before
 // deciding without it. Without an id the call is not answered.
@@ -295,7 +288,6 @@ function tick() {
   if (state === 'answering') {
     state = 'in-call';
     ringSeenAt = 0;
-    cameraStarted = false;
     setMicMuted(false);
     const name = (caller && caller.name) || 'Caller';
     emit(CALL_EVENTS.statusUpdate, 'In call (Telegram)');
@@ -315,14 +307,6 @@ function tick() {
       const newest = newestFromCaller(telegramCall.readChatMessages(document));
       if (newest && newest !== lastReadChatId) setChatUnread(true);
     } catch { /* chat redrawing */ }
-  }
-  // Show the bot's face, as on Meet, Zoom and Teams, but only once the call
-  // has connected: pressing "start video" while Telegram was still connecting
-  // left the call stuck there, and the caller never got an answer (live,
-  // 2026-10-23; without the camera it connected in half a second).
-  if (state === 'in-call' && !cameraStarted && callConnected()) {
-    cameraStarted = true;
-    setCameraOn(true);
   }
 }
 

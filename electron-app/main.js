@@ -10582,6 +10582,13 @@ app.whenReady().then(async () => {
     });
   }
 
+  // Keyboard-style text input into the calling app's own view (the bot's
+  // Telegram chat box), for when the page's editing commands lack focus.
+  // Only from the call view itself, and only into it.
+  ipcMain.handle('calling-app-insert-text', async (event, { text } = {}) => {
+    if (!callingAppMode || !meetView || event.sender !== meetView.webContents) return { ok: false };
+    try { await meetView.webContents.insertText(String(text || '').slice(0, 4000)); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
+  });
   ipcMain.handle('calling-app-incoming-call', (_event, { app, caller = {} } = {}) => {
     const verdict = decideCallingAppCall(app, caller);
     console.log('[electron] ' + app + ' call from', JSON.stringify(caller),

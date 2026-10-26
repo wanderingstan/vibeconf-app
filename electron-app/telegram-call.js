@@ -18,6 +18,10 @@
 //     #editable-message-text: execCommand('insertText') registers with it, and
 //     a "Send Message" button (aria-label) appears. Call records are .Message
 //     too, without .text-content.
+//   - Video and screen share: not supported. Telegram Web can't add video
+//     on the answering side, and even as the caller it only shows on the
+//     other side under conditions we couldn't pin down. See #889 for the
+//     full write-up before trying again.
 //
 // The DOM helpers take a `document` so tests can hand them a fake one. The
 // allowlist logic is pure, and runs in MAIN, not the page: the page reports who
@@ -169,13 +173,22 @@ function readChatMessages(doc, { selfName = 'Bot', callerName = 'Caller', limit 
 }
 
 // Type into the open chat's composer and press Send.
-async function sendChatMessage(doc, text, { wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+// `typeText(text)`: an optional fallback that types like a keyboard (the
+// preload passes main's webContents.insertText), for when the page's own
+// editing commands are refused because the view has no keyboard focus.
+async function sendChatMessage(doc, text, { wait = (ms) => new Promise((r) => setTimeout(r, ms)), typeText = null } = {}) {
   const editor = doc.querySelector('#editable-message-text');
   if (!editor) throw new Error('no message box');
   editor.focus();
   doc.execCommand('selectAll');
   doc.execCommand('delete');
-  if (!doc.execCommand('insertText', false, String(text))) throw new Error('could not type into the message box');
+  // insertText needs keyboard focus, which the bot's (often hidden) view may
+  // not have; then type through main, like a keyboard (live, 2026-10-26).
+  const took = () => (editor.innerText || '').includes(String(text).slice(0, 20));
+  if (!doc.execCommand('insertText', false, String(text)) || !took()) {
+    if (typeText) { editor.focus(); await typeText(String(text)); await wait(150); }
+    if (!took()) throw new Error('could not type into the message box');
+  }
   let send = null;
   for (let i = 0; i < 10 && !send; i++) {
     send = [...doc.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') || '') === 'Send Message');

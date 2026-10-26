@@ -20,6 +20,9 @@ const { URL } = require('url');
 // array in _onAgentActivity and as nothing at all at the transcript-delivery
 // site, which is how the two drifted apart.
 const RESTING_STATES = ['idle', 'listening', 'ticking', 'thinking', 'working'];
+// Rooms that only exist while someone calls the bot (#843, #882): never
+// adopted from a request, see handleRequest.
+const CALLING_APP_ROOM_RE = /^(telegram|whatsapp|phone)-/;
 
 // #824: activity-feed lines that are the bot TALKING or LISTENING, not working.
 // The agent's own wait_for_speech call lands in the feed as a 🔧 line just as
@@ -6368,6 +6371,16 @@ class LocalServer {
     // first /join-call after launch matches its OWN adoption and gets dropped.
     // The guard needs the state as it was before this request touched it.
     const preAdoption = { roomId: this.roomId, callStatus: this.callStatus };
+    // Calling-app rooms (telegram-<id>, whatsapp-<number>, phone-<number>)
+    // exist only while someone is calling: the bot answers them, it can't join
+    // them. Adopting one (an agent left over from a finished call still
+    // polling it) parked the bot at 'navigating', and every real call after
+    // that was refused as busy (live, 2026-10-26). Answer "ended" instead.
+    if (CALLING_APP_ROOM_RE.test(roomId) && roomId !== this.roomId) {
+      res.writeHead(410, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, callEnded: true, error: 'That call has ended. Telegram, WhatsApp and phone calls can only be answered when someone calls, not joined or rejoined.' }));
+      return;
+    }
     if (!this.roomId) {
       this.setRoom(roomId);
     }

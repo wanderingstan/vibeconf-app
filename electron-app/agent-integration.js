@@ -14,6 +14,7 @@
 const { app } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const { DEFAULT_PORT_BASE, layoutFromEnv, portLayout, portBaseEnv } = require('./port-layout.js');
 
 // How Claude Code should launch our stdio MCP server.
 //
@@ -177,7 +178,73 @@ function done() {
 setTimeout(done, 1500); // never hang the agent
 `;
 
-function ensureAgentActivityHook() {
+// The hook as installed for a given default bot port. The literal above names
+// 7865, and with the port base unset this returns it unchanged (byte for byte,
+// so an existing install is not rewritten). A second macOS user who moved the
+// block (port-layout.js) gets their own default baked in instead: the hook file
+// lives in THEIR ~/.claude, and a session that never set VIBECONF_LOCAL_PORT
+// (a bare-terminal /join-call) must report to their bot, not the primary
+// user's.
+const HOOK_DEFAULT_PORT_LINE = "process.env.VIBECONF_LOCAL_PORT || '7865';";
+function agentHookContent(defaultPort = portLayout().defaultBot) {
+  if (String(defaultPort) === '7865') return AGENT_HOOK_CONTENT;
+  return AGENT_HOOK_CONTENT.replace(HOOK_DEFAULT_PORT_LINE, `process.env.VIBECONF_LOCAL_PORT || '${Number(defaultPort)}';`);
+}
+
+// The skills' shell snippets name the supervisor (7864) and the default bot
+// (7865) by number, for an agent to curl. Moved with the block for a user whose
+// port base is not the default; untouched (returned as is) otherwise.
+function localizeSkillPorts(content, layout = layoutFromEnv()) {
+  if (layout.base === DEFAULT_PORT_BASE) return content;
+  return content
+    .replace(/\b7864\b/g, String(layout.supervisor))
+    .replace(/\b7865\b/g, String(layout.defaultBot));
+}
+
+// What a skill's .version file records. Just SKILL_VERSION for the default
+// block, so nothing reinstalls for anyone who never sets a base; with a moved
+// block the base is part of it, so switching base reinstalls once (with the
+// new ports) and then settles.
+function skillVersionStamp(version, layout = layoutFromEnv()) {
+  return layout.base === DEFAULT_PORT_BASE ? version : `${version}@${layout.base}`;
+}
+
+// The user-scoped ~/.claude.json entry for our MCP server. Pure, so the shape
+// (and the needsUpdate comparison against it) can be tested without disk.
+//
+// VIBECONF_BASE_URL is the default bot's port for this user's block (7865
+// unless moved), the stable fallback, deliberately NOT the writing instance's
+// own port. VIBECONF_PORT_BASE is carried only when the block is moved, so a
+// default install's entry is exactly what it always was, and the server's scan
+// range and supervisor port follow the move.
+function buildClaudeMcpEntry({ launcher, mcpServerPath, botName, defaultPort, portBase = DEFAULT_PORT_BASE }) {
+  return {
+    command: launcher.command,
+    args: [mcpServerPath],
+    env: {
+      ...launcher.env,
+      VIBECONF_ROOM_ID: '',
+      VIBECONF_BOT_NAME: botName,
+      VIBECONF_BASE_URL: `http://127.0.0.1:${defaultPort}`,
+      ...portBaseEnv(portBase),
+    },
+  };
+}
+
+// Whether `current` (what ~/.claude.json holds) differs from `desired` in any
+// way we own. Compares the same fields it always did, plus VIBECONF_PORT_BASE,
+// where absent and absent are equal: a default install never flaps, and a
+// switch of base (to, from, or between moved blocks) rewrites exactly once.
+function claudeMcpEntryNeedsUpdate(current, desired) {
+  return !current ||
+    current.command !== desired.command ||
+    current.env?.VIBECONF_BASE_URL !== desired.env.VIBECONF_BASE_URL ||
+    current.env?.VIBECONF_BOT_NAME !== desired.env.VIBECONF_BOT_NAME ||
+    (current.env?.VIBECONF_PORT_BASE || undefined) !== desired.env.VIBECONF_PORT_BASE ||
+    current.args?.[0] !== desired.args[0];
+}
+
+function ensureAgentActivityHook({ defaultPort = layoutFromEnv().defaultBot } = {}) {
   const home = process.env.HOME || process.env.USERPROFILE;
   const claudeDir = path.join(home, '.claude');
   const hookPath = path.join(claudeDir, 'vibeconf-agent-hook.cjs');
@@ -187,12 +254,14 @@ function ensureAgentActivityHook() {
     // Write the hook file only when its content differs (avoid needless churn).
     let existing = '';
     try { existing = fs.readFileSync(hookPath, 'utf-8'); } catch { /* missing */ }
-    if (existing !== AGENT_HOOK_CONTENT) fs.writeFileSync(hookPath, AGENT_HOOK_CONTENT);
+    const hookContent = agentHookContent(defaultPort);
+    if (existing !== hookContent) fs.writeFileSync(hookPath, hookContent);
 
     // No port baked into the command: the hook reads VIBECONF_LOCAL_PORT from
     // its inherited env (app-spawned sessions set it to THEIR bot's port — see
-    // launchClaudeTerminal) and falls back to 7865 (the primary app) for an
-    // existing session that ran /join-call. This is why the same global hook
+    // launchClaudeTerminal) and falls back to 7865 (the primary app; or this
+    // user's own default bot when the port base moved it) for an existing
+    // session that ran /join-call. This is why the same global hook
     // works for every bot — the port comes from the session, not the command.
     const desiredCmd = `node "${hookPath}"`;
     let settings = {};
@@ -234,7 +303,7 @@ function ensureAgentActivityHook() {
 
     if (changed) {
       fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-      console.log('[electron] Installed agent-activity PostToolUse + Notification hooks (port from session env, default 7865)');
+      console.log(`[electron] Installed agent-activity PostToolUse + Notification hooks (port from session env, default ${defaultPort})`);
     }
   } catch (err) {
     console.warn('[electron] Failed to install agent-activity hook:', err.message);
@@ -287,18 +356,18 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
   // instance's own port — this entry is app-level and must point bare-terminal
   // `claude` at a fixed target regardless of who installs it. (On join_call the
   // MCP server re-binds by profile name anyway; this is just the default target.)
+  // `defaultPort` is already this user's block's default bot (port-layout.js).
   const localBaseUrl = `http://127.0.0.1:${defaultPort}`;
   const configuredBotName = botName;
   const currentMcp = claudeJson.mcpServers.vibeconferencing;
   const nodeLauncher = mcpNodeLauncher();
+  const desiredMcp = buildClaudeMcpEntry({
+    launcher: nodeLauncher, mcpServerPath, botName: configuredBotName, defaultPort, portBase: layoutFromEnv().base,
+  });
   // `command` is compared too, so installs written by an older build (which
   // hardcoded 'node') get repaired on next launch instead of staying broken for
   // exactly the users who can't diagnose it.
-  const needsUpdate = !currentMcp ||
-    currentMcp.command !== nodeLauncher.command ||
-    currentMcp.env?.VIBECONF_BASE_URL !== localBaseUrl ||
-    currentMcp.env?.VIBECONF_BOT_NAME !== configuredBotName ||
-    currentMcp.args?.[0] !== mcpServerPath;
+  const needsUpdate = claudeMcpEntryNeedsUpdate(currentMcp, desiredMcp);
   const existingServerOk = !!currentMcp?.args?.[0] && fs.existsSync(currentMcp.args[0]);
 
   if (!configReadable) {
@@ -313,16 +382,7 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
     console.warn('[electron] running from a git worktree — keeping existing MCP server path',
       currentMcp.args[0], 'instead of repointing durable config at', mcpServerPath);
   } else if (needsUpdate) {
-    claudeJson.mcpServers.vibeconferencing = {
-      command: nodeLauncher.command,
-      args: [mcpServerPath],
-      env: {
-        ...nodeLauncher.env,
-        VIBECONF_ROOM_ID: '',
-        VIBECONF_BOT_NAME: configuredBotName,
-        VIBECONF_BASE_URL: localBaseUrl,
-      },
-    };
+    claudeJson.mcpServers.vibeconferencing = desiredMcp;
     atomicWriteJson(claudeJsonPath, claudeJson, { expectedMtimeMs: claudeMtimeMs });
     console.log('[electron] Updated MCP config → local server at', localBaseUrl, 'botName:', configuredBotName);
     changed = true;
@@ -333,18 +393,22 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
   const SKILL_VERSION = '71';  // Bump this when updating the skill content below
+  // What each .version file holds: SKILL_VERSION, plus the port base when the
+  // block is moved (skillVersionStamp), because the installed text carries the
+  // ports (localizeSkillPorts).
+  const skillStamp = skillVersionStamp(SKILL_VERSION);
   const versionFile = path.join(skillDir, '.version');
   let installedVersion = '';
   try { installedVersion = fs.readFileSync(versionFile, 'utf-8').trim(); } catch {}
 
   const skillSourcePath = path.join(mcpServerRoot, 'join-call-skill.md');
-  if (installedVersion !== SKILL_VERSION && !fs.existsSync(skillSourcePath)) {
+  if (installedVersion !== skillStamp && !fs.existsSync(skillSourcePath)) {
     console.warn('[electron] join-call skill source missing at', skillSourcePath, '— skipping skill install');
-  } else if (installedVersion !== SKILL_VERSION) {
+  } else if (installedVersion !== skillStamp) {
     fs.mkdirSync(skillDir, { recursive: true });
-    const skillContent = fs.readFileSync(skillSourcePath, 'utf-8');
+    const skillContent = localizeSkillPorts(fs.readFileSync(skillSourcePath, 'utf-8'));
     fs.writeFileSync(skillPath, skillContent);
-    fs.writeFileSync(versionFile, SKILL_VERSION);
+    fs.writeFileSync(versionFile, skillStamp);
     console.log(`[electron] Installed/updated skill v${SKILL_VERSION} at ${skillPath}`);
     changed = true;
   } else {
@@ -360,15 +424,15 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
     const callVersionFile = path.join(callSkillDir, '.version');
     let callInstalled = '';
     try { callInstalled = fs.readFileSync(callVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
-    if (callInstalled !== SKILL_VERSION) {
+    if (callInstalled !== skillStamp) {
       fs.mkdirSync(callSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(callSkillDir, 'SKILL.md'), fs.readFileSync(
+      fs.writeFileSync(path.join(callSkillDir, 'SKILL.md'), localizeSkillPorts(fs.readFileSync(
         isPackaged
           ? path.join(process.resourcesPath, 'mcp-server', 'call-skill.md')
           : path.join(__dirname, '..', 'mcp-server', 'call-skill.md'),
         'utf-8',
-      ));
-      fs.writeFileSync(callVersionFile, SKILL_VERSION);
+      )));
+      fs.writeFileSync(callVersionFile, skillStamp);
       console.log(`[electron] Installed/updated /call skill v${SKILL_VERSION}`);
       changed = true;
     }
@@ -408,15 +472,15 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
     const newBotVersionFile = path.join(newBotSkillDir, '.version');
     let newBotInstalled = '';
     try { newBotInstalled = fs.readFileSync(newBotVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
-    if (newBotInstalled !== SKILL_VERSION) {
+    if (newBotInstalled !== skillStamp) {
       fs.mkdirSync(newBotSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(newBotSkillDir, 'SKILL.md'), fs.readFileSync(
+      fs.writeFileSync(path.join(newBotSkillDir, 'SKILL.md'), localizeSkillPorts(fs.readFileSync(
         isPackaged
           ? path.join(process.resourcesPath, 'mcp-server', 'call-new-bot-skill.md')
           : path.join(__dirname, '..', 'mcp-server', 'call-new-bot-skill.md'),
         'utf-8',
-      ));
-      fs.writeFileSync(newBotVersionFile, SKILL_VERSION);
+      )));
+      fs.writeFileSync(newBotVersionFile, skillStamp);
       console.log(`[electron] Installed/updated /call-new-bot skill v${SKILL_VERSION}`);
       changed = true;
     }
@@ -437,15 +501,15 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
     const onboardingVersionFile = path.join(onboardingSkillDir, '.version');
     let onboardingInstalled = '';
     try { onboardingInstalled = fs.readFileSync(onboardingVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
-    if (onboardingInstalled !== SKILL_VERSION) {
+    if (onboardingInstalled !== skillStamp) {
       fs.mkdirSync(onboardingSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(onboardingSkillDir, 'SKILL.md'), fs.readFileSync(
+      fs.writeFileSync(path.join(onboardingSkillDir, 'SKILL.md'), localizeSkillPorts(fs.readFileSync(
         isPackaged
           ? path.join(process.resourcesPath, 'mcp-server', 'onboarding-call-skill.md')
           : path.join(__dirname, '..', 'mcp-server', 'onboarding-call-skill.md'),
         'utf-8',
-      ));
-      fs.writeFileSync(onboardingVersionFile, SKILL_VERSION);
+      )));
+      fs.writeFileSync(onboardingVersionFile, skillStamp);
       console.log(`[electron] Installed/updated /onboarding-call skill v${SKILL_VERSION}`);
       changed = true;
     }
@@ -462,15 +526,15 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
     const emojiSetVersionFile = path.join(emojiSetSkillDir, '.version');
     let emojiSetInstalled = '';
     try { emojiSetInstalled = fs.readFileSync(emojiSetVersionFile, 'utf-8').trim(); } catch { /* not yet */ }
-    if (emojiSetInstalled !== SKILL_VERSION) {
+    if (emojiSetInstalled !== skillStamp) {
       fs.mkdirSync(emojiSetSkillDir, { recursive: true });
-      fs.writeFileSync(path.join(emojiSetSkillDir, 'SKILL.md'), fs.readFileSync(
+      fs.writeFileSync(path.join(emojiSetSkillDir, 'SKILL.md'), localizeSkillPorts(fs.readFileSync(
         isPackaged
           ? path.join(process.resourcesPath, 'mcp-server', 'emoji-set-skill.md')
           : path.join(__dirname, '..', 'mcp-server', 'emoji-set-skill.md'),
         'utf-8',
-      ));
-      fs.writeFileSync(emojiSetVersionFile, SKILL_VERSION);
+      )));
+      fs.writeFileSync(emojiSetVersionFile, skillStamp);
       console.log(`[electron] Installed/updated /emoji-set skill v${SKILL_VERSION}`);
       changed = true;
     }
@@ -480,7 +544,8 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
 
   // Agent-activity overlay hook (independent of the MCP/skill version bumps).
   // Port-agnostic: app-spawned sessions inject VIBECONF_LOCAL_PORT themselves.
-  ensureAgentActivityHook();
+  // The fallback it bakes in is this user's default bot.
+  ensureAgentActivityHook({ defaultPort });
 
   if (changed) {
     console.log('[electron] Claude integration installed. Restart Claude Code to pick up MCP changes.');
@@ -500,8 +565,14 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
 //
 // Pure: the caller passes what it found, so this can be tested without disk.
 // Returns { server, warning } where warning is null when all is well.
-function chooseAgentMcpServer({ ownPath, ownOk, launcher, inherited, fallbackOk, botName, port }) {
-  const pin = { VIBECONF_ROOM_ID: '', VIBECONF_BOT_NAME: botName, VIBECONF_BASE_URL: `http://127.0.0.1:${port}` };
+//
+// portBase rides along when the block is moved (port-layout.js), so the
+// agent's server scans and asks this user's block, not the primary user's.
+function chooseAgentMcpServer({ ownPath, ownOk, launcher, inherited, fallbackOk, botName, port, portBase = DEFAULT_PORT_BASE }) {
+  const pin = {
+    VIBECONF_ROOM_ID: '', VIBECONF_BOT_NAME: botName, VIBECONF_BASE_URL: `http://127.0.0.1:${port}`,
+    ...portBaseEnv(portBase),
+  };
   const own = { command: launcher.command, args: [ownPath], env: { ...launcher.env, ...pin } };
   if (ownOk) return { server: own, warning: null };
   if (inherited && fallbackOk) {
@@ -519,7 +590,8 @@ function chooseAgentMcpServer({ ownPath, ownOk, launcher, inherited, fallbackOk,
 }
 
 module.exports = {
-  chooseAgentMcpServer,
+  chooseAgentMcpServer, buildClaudeMcpEntry, claudeMcpEntryNeedsUpdate,
+  agentHookContent, localizeSkillPorts, skillVersionStamp,
   mcpNodeLauncher, bundledMcpServerRoot, bundledMcpServerPath, mcpServerDepsPresent,
   runningFromGitWorktree, AGENT_HOOK_CONTENT, ensureAgentActivityHook, ensureClaudeIntegration,
 };

@@ -4,6 +4,21 @@
 
 const { app, BrowserWindow, BrowserView, ipcMain, session, shell, nativeImage, desktopCapturer, dialog, Menu, net } = require('electron');
 
+// The local port block (port-layout.js), decided before anything else runs, the
+// supervisor included. 127.0.0.1 is shared by every macOS user on the machine,
+// so a second user (a dedicated bot account) moves their whole block with
+// VIBECONF_PORT_BASE, or, since a Dock launch never sees a shell's env, with
+// `portBase` in the app-level config.json. Env wins. The answer is written back
+// into process.env, so every module and every process spawned from here reads
+// the same one. userData is still the BASE dir at this point (the profile swap
+// happens much further down), which is where app-level settings live.
+{
+  let configValue;
+  try { configValue = new (require('./store.js'))(app.getPath('userData'), { fresh: true }).get('portBase'); } catch { /* no config yet */ }
+  const { base, source } = require('./port-layout.js').applyPortBase({ env: process.env, configValue });
+  if (source !== 'default') console.log(`[electron] Port base ${base} (from ${source === 'env' ? 'VIBECONF_PORT_BASE' : 'config portBase'})`);
+}
+
 // #301: `--supervisor` is a different program that happens to share this binary.
 //
 // The supervisor watches the FLEET — it lists every bot, launches them, and
@@ -6731,7 +6746,7 @@ function parseCLIArgs() {
     if (bare && KNOWN_VALUE_FLAGS.has(bare[1])) {
       console.warn(
         `[electron] ⚠️  --${bare[1]} needs the =value form (e.g. --${bare[1]}=VALUE). `
-        + `The space form is IGNORED, so this launch is using DEFAULTS (Default profile, port 7865, production URL). `
+        + `The space form is IGNORED, so this launch is using DEFAULTS (Default profile, port ${require('./port-layout.js').layoutFromEnv().defaultBot}, production URL). `
         + `Re-launch with --${bare[1]}=VALUE.`,
       );
     }
@@ -6806,7 +6821,9 @@ const PROFILES_ROOT = path.join(BASE_USER_DATA, 'profiles');
 // The default/fallback local-server port — the default instance listens here, the
 // global Claude MCP config points here, and it's the fallback target discovery
 // falls back to. Named profiles get stable registry ports instead.
-const DEFAULT_PORT = 7865;
+// 7865 unless the port base moved the block (port-layout.js; resolved at the top).
+const PORT_LAYOUT = require('./port-layout.js').layoutFromEnv();
+const DEFAULT_PORT = PORT_LAYOUT.defaultBot;
 
 // Every bot — including the default — lives under profiles/<name>. There's no
 // more special "default lives loose in BASE_USER_DATA" case: BASE now holds only
@@ -8360,6 +8377,7 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
         fallbackOk: !!(fallback && Array.isArray(fallback.args) && fallback.args[0] && fs.existsSync(fallback.args[0])),
         botName,
         port: localServer.port,
+        portBase: PORT_LAYOUT.base,
       });
       if (agentMcp.warning) {
         console.error('[electron]', agentMcp.warning);
@@ -8495,7 +8513,7 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
   // which has spaces (the old /tmp default didn't, so this never mattered before).
   // See launch-command.js for the AppleScript+shell double-quoting.
   const { buildTerminalCommand, buildTerminalLaunchScript } = require('./launch-command.js');
-  const cmd = buildTerminalCommand({ workdir: claudeDir, port: localServer.port, innerCmd: claudeCmd });
+  const cmd = buildTerminalCommand({ workdir: claudeDir, port: localServer.port, portBase: PORT_LAYOUT.base, innerCmd: claudeCmd });
   const script = buildTerminalLaunchScript(cmd);
 
   execFile('osascript', ['-e', script], (err, stdout, stderr) => {
@@ -9054,7 +9072,7 @@ function updateSpeakingState(name, speaking) {
     if (!state || state.sent) return;
     state.sent = true;
 
-    const baseUrl = sync.baseUrl || 'http://127.0.0.1:7865';
+    const baseUrl = sync.baseUrl || `http://127.0.0.1:${DEFAULT_PORT}`;
     // Carry the role, because this POST cannot avoid asserting one.
     //
     // The presence endpoint assigns role on EVERY write, and a body without one
@@ -9295,6 +9313,9 @@ function ensureCodexIntegration() {
       VIBECONF_ROOM_ID: '',
       VIBECONF_BOT_NAME: configuredBotName,
       VIBECONF_BASE_URL: localBaseUrl,
+      // Only when the block is moved, so a default install's TOML is unchanged.
+      // The server's scan range and supervisor port follow it (port-layout.js).
+      ...require('./port-layout.js').portBaseEnv(PORT_LAYOUT.base),
     },
   });
 
@@ -13925,8 +13946,8 @@ function setupIPC() {
   // were launched (switcher, fleet, or default). Returns { profileName: port }.
   async function scanRunningInstances() {
     const ports = [DEFAULT_PORT]; // default instance
-    for (let p = profileManager.PROFILE_PORT_BASE; p <= profileManager.PROFILE_PORT_MAX; p++) ports.push(p);
-    for (let p = 7901; p <= 7916; p++) ports.push(p); // test fleet range
+    for (let p = PORT_LAYOUT.profileFirst; p <= PORT_LAYOUT.profileLast; p++) ports.push(p);
+    for (let p = PORT_LAYOUT.fleetFirst; p <= PORT_LAYOUT.fleetLast; p++) ports.push(p); // test fleet range
     const running = {};
     await Promise.all(ports.map(async (port) => {
       try {

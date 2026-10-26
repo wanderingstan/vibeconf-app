@@ -8,15 +8,22 @@
 // 7864 sits directly below the bot range (7865 default, 7870-7899 named
 // profiles, 7901-7916 the test fleet), so the whole family reads as one block
 // with the coordinator at its head.
-const SUPERVISOR_PORT = 7864;
+//
+// That block moves as a unit with VIBECONF_PORT_BASE (port-layout.js): the
+// supervisor is always base - 1. SUPERVISOR_PORT is the unshifted default.
+const { layoutFromEnv, portLayout } = require('./port-layout.js');
+
+const SUPERVISOR_PORT = portLayout().supervisor; // 7864
 
 // Overridable for the same reason every other port here is: two checkouts, or a
-// test, must be able to run a supervisor without fighting the real one.
+// test, must be able to run a supervisor without fighting the real one. An
+// explicit VIBECONF_SUPERVISOR_PORT wins over the base.
 function supervisorPort(env = process.env) {
+  const fallback = layoutFromEnv(env).supervisor;
   const raw = env.VIBECONF_SUPERVISOR_PORT;
-  if (!raw) return SUPERVISOR_PORT;
+  if (!raw) return fallback;
   const port = Number(raw);
-  return Number.isInteger(port) && port > 0 && port < 65536 ? port : SUPERVISOR_PORT;
+  return Number.isInteger(port) && port > 0 && port < 65536 ? port : fallback;
 }
 
 function supervisorUrl(env = process.env) {

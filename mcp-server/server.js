@@ -18,6 +18,8 @@
  *   VIBECONF_ROOM_ID   - The Meet code / room ID (required)
  *   VIBECONF_BOT_NAME  - Bot's display name (default: "Unnamed bot")
  *   VIBECONF_BASE_URL  - API base URL (default: http://127.0.0.1:7865 — the Electron app's local server)
+ *   VIBECONF_PORT_BASE - shifts the whole local port block (default 7865; see port-layout.js).
+ *                        The defaults above and below move with it; explicit values still win.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -30,6 +32,16 @@ import { homedir } from "os";
 import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
 import { formatCallClock } from './call-time.js';
 import { parseMeetRoomId } from "./meet-room.js";
+import { resolvePortBase, portLayout } from "./port-layout.js";
+
+// The app's local port block (port-layout.js). 7865 and friends unless
+// VIBECONF_PORT_BASE moves it, which the app does for a second macOS user on
+// the same machine so the two users' bots never find each other.
+const PORT_LAYOUT = (() => {
+  const r = resolvePortBase({ env: process.env });
+  if (r.warning) console.error(`[vibeconf-mcp] ${r.warning}`);
+  return portLayout(r.base);
+})();
 
 let ROOM_ID = process.env.VIBECONF_ROOM_ID || "";
 let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
@@ -37,7 +49,7 @@ let BOT_NAME = process.env.VIBECONF_BOT_NAME || "Unnamed bot";
 // join_call RE-BINDS it to the instance matching the requested profile name, so a
 // single agent session can target any running profile regardless of which port
 // the app baked into the MCP config (#301). Reassigned in routeToInstance().
-let BASE_URL = process.env.VIBECONF_BASE_URL || "http://127.0.0.1:7865";
+let BASE_URL = process.env.VIBECONF_BASE_URL || `http://127.0.0.1:${PORT_LAYOUT.defaultBot}`;
 // The port this session was EXPLICITLY pinned to, captured before anything can
 // re-bind BASE_URL. The app writes VIBECONF_BASE_URL into each profile's own MCP
 // config, so when it's set we know which instance this terminal belongs to and
@@ -160,11 +172,12 @@ const MCP_VERSIONS = {
 
 function probePorts() {
   // The env BASE_URL's port is always probed; plus a default range. Override the
-  // range via VIBECONF_PORT_RANGE="7865-7910".
+  // range via VIBECONF_PORT_RANGE="7865-7910" (the default, which moves with
+  // VIBECONF_PORT_BASE: base .. base+45).
   const set = new Set();
   const envPort = Number((BASE_URL.match(/:(\d+)/) || [])[1]);
   if (envPort) set.add(envPort);
-  const range = process.env.VIBECONF_PORT_RANGE || "7865-7910";
+  const range = process.env.VIBECONF_PORT_RANGE || `${PORT_LAYOUT.scanFirst}-${PORT_LAYOUT.scanLast}`;
   const [lo, hi] = range.split("-").map(Number);
   if (Number.isFinite(lo) && Number.isFinite(hi)) for (let p = lo; p <= hi; p++) set.add(p);
   return [...set];
@@ -182,7 +195,7 @@ function probePorts() {
 // the scan. That fallback is not ceremony: the supervisor is an ordinary app
 // window the user is free to quit, and an agent must keep working when they do.
 const SUPERVISOR_URL = process.env.VIBECONF_SUPERVISOR_URL
-  || `http://127.0.0.1:${process.env.VIBECONF_SUPERVISOR_PORT || 7864}`;
+  || `http://127.0.0.1:${process.env.VIBECONF_SUPERVISOR_PORT || PORT_LAYOUT.supervisor}`;
 
 async function askSupervisor() {
   try {

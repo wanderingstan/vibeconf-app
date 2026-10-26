@@ -45,12 +45,18 @@ test('the port is overridable, so two checkouts do not fight', () => {
   assert.equal(supervisorUrl({ VIBECONF_SUPERVISOR_URL: 'http://x:1' }), 'http://x:1');
 });
 
-test('the MCP and the app agree on where the supervisor lives', () => {
-  // They are separate packages and cannot share a module, so the number is
-  // written twice. If they ever disagree, every lookup silently falls back to
-  // scanning and nothing says why.
-  assert.ok(server.includes(String(SUPERVISOR_PORT)),
-    `mcp-server/server.js does not mention port ${SUPERVISOR_PORT}`);
+test('the MCP and the app agree on where the supervisor lives', async () => {
+  // They are separate packages and cannot share a module, so the derivation is
+  // written twice (port-layout.js on each side). If they ever disagree, every
+  // lookup silently falls back to scanning and nothing says why.
+  const mcpLayout = await import('../mcp-server/port-layout.js');
+  assert.equal(mcpLayout.portLayout().supervisor, SUPERVISOR_PORT);
+  for (const base of ['7965', '20000']) {
+    assert.equal(mcpLayout.layoutFromEnv({ VIBECONF_PORT_BASE: base }).supervisor,
+      supervisorPort({ VIBECONF_PORT_BASE: base }), `disagree at base ${base}`);
+  }
+  // And the server actually uses it, with the explicit override still first.
+  assert.match(server, /process\.env\.VIBECONF_SUPERVISOR_PORT \|\| PORT_LAYOUT\.supervisor/);
 });
 
 test('the agent asks the supervisor FIRST, and scans only as a fallback', () => {

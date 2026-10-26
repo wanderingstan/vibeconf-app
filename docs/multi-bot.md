@@ -104,6 +104,41 @@ This is a feature, not a bug. The Codex profile can be signed into a different G
 
 `get_room_info` from each MCP client returns its own `Local server:` URL and `Profile:` value, so you can always confirm which bot you're talking to.
 
+## Two macOS users on one Mac
+
+Everything above happens inside ONE macOS user. A second user on the same Mac (say a dedicated `ted` account that runs only bots) has its own userData, its own `~/.claude.json` and its own tokens, but `127.0.0.1` is shared by every user on the machine. With the default ports the two users' apps fight over the same ports, and each one's MCP scan finds (and can drive) the other's bots.
+
+`VIBECONF_PORT_BASE` moves the whole block for one user. It is the default bot's port; everything else is a fixed offset from it:
+
+<!-- source: electron-app/port-layout.js /const DEFAULT_PORT_BASE = 7865;/ -->
+| What | Offset | Default (unset) | Example: base 7965 |
+|---|---|---|---|
+| App window's directory (supervisor) | base - 1 | 7864 | 7964 |
+| Default bot | base | 7865 | 7965 |
+| Named profiles | base+5 .. base+34 | 7870-7899 | 7970-7999 |
+| MCP discovery scan | base .. base+45 | 7865-7910 | 7965-8010 |
+| Test fleet ports the app scans for | base+36 .. base+51 | 7901-7916 | 8001-8016 |
+
+Pick a base at least 100 away from the other user's (7965 next to the default 7865, for example) so the two blocks, scan ranges included, never overlap. Valid bases are 1026-65484.
+
+The Dock and Finder never see a shell's environment, so set it in the second user's **app-level config file**, `~/Library/Application Support/Vibeconferencing/config.json` (create it if missing, keep any other keys):
+
+```json
+{ "portBase": 7965 }
+```
+
+or, for a launch from a terminal, in the environment (this wins over the file):
+
+```bash
+VIBECONF_PORT_BASE=7965 open -a Vibeconferencing
+```
+
+A headless install can also write it with `--config=<file.json>` containing `{"portBase": 7965}`; it is read before any port is chosen, so that one takes effect on the next launch. Quit and relaunch the app after changing it.
+
+The app carries the base to everything it hands a port to: the `~/.claude.json` MCP entry (its `VIBECONF_BASE_URL` points at the shifted default bot, plus `VIBECONF_PORT_BASE` so the server scans the right block), the Codex config, each spawned agent session, the agent-activity hook's fallback port, and the installed skills' curl lines. With the base unset, all of those are exactly what they were before. The specific overrides (`--local-port`, `VIBECONF_LOCAL_PORT`, `VIBECONF_SUPERVISOR_PORT`, `VIBECONF_SUPERVISOR_URL`, `VIBECONF_PORT_RANGE`, `VIBECONF_BASE_URL`) still win over it.
+
+Not moved: `scripts/spawn-test-fleet.sh` still starts its bots at its own `VIBECONF_BASE_PORT` (7901 by default; note the different name). Run a fleet for the second user with `VIBECONF_BASE_PORT=<base+36>` if you need one.
+
 ## Codex CLI
 
 Treat Codex as a first-class agent like Claude Code: it loads the MCP server, calls the same tools, and joins the same way. The differences are entirely on the installer side (config file path + format).

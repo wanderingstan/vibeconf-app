@@ -20,6 +20,7 @@
 const fs = require('fs');
 const { PREFERENCES, validate } = require('./preferences-schema.js');
 const { isAppLevel } = require('./config-scope.js');
+const { parsePortBase } = require('./port-layout.js');
 
 // Keys an OPERATOR may set here that `set_preference` cannot reach.
 //
@@ -35,6 +36,24 @@ const OPERATOR_KEYS = new Set([
   // #829: a headless box (the cloud TA bot) can't click through Google's OAuth,
   // and an iCal feed is the calendar auto-join that needs none.
   'calendarFeedSecretUrl',
+]);
+
+// Keys an operator may set here that are neither secrets nor preferences, each
+// with its own validator ({ ok, value } or { ok, error }) and, where it matters,
+// a note logged after it is applied.
+//
+// portBase moves this macOS user's whole local port block (port-layout.js), for
+// a second user on a machine whose primary user already runs the app. It is
+// read at the very top of main.js, before any port is chosen, so a value
+// written here governs the NEXT launch, and the log says so.
+const OPERATOR_SETTINGS = new Map([
+  ['portBase', {
+    validate: (v) => {
+      const r = parsePortBase(v);
+      return r.ok ? { ok: true, value: r.base } : { ok: false, error: r.error };
+    },
+    note: 'takes effect on the next launch',
+  }],
 ]);
 
 // Values that are never echoed to a log or a console, here or anywhere else.
@@ -64,7 +83,7 @@ const REFUSED_KEYS = new Map([
 
 function describeKey(key) {
   if (REFUSED_KEYS.has(key)) return `'${key}' cannot be set from a config file: ${REFUSED_KEYS.get(key)}`;
-  if (PREFERENCES[key] || OPERATOR_KEYS.has(key)) return null;
+  if (PREFERENCES[key] || OPERATOR_KEYS.has(key) || OPERATOR_SETTINGS.has(key)) return null;
   return `Unknown setting '${key}'`;
 }
 
@@ -100,6 +119,12 @@ function checkConfigObject(raw) {
       entries.push({ key, value, appLevel: true, secret: true });
       continue;
     }
+    if (OPERATOR_SETTINGS.has(key)) {
+      const res = OPERATOR_SETTINGS.get(key).validate(value);
+      if (!res.ok) { errors.push(`'${key}': ${res.error}`); continue; }
+      entries.push({ key, value: res.value, appLevel: isAppLevel(key), secret: false });
+      continue;
+    }
     const res = validate(key, value);
     if (!res.ok) { errors.push(`'${key}': ${res.error}`); continue; }
     entries.push({ key, value: res.value, appLevel: isAppLevel(key), secret: SECRET_KEYS.has(key) });
@@ -111,7 +136,7 @@ function checkConfigObject(raw) {
 // Cheap edit-distance-ish suggestion: case-insensitive exact match first (the
 // ttsAPIKey/ttsApiKey case), then a single-character-difference scan.
 function nearestKey(key) {
-  const all = [...Object.keys(PREFERENCES), ...OPERATOR_KEYS];
+  const all = [...Object.keys(PREFERENCES), ...OPERATOR_KEYS, ...OPERATOR_SETTINGS.keys()];
   const lower = key.toLowerCase();
   const ci = all.find((k) => k.toLowerCase() === lower);
   if (ci) return ci;
@@ -164,11 +189,12 @@ function applyConfigFile(configPath, store, { log = console.log } = {}) {
 
   for (const { key, value, appLevel, secret } of entries) {
     store.set(key, value);
+    const note = OPERATOR_SETTINGS.get(key)?.note;
     log(`[config-file] set ${key} = ${secret ? '<redacted>' : JSON.stringify(value)}`
-      + ` (${appLevel ? 'app-level' : 'this profile'})`);
+      + ` (${appLevel ? 'app-level' : 'this profile'})${note ? `, ${note}` : ''}`);
   }
   log(`[config-file] applied ${entries.length} setting${entries.length === 1 ? '' : 's'} from ${configPath}`);
   return entries;
 }
 
-module.exports = { applyConfigFile, checkConfigObject, OPERATOR_KEYS, REFUSED_KEYS, nearestKey };
+module.exports = { applyConfigFile, checkConfigObject, OPERATOR_KEYS, OPERATOR_SETTINGS, REFUSED_KEYS, nearestKey };

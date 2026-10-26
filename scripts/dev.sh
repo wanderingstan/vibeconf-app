@@ -33,7 +33,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MAIN_CHECKOUT="${VIBECONF_MAIN_CHECKOUT:-$HOME/Developer/vibeconf-app}"
 LOG_DIR="${TMPDIR:-/tmp}/vibeconf-dev"
 LOG="$LOG_DIR/app.log"
-PORT="${VIBECONF_DEV_PORT:-7865}"
+PORT="${VIBECONF_DEV_PORT:-${VIBECONF_PORT_BASE:-7865}}"  # the default bot; moves with the port base
 
 FORCE=0; STOP=0; DEVTOOLS=0; PASS=()
 for a in "$@"; do

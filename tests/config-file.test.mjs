@@ -11,7 +11,7 @@ import { createRequire } from 'node:module';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
-const { applyConfigFile, checkConfigObject, OPERATOR_KEYS, REFUSED_KEYS, nearestKey } =
+const { applyConfigFile, checkConfigObject, OPERATOR_KEYS, OPERATOR_SETTINGS, REFUSED_KEYS, nearestKey } =
   require(join(root, 'electron-app/config-file.js'));
 const { APP_LEVEL_KEYS } = require(join(root, 'electron-app/config-scope.js'));
 const { PREFERENCES } = require(join(root, 'electron-app/preferences-schema.js'));
@@ -95,9 +95,9 @@ test('every app-level key is a deliberate decision, not an omission', () => {
   // must be classified on purpose. Without this, a new secret silently becomes
   // either writable or unreachable depending on whether it reached the schema.
   for (const key of APP_LEVEL_KEYS) {
-    const classified = OPERATOR_KEYS.has(key) || REFUSED_KEYS.has(key) || !!PREFERENCES[key];
+    const classified = OPERATOR_KEYS.has(key) || OPERATOR_SETTINGS.has(key) || REFUSED_KEYS.has(key) || !!PREFERENCES[key];
     assert.ok(classified,
-      `'${key}' is app-level but unclassified: add it to OPERATOR_KEYS, REFUSED_KEYS, or the schema`);
+      `'${key}' is app-level but unclassified: add it to OPERATOR_KEYS, OPERATOR_SETTINGS, REFUSED_KEYS, or the schema`);
   }
 });
 

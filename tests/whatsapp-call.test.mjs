@@ -128,6 +128,40 @@ test('sharing picks "Share screen" from the call menu, and stopping picks "Stop 
   assert.equal(await wa.chooseCallMenuItem({ document: callScreen().doc, KeyboardEvent: class {} }, 'Stop sharing screen', noWait), false);
 });
 
+// Chat: the caller's 1:1 chat, from WhatsApp's own collections.
+function chatWin(msgs, sent = []) {
+  const chat = { msgs: { getModelsArray: () => msgs } };
+  const modules = {
+    WAWebCollections: { Chat: { get: (jid) => (jid === '7022338674810@lid' ? chat : undefined) } },
+    WAWebSendTextMsgChatAction: { sendTextMsgToChat: async (c, text) => { sent.push({ c, text }); return {}; } },
+  };
+  return { require: (m) => modules[m] };
+}
+const msg = (body, fromMe, extra = {}) => ({ type: 'chat', body, id: { fromMe, _serialized: `${fromMe}_${body}` }, notifyName: fromMe ? undefined : 'Stan', ...extra });
+
+test('chat reads the texts in the caller\'s chat, in the app\'s { id, sender, text } shape', () => {
+  const win = chatWin([
+    { type: 'call_log', body: '', id: { fromMe: false, _serialized: 'c1' } },
+    msg('hello there!', false),
+    msg('Hi Stan', true),
+  ]);
+  const out = wa.readChatMessages(win, '7022338674810@lid', { selfName: 'Jimmy' });
+  assert.deepEqual(out.map(({ sender, text, fromMe }) => ({ sender, text, fromMe })), [
+    { sender: 'Stan', text: 'hello there!', fromMe: false },
+    { sender: 'Jimmy', text: 'Hi Stan', fromMe: true },
+  ], 'call logs and other non-text entries are skipped');
+  assert.deepEqual(wa.readChatMessages(win, 'someone-else@lid'), [], 'only the caller\'s chat');
+});
+
+test('chat sends through WhatsApp\'s own send action, to the caller\'s chat only', async () => {
+  const sent = [];
+  const win = chatWin([], sent);
+  assert.equal(await wa.sendChatMessage(win, '7022338674810@lid', 'Here is the link'), true);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].text, 'Here is the link');
+  await assert.rejects(() => wa.sendChatMessage(win, 'someone-else@lid', 'x'), /no chat with the caller/);
+});
+
 test('main isolates WhatsApp Web so its calling engine gets SharedArrayBuffer', () => {
   const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
   assert.match(main, /web\\\.whatsapp\\\.com/);

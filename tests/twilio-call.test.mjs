@@ -65,6 +65,14 @@ test('the gate: allowlisted number, then the keypad passcode, then the bot', () 
   assert.deepEqual([s.connect_bot.properties.noun, s.connect_bot.properties.to], ['client', 'vibeconf-default']);
 });
 
+test('every message the caller hears is in one voice, and the prompt waits before speaking', () => {
+  const s = states(tw.flowDefinition({ allowlist: ['19175752435'], passcode: '2468', identity: 'vibeconf-default' }));
+  const spoken = [s.reject, s.ask_passcode, s.wrong_passcode];
+  assert.equal(new Set(spoken.map((w) => w.properties.voice)).size, 1, 'mixed voices: ' + spoken.map((w) => w.properties.voice));
+  assert.match(spoken[0].properties.voice, /^Polly\./, 'SSML <break> needs a Polly voice');
+  assert.match(s.ask_passcode.properties.say, /^<break time="\d+s"\/>/);
+});
+
 // A fake Twilio API: records requests, serves numbers and flows.
 function fakeTwilio({ numbers = [{ sid: 'PN1', phone_number: '+19705550100', voice_url: '' }], flows = [] } = {}) {
   const calls = [];

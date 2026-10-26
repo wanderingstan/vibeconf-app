@@ -503,6 +503,7 @@
           <input type="text" id="twilioPhoneNumber" placeholder="+1 555 010 0199" autocomplete="off" />
           <div class="conn-note">Use a number bought for this bot: connecting points it at the bot. Create the API key in the Twilio console (Account → API keys).</div>
           <button id="twilioConnectSubmit" style="margin-top:8px">Connect phone number</button>
+          <div id="twilioConnectError" class="conn-note" style="display:none; color: var(--pink-deep)"></div>
         </div>
         <!-- Phone calls: who may call, and the keypad passcode. Twilio checks
              both before a call can reach the bot; not agent-settable. -->

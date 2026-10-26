@@ -12788,6 +12788,9 @@ function createMainWindow() {
     const standby = callingAppStandbyWanted();
     if (standby) activateCallingAppStandby(standby, 'app start');
     else loadIdlePage('main-window created');
+    // Re-write the phone's gate on every start, so the flow on Twilio always
+    // matches this version of the app (its prompts, its checks).
+    if (twilioCreds() && store.get('twilioPhoneNumber')) provisionTwilioGate('app start');
   }
 
   // 'close' (cancellable) before 'closed' (already gone).

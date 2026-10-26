@@ -24,6 +24,9 @@ const { phoneDigits, parseAllowlist, isCallerAllowed } = require('./whatsapp-cal
 
 const WEB_URL = pathToFileURL(path.join(__dirname, 'renderer', 'twilio-phone.html')).href;
 const TOKEN_TTL_SECONDS = 3600;
+// Silence before the passcode prompt, and the one voice every prompt uses.
+const PROMPT_PAUSE_SECONDS = 2;
+const PROMPT_VOICE = 'Polly.Joanna';
 const FLOW_NAME_PREFIX = 'Vibeconferencing gate';
 
 function roomCodeForCaller(phone) {
@@ -89,7 +92,7 @@ function flowDefinition({ allowlist = [], passcode = '', identity }) {
       name: 'reject',
       type: 'say-play',
       transitions: [{ event: 'audioComplete' }],
-      properties: { ...at(-400, 400), say: 'Sorry, this number cannot take your call. Goodbye.', loop: 1 },
+      properties: { ...at(-400, 400), say: 'Sorry, this number cannot take your call. Goodbye.', voice: PROMPT_VOICE, language: 'en-US', loop: 1 },
     },
   ];
   if (open) {
@@ -117,7 +120,12 @@ function flowDefinition({ allowlist = [], passcode = '', identity }) {
         ],
         properties: {
           ...at(0, 400),
-          say: 'Please enter your passcode, then press pound.',
+          // A pause first: the call is answered the moment it connects, often
+          // before the phone is at the caller's ear, and the prompt was over
+          // by then (live, 2026-10-26). SSML <break> needs a Polly voice.
+          say: `<break time="${PROMPT_PAUSE_SECONDS}s"/>Please enter your passcode, then press pound.`,
+          voice: PROMPT_VOICE,
+          language: 'en-US',
           loop: 1,
           finish_on_key: '#',
           timeout: 10,
@@ -144,7 +152,7 @@ function flowDefinition({ allowlist = [], passcode = '', identity }) {
         name: 'wrong_passcode',
         type: 'say-play',
         transitions: [{ event: 'audioComplete' }],
-        properties: { ...at(400, 800), say: 'Sorry, that is not right. Goodbye.', loop: 1 },
+        properties: { ...at(400, 800), say: 'Sorry, that is not right. Goodbye.', voice: PROMPT_VOICE, language: 'en-US', loop: 1 },
       },
       {
         name: 'connect_bot',

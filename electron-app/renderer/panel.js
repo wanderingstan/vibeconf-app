@@ -3576,6 +3576,11 @@ document.getElementById('twilioConnectBtn')?.addEventListener('click', () => {
 document.getElementById('twilioConnectSubmit')?.addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   const val = (id) => (document.getElementById(id)?.value || '').trim();
+  // Errors show right under the button: the error bar is easy to miss while
+  // you're looking at the form, and "nothing happened" is the worst answer.
+  const errEl = document.getElementById('twilioConnectError');
+  const fail = (msg) => { if (errEl) { errEl.textContent = msg; errEl.style.display = ''; } else showError(msg); };
+  if (errEl) errEl.style.display = 'none';
   btn.disabled = true;
   btn.textContent = 'Checking with Twilio…';
   try {
@@ -3586,9 +3591,9 @@ document.getElementById('twilioConnectSubmit')?.addEventListener('click', async 
       phoneNumber: val('twilioPhoneNumber'),
     });
     if (r && r.ok) { const sec = document.getElementById('twilioApiKeySecret'); if (sec) sec.value = ''; }
-    else showError((r && r.error) || 'Could not connect the phone number');
+    else fail((r && r.error) || 'Could not connect the phone number');
   } catch (err) {
-    showError('Connecting the phone number failed: ' + err.message);
+    fail('Connecting the phone number failed: ' + err.message);
   }
   btn.disabled = false;
   btn.textContent = 'Connect phone number';

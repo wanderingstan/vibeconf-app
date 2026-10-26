@@ -9,6 +9,15 @@
 //   - Hanging up removes `.ActiveCallHeader`. No rating dialog follows.
 //   - Avatars carry the user id as data-peer-id, which is what the allowlist
 //     keys on: the display name is the caller's own choice, so it proves nothing.
+//   - Chat (live, 2026-10-26): the bot's chat with the caller is their 1:1
+//     Telegram chat. Clicking its row in the chat list (found by the avatar's
+//     data-peer-id) opens it and sets location.hash to "#<user id>"; setting
+//     the hash directly doesn't. Messages are .Message (id "message-N", class
+//     "own" for the bot's); a text's words are in .text-content, with the time
+//     in a nested .MessageMeta. The composer is a ProseMirror editor,
+//     #editable-message-text: execCommand('insertText') registers with it, and
+//     a "Send Message" button (aria-label) appears. Call records are .Message
+//     too, without .text-content.
 //
 // The DOM helpers take a `document` so tests can hand them a fake one. The
 // allowlist logic is pure, and runs in MAIN, not the page: the page reports who
@@ -117,6 +126,66 @@ function readCaller(doc) {
   return { name, id };
 }
 
+// ---------------------------------------------------------------------------
+// Chat with the caller: their 1:1 chat, opened behind the call screen.
+// ---------------------------------------------------------------------------
+const chatIsOpen = (doc, peerId) => !!peerId && doc.defaultView.location.hash === '#' + peerId
+  && !!doc.querySelector('#editable-message-text');
+
+// Open the caller's chat from the chat list. True once it's the open chat.
+async function openChat(doc, peerId, { wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  if (!peerId) return false;
+  if (chatIsOpen(doc, peerId)) return true;
+  const avatar = doc.querySelector(`#LeftColumn [data-peer-id="${peerId}"]`)
+    || doc.querySelector(`.chat-list [data-peer-id="${peerId}"]`);
+  const row = avatar && (avatar.closest('.ListItem') || avatar.parentElement);
+  const target = row && (row.querySelector('.ListItem-button') || row);
+  if (!target) return false;
+  pressButton(target);
+  for (let i = 0; i < 20; i++) { if (chatIsOpen(doc, peerId)) return true; await wait(100); }
+  return chatIsOpen(doc, peerId);
+}
+
+// A message's words, without the time Telegram nests inside .text-content.
+function messageText(el) {
+  const tc = el.querySelector('.text-content');
+  if (!tc) return null;
+  const copy = tc.cloneNode(true);
+  for (const meta of copy.querySelectorAll('.MessageMeta')) meta.remove();
+  return (copy.innerText != null ? copy.innerText : copy.textContent || '').trim() || null;
+}
+
+// Texts in the OPEN chat, in the app's { id, sender, text } shape. Callers
+// check chatIsOpen first, so this never reads somebody else's chat.
+function readChatMessages(doc, { selfName = 'Bot', callerName = 'Caller', limit = 30 } = {}) {
+  const out = [];
+  for (const el of doc.querySelectorAll('.Message')) {
+    const text = messageText(el);
+    if (!text) continue; // call records, media, service messages
+    const own = el.classList.contains('own');
+    out.push({ id: el.id || null, sender: own ? selfName : callerName, text, fromMe: own });
+  }
+  return out.slice(-limit);
+}
+
+// Type into the open chat's composer and press Send.
+async function sendChatMessage(doc, text, { wait = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const editor = doc.querySelector('#editable-message-text');
+  if (!editor) throw new Error('no message box');
+  editor.focus();
+  doc.execCommand('selectAll');
+  doc.execCommand('delete');
+  if (!doc.execCommand('insertText', false, String(text))) throw new Error('could not type into the message box');
+  let send = null;
+  for (let i = 0; i < 10 && !send; i++) {
+    send = [...doc.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') || '') === 'Send Message');
+    if (!send) await wait(100);
+  }
+  if (!send) throw new Error('no Send button appeared');
+  send.click();
+  return true;
+}
+
 module.exports = {
   WEB_URL,
   TELEGRAM_WEB_URL,
@@ -127,4 +196,9 @@ module.exports = {
   pressButton,
   callPhase,
   readCaller,
+  chatIsOpen,
+  openChat,
+  messageText,
+  readChatMessages,
+  sendChatMessage,
 };

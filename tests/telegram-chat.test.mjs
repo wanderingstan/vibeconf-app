@@ -1,0 +1,67 @@
+// Telegram chat (#843): the bot's chat with a caller is their 1:1 Telegram
+// chat, read and written through Telegram Web A's page.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const tg = require('../electron-app/telegram-call.js');
+
+// A minimal element: classes, children, innerText, cloneNode, remove.
+function el(cls = '', { id = null, text = '' } = {}, children = []) {
+  const n = {
+    id, ownText: text, children: [], parentElement: null,
+    classList: { contains: (c) => cls.split(/\s+/).includes(c) },
+    cls,
+    get innerText() { return [this.ownText, ...this.children.map((c) => c.innerText)].join(''); },
+    querySelector(sel) { return this.querySelectorAll(sel)[0] || null; },
+    querySelectorAll(sel) {
+      const want = sel.replace(/^\./, '');
+      const out = [];
+      const walk = (x) => { for (const c of x.children) { if (c.cls.split(/\s+/).includes(want)) out.push(c); walk(c); } };
+      walk(this);
+      return out;
+    },
+    cloneNode() { return el(cls, { id, text }, this.children.map((c) => c.cloneNode())); },
+    remove() { const p = this.parentElement; if (p) p.children = p.children.filter((c) => c !== this); },
+  };
+  for (const c of children) { c.parentElement = n; n.children.push(c); }
+  return n;
+}
+const textMsg = (id, words, own = false) => el('Message' + (own ? ' own' : ''), { id }, [
+  el('text-content', { text: words }, [el('MessageMeta', { text: '09:53 AM' })]),
+]);
+const callRecord = (id) => el('Message', { id }, [el('content-inner', { text: 'Incoming Call 02:49 PM' })]);
+
+test('chat reads only texts, without the time Telegram nests in them, with the bot\'s marked as its own', () => {
+  const doc = el('', {}, [callRecord('message-15'), textMsg('message-16', 'Example text for the test! 123'), textMsg('message-17', 'Hi Stan', true)]);
+  assert.deepEqual(tg.readChatMessages(doc, { selfName: 'Jimmy', callerName: 'Stanley' }), [
+    { id: 'message-16', sender: 'Stanley', text: 'Example text for the test! 123', fromMe: false },
+    { id: 'message-17', sender: 'Jimmy', text: 'Hi Stan', fromMe: true },
+  ]);
+});
+
+test('a chat counts as open only when it is that caller\'s (by id in the address) and has a message box', () => {
+  const doc = (hash, composer = true) => ({
+    defaultView: { location: { hash } },
+    querySelector: (sel) => (sel === '#editable-message-text' && composer ? {} : null),
+  });
+  assert.equal(tg.chatIsOpen(doc('#6785998012'), '6785998012'), true);
+  assert.equal(tg.chatIsOpen(doc('#1111111111'), '6785998012'), false, 'someone else\'s chat');
+  assert.equal(tg.chatIsOpen(doc('#6785998012', false), '6785998012'), false);
+  assert.equal(tg.chatIsOpen(doc('#6785998012'), null), false);
+});
+
+test('the preload reads and sends only after checking the open chat is the caller\'s', () => {
+  const preload = readFileSync(join(root, 'electron-app/preload-telegram.js'), 'utf8');
+  const fn = preload.slice(preload.indexOf('async function callerChatMessages()'));
+  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  assert.match(body, /state !== 'in-call'/);
+  assert.match(body, /telegramCall\.openChat\(document, caller\.id\)/);
+  const send = preload.slice(preload.indexOf('ipcRenderer.on(CALL_COMMANDS.sendChat'));
+  assert.ok(send.indexOf('await callerChatMessages()') < send.indexOf('telegramCall.sendChatMessage('), 'verify the chat before typing into it');
+});

@@ -128,13 +128,40 @@ ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
   }
 });
 
-// No in-call chat or captions on a Telegram call: answer the app's requests
-// plainly instead of leaving them hanging.
-ipcRenderer.on(CALL_COMMANDS.readChat, (_e, { requestId }) => {
-  emit(CALL_EVENTS.chatResult, { requestId, ok: true, messages: [] });
+// Chat = the caller's 1:1 Telegram chat, opened behind the call screen (see
+// telegram-call.js). Only during a call, only with the person on it: every
+// read and send first checks the open chat is theirs.
+let lastReadChatId = null;
+let lastChatUnread = false;
+function setChatUnread(unread) {
+  if (unread === lastChatUnread) return;
+  lastChatUnread = unread;
+  emit(CALL_EVENTS.chatUnread, { unread });
+}
+function newestFromCaller(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].fromMe) return messages[i].id;
+  return null;
+}
+async function callerChatMessages() {
+  if (state !== 'in-call' || !caller || !caller.id) throw new Error('not in a Telegram call');
+  if (!(await telegramCall.openChat(document, caller.id))) throw new Error("could not open the caller's chat");
+  return telegramCall.readChatMessages(document, { selfName: botName || 'Bot', callerName: caller.name || 'Caller' });
+}
+ipcRenderer.on(CALL_COMMANDS.readChat, async (_e, { requestId }) => {
+  try {
+    const messages = await callerChatMessages();
+    lastReadChatId = newestFromCaller(messages);
+    setChatUnread(false);
+    emit(CALL_EVENTS.chatResult, { requestId, ok: true, messages: messages.map(({ id, sender, text }) => ({ id, sender, text })) });
+  } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
 });
-ipcRenderer.on(CALL_COMMANDS.sendChat, (_e, { requestId }) => {
-  emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'Telegram calls have no in-call chat' });
+ipcRenderer.on(CALL_COMMANDS.sendChat, async (_e, { requestId, text }) => {
+  try {
+    await callerChatMessages(); // opens and verifies the caller's chat
+    await telegramCall.sendChatMessage(document, text);
+    console.log('[telegram] sent a chat message to', caller.name || caller.id);
+    emit(CALL_EVENTS.chatResult, { requestId, ok: true });
+  } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
 });
 ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, (_e, { requestId } = {}) => {
   emit(CALL_EVENTS.captionLanguageResult, { requestId, ok: false, error: 'Telegram has no captions; the bot transcribes the call audio itself' });
@@ -278,6 +305,16 @@ function tick() {
       { name: botName || 'Bot', speaking: false, isSelf: true },
     ]);
     console.log('[telegram] in the call with', name);
+    // Open their chat behind the call screen, and take what's already there
+    // as read: only messages from here on are news.
+    lastChatUnread = false;
+    callerChatMessages().then((m) => { lastReadChatId = newestFromCaller(m); }).catch((err) => console.warn('[telegram] chat not opened:', err.message));
+  }
+  if (state === 'in-call' && caller && telegramCall.chatIsOpen(document, caller.id)) {
+    try {
+      const newest = newestFromCaller(telegramCall.readChatMessages(document));
+      if (newest && newest !== lastReadChatId) setChatUnread(true);
+    } catch { /* chat redrawing */ }
   }
   // Show the bot's face, as on Meet, Zoom and Teams, but only once the call
   // has connected: pressing "start video" while Telegram was still connecting

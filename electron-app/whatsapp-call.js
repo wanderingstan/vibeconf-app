@@ -18,6 +18,12 @@
 //     sharing screen". WhatsApp then asks getDisplayMedia, which the app
 //     answers with the whiteboard window, as on Meet.
 //   - WhatsApp turns the camera on by itself for a video call.
+//   - Chat: a WhatsApp call has no in-call chat; its "Send message" opens the
+//     caller's ordinary 1:1 chat. So the bot's chat IS that chat, read from
+//     require('WAWebCollections').Chat.get(peerJid).msgs (type "chat" are
+//     texts) and sent with WhatsApp's own
+//     require('WAWebSendTextMsgChatAction').sendTextMsgToChat(chat, text).
+//     It persists after the call, which suits a link or a summary.
 //   - Audio never becomes a track or a media element: WhatsApp's WASM engine
 //     plays it through an AudioWorklet named
 //     "voip-shared-buffer-playback-processor" (16 kHz mono), which
@@ -112,6 +118,36 @@ async function chooseCallMenuItem(win, label, { wait = (ms) => new Promise((r) =
   return true;
 }
 
+// The caller's 1:1 chat (the chat with the person on the call), or null.
+function callerChat(win, peerJid) {
+  if (!peerJid) return null;
+  try { return win.require('WAWebCollections').Chat.get(peerJid) || null; } catch { return null; }
+}
+
+// Text messages in that chat, oldest first, in the app's chat shape
+// ({ id, sender, text }). The bot's own are sent as `selfName`.
+function readChatMessages(win, peerJid, { selfName = 'Bot', callerName = 'Caller', limit = 30 } = {}) {
+  const chat = callerChat(win, peerJid);
+  if (!chat || !chat.msgs) return [];
+  return chat.msgs.getModelsArray()
+    .filter((m) => m.type === 'chat' && m.body)
+    .slice(-limit)
+    .map((m) => ({
+      id: String((m.id && (m.id._serialized || m.id.id)) || `${m.t}-${m.body.slice(0, 16)}`),
+      sender: m.id && m.id.fromMe ? selfName : (m.notifyName || callerName),
+      text: m.body,
+      fromMe: !!(m.id && m.id.fromMe),
+    }));
+}
+
+// Send `text` to the caller's chat through WhatsApp's own send action.
+async function sendChatMessage(win, peerJid, text) {
+  const chat = callerChat(win, peerJid);
+  if (!chat) throw new Error('no chat with the caller');
+  await win.require('WAWebSendTextMsgChatAction').sendTextMsgToChat(chat, String(text));
+  return true;
+}
+
 // { phase: 'none' | 'ringing' | 'connecting' | 'active' | 'outgoing', peerJid,
 //   phone, name }. 'ringing' = incoming and not yet answered (Accept on
 // screen); 'connecting' = answered, media not up yet.
@@ -153,5 +189,8 @@ module.exports = {
   callMenuButton,
   findMenuItem,
   chooseCallMenuItem,
+  callerChat,
+  readChatMessages,
+  sendChatMessage,
   readCall,
 };

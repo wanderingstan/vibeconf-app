@@ -141,11 +141,39 @@ ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
   }
 });
 
+// Chat = the caller's 1:1 WhatsApp chat (see whatsapp-call.js). Only during
+// a call, and only with the person on it.
+let lastReadChatId = null;
+let lastChatUnread = false;
+function setChatUnread(unread) {
+  if (unread === lastChatUnread) return;
+  lastChatUnread = unread;
+  emit(CALL_EVENTS.chatUnread, { unread });
+}
+function chatMessages() {
+  if (!caller || !caller.peerJid) return [];
+  return whatsappCall.readChatMessages(window, caller.peerJid, { selfName: botName || 'Bot', callerName: caller.name || 'Caller' });
+}
+function newestFromCaller(messages) {
+  for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].fromMe) return messages[i].id;
+  return null;
+}
 ipcRenderer.on(CALL_COMMANDS.readChat, (_e, { requestId }) => {
-  emit(CALL_EVENTS.chatResult, { requestId, ok: true, messages: [] });
+  if (state !== 'in-call') { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'not in a WhatsApp call' }); return; }
+  try {
+    const messages = chatMessages();
+    lastReadChatId = newestFromCaller(messages);
+    setChatUnread(false);
+    emit(CALL_EVENTS.chatResult, { requestId, ok: true, messages: messages.map(({ id, sender, text }) => ({ id, sender, text })) });
+  } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
 });
-ipcRenderer.on(CALL_COMMANDS.sendChat, (_e, { requestId }) => {
-  emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'WhatsApp calls have no in-call chat' });
+ipcRenderer.on(CALL_COMMANDS.sendChat, async (_e, { requestId, text }) => {
+  if (state !== 'in-call' || !caller || !caller.peerJid) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'not in a WhatsApp call' }); return; }
+  try {
+    await whatsappCall.sendChatMessage(window, caller.peerJid, text);
+    console.log('[whatsapp] sent a chat message to', caller.name || caller.phone);
+    emit(CALL_EVENTS.chatResult, { requestId, ok: true });
+  } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
 });
 ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, (_e, { requestId } = {}) => {
   emit(CALL_EVENTS.captionLanguageResult, { requestId, ok: false, error: 'WhatsApp has no captions; the bot transcribes the call audio itself' });
@@ -283,6 +311,15 @@ function tick() {
       { name: botName || 'Bot', speaking: false, isSelf: true },
     ]);
     console.log('[whatsapp] in the call with', name);
+    // What was already in the chat isn't news; only what arrives from here on.
+    try { lastReadChatId = newestFromCaller(chatMessages()); } catch { lastReadChatId = null; }
+    lastChatUnread = false;
+  }
+  if (state === 'in-call') {
+    try {
+      const newest = newestFromCaller(chatMessages());
+      if (newest && newest !== lastReadChatId) setChatUnread(true);
+    } catch { /* chat not loaded */ }
   }
   if (state === 'in-call' && !cameraStarted) {
     cameraStarted = true;

@@ -24,7 +24,7 @@ test('every preload that evals page-inject.js installs the emoji resolvers', () 
     .filter((f) => /^preload-.*\.js$/.test(f))
     .filter((f) => /join\(__dirname, 'page-inject\.js'\)/.test(readFileSync(join(APP, f), 'utf-8')));
   // Meet, Teams, Zoom, Slack. If a new provider shows up it is checked too.
-  for (const h of ['preload-meet.js', 'preload-teams.js', 'preload-zoom.js', 'preload-slack-main.js', 'preload-telegram.js', 'preload-whatsapp.js']) {
+  for (const h of ['preload-meet.js', 'preload-teams.js', 'preload-zoom.js', 'preload-slack-main.js', 'preload-telegram.js', 'preload-whatsapp.js', 'preload-twilio.js']) {
     assert.ok(hosts.includes(h), `${h} hosts page-inject`);
   }
   for (const f of hosts) {

@@ -68,7 +68,7 @@ test('the preload taps only WhatsApp\'s playback worklet, and keeps the RTC hook
 
 test('one calling app answers at a time: switching one on switches the others off', () => {
   const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
-  const hook = main.slice(main.indexOf("if (key === 'telegramAnswerCalls' || key === 'whatsappAnswerCalls')"));
+  const hook = main.slice(main.indexOf("if (key === 'telegramAnswerCalls' || key === 'whatsappAnswerCalls' || key === 'twilioAnswerCalls')"));
   const body = hook.slice(0, hook.indexOf('refreshCallingAppStandby('));
   assert.match(body, /for \(const app of CALLING_APP_ORDER\)/);
   assert.match(body, /store\.set\(other, false\)/);

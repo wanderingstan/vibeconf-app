@@ -3501,7 +3501,8 @@ for (const btn of document.querySelectorAll('button[data-calling-app]')) {
 
 // Signed in → the account on the status line, and Disconnect in place of
 // Connect. Main pushes calling-app-status as the login lands.
-const CALLING_APP_NAMES = { whatsapp: 'WhatsApp', telegram: 'Telegram' };
+const CALLING_APP_NAMES = { whatsapp: 'WhatsApp', telegram: 'Telegram', twilio: 'the phone number' };
+const CALLING_APPS = ['telegram', 'whatsapp', 'twilio'];
 function applyCallingAppStatus(status) {
   for (const btn of document.querySelectorAll('button[data-calling-app-sign-out]')) {
     btn.style.display = status?.[btn.dataset.callingAppSignOut] ? '' : 'none';
@@ -3518,15 +3519,20 @@ function applyCallingAppStatus(status) {
   for (const row of document.querySelectorAll('[data-calling-app-row]')) {
     row.classList.toggle('unusable', !status?.[row.dataset.callingAppRow]);
   }
-  for (const app of ['telegram', 'whatsapp']) {
+  for (const app of CALLING_APPS) {
     const block = document.getElementById(app + 'CallsBlock');
     if (block) block.style.display = status?.[app] ? '' : 'none';
   }
+  // Twilio connects through a form, not a sign-in window.
+  for (const btn of document.querySelectorAll('button[data-calling-app-form]')) {
+    btn.style.display = status?.[btn.dataset.callingAppForm] ? 'none' : '';
+  }
+  if (status?.twilio) { const f = document.getElementById('twilioConnectForm'); if (f) f.style.display = 'none'; }
 }
 
 // Calling-app calls (#843): each app's switch and allowlist. Written through
 // set-config (panel only); main reads them when a call rings.
-for (const app of ['telegram', 'whatsapp']) {
+for (const app of CALLING_APPS) {
   const answer = document.getElementById(app + 'AnswerCalls');
   const allowed = document.getElementById(app + 'AllowedCallers');
   api.invoke('get-config', [app + 'AnswerCalls', app + 'AllowedCallers']).then((cfg) => {
@@ -3537,7 +3543,7 @@ for (const app of ['telegram', 'whatsapp']) {
     // One app answers at a time: checking this one clears the others
     // (main enforces the same on write).
     if (answer.checked) {
-      for (const other of ['telegram', 'whatsapp']) {
+      for (const other of CALLING_APPS) {
         const box = document.getElementById(other + 'AnswerCalls');
         if (other !== app && box) box.checked = false;
       }
@@ -3549,16 +3555,65 @@ for (const app of ['telegram', 'whatsapp']) {
 api.invoke('calling-app-status').then(applyCallingAppStatus).catch(() => {});
 api.on('calling-app-status', applyCallingAppStatus);
 
+// Phone (Twilio, #882): the passcode is set like the allowlist; the connect
+// form sends the credentials to main, which checks them with Twilio.
+const twilioPasscodeInput = document.getElementById('twilioPasscode');
+api.invoke('get-config', ['twilioPasscode']).then((cfg) => {
+  // Show that one is set without putting it back on screen.
+  if (twilioPasscodeInput && cfg?.twilioPasscode) twilioPasscodeInput.placeholder = '•••• (set; type to change)';
+}).catch(() => {});
+twilioPasscodeInput?.addEventListener('change', () => {
+  const digits = twilioPasscodeInput.value.replace(/\D/g, '');
+  if (digits.length < 4) { showError('The passcode needs at least 4 digits'); return; }
+  setConfig('twilioPasscode', digits);
+  twilioPasscodeInput.value = '';
+  twilioPasscodeInput.placeholder = '•••• (set; type to change)';
+});
+document.getElementById('twilioConnectBtn')?.addEventListener('click', () => {
+  const f = document.getElementById('twilioConnectForm');
+  if (f) f.style.display = f.style.display === 'none' ? '' : 'none';
+});
+document.getElementById('twilioConnectSubmit')?.addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const val = (id) => (document.getElementById(id)?.value || '').trim();
+  // Errors show right under the button: the error bar is easy to miss while
+  // you're looking at the form, and "nothing happened" is the worst answer.
+  const errEl = document.getElementById('twilioConnectError');
+  const fail = (msg) => { if (errEl) { errEl.textContent = msg; errEl.style.display = ''; } else showError(msg); };
+  if (errEl) errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Checking with Twilio…';
+  try {
+    const r = await api.invoke('twilio-connect', {
+      accountSid: val('twilioAccountSid'),
+      apiKeySid: val('twilioApiKeySid'),
+      apiKeySecret: val('twilioApiKeySecret'),
+      phoneNumber: val('twilioPhoneNumber'),
+    });
+    if (r && r.ok) { const sec = document.getElementById('twilioApiKeySecret'); if (sec) sec.value = ''; }
+    else fail((r && r.error) || 'Could not connect the phone number');
+  } catch (err) {
+    fail('Connecting the phone number failed: ' + err.message);
+  }
+  btn.disabled = false;
+  btn.textContent = 'Connect phone number';
+});
+
 const CALLING_APP_DEVICES = {
   telegram: 'Telegram → Settings → Devices',
   whatsapp: 'WhatsApp → Linked devices',
+};
+const CALLING_APP_DISCONNECT_NOTE = {
+  twilio: 'This forgets the Twilio credentials on this computer. The number stays on your Twilio account, and calls to it will no longer reach the bot.',
 };
 for (const btn of document.querySelectorAll('button[data-calling-app-sign-out]')) {
   const which = btn.dataset.callingAppSignOut;
   btn.addEventListener('click', async () => {
     // Disconnecting only forgets the login on this computer; the linked
     // session lives on in the phone's device list until removed there.
-    const ok = window.confirm(`Disconnect ${CALLING_APP_NAMES[which]} from this bot?\n\nThis signs it out on this computer. To end the session completely, also remove it on the phone (${CALLING_APP_DEVICES[which]}).`);
+    const note = CALLING_APP_DISCONNECT_NOTE[which]
+      || `This signs it out on this computer. To end the session completely, also remove it on the phone (${CALLING_APP_DEVICES[which]}).`;
+    const ok = window.confirm(`Disconnect ${CALLING_APP_NAMES[which]} from this bot?\n\n${note}`);
     if (!ok) return;
     btn.disabled = true;
     btn.textContent = 'Disconnecting…';

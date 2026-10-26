@@ -478,6 +478,45 @@
             <button id="telegramSignInBtn" data-calling-app="telegram">Connect</button>
             <button id="telegramSignOutBtn" data-calling-app-sign-out="telegram" style="display:none">Disconnect</button>
           </div>
+          <!-- A real phone number (#882): Twilio. Connect opens the form
+               below rather than a sign-in window. -->
+          <div class="conn-row unusable" data-calling-app-row="twilio">
+            <span class="conn-logo" aria-hidden="true" style="font-size:15px;line-height:18px;text-align:center">📞</span>
+            <div class="conn-text">
+              <div class="conn-name">Phone number (Twilio)</div>
+              <div class="conn-status" data-calling-app-account="twilio">Not connected</div>
+            </div>
+            <button id="twilioConnectBtn" data-calling-app-form="twilio">Connect</button>
+            <button id="twilioSignOutBtn" data-calling-app-sign-out="twilio" style="display:none">Disconnect</button>
+          </div>
+        </div>
+        <!-- Twilio credentials (#882). Stored in this bot's profile, outside
+             anything the agent can read or set; the secret never comes back. -->
+        <div id="twilioConnectForm" class="field" style="display:none; margin-top:8px">
+          <label for="twilioAccountSid">Account SID</label>
+          <input type="text" id="twilioAccountSid" placeholder="AC…" autocomplete="off" spellcheck="false" />
+          <label for="twilioApiKeySid" style="margin-top:6px">API key SID</label>
+          <input type="text" id="twilioApiKeySid" placeholder="SK…" autocomplete="off" spellcheck="false" />
+          <label for="twilioApiKeySecret" style="margin-top:6px">API key secret</label>
+          <input type="password" id="twilioApiKeySecret" autocomplete="off" />
+          <label for="twilioPhoneNumber" style="margin-top:6px">Phone number</label>
+          <input type="text" id="twilioPhoneNumber" placeholder="+1 555 010 0199" autocomplete="off" />
+          <div class="conn-note">Use a number bought for this bot: connecting points it at the bot. Create the API key in the Twilio console (Account → API keys).</div>
+          <button id="twilioConnectSubmit" style="margin-top:8px">Connect phone number</button>
+          <div id="twilioConnectError" class="conn-note" style="display:none; color: var(--pink-deep)"></div>
+        </div>
+        <!-- Phone calls: who may call, and the keypad passcode. Twilio checks
+             both before a call can reach the bot; not agent-settable. -->
+        <div id="twilioCallsBlock" class="field" style="display:none; margin-top:8px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="twilioAnswerCalls" />
+            Answer phone calls
+          </label>
+          <label for="twilioAllowedCallers" style="margin-top:6px">Allowed callers</label>
+          <textarea id="twilioAllowedCallers" rows="3" placeholder="Phone numbers with country code, one per line"></textarea>
+          <label for="twilioPasscode" style="margin-top:6px">Keypad passcode</label>
+          <input type="password" id="twilioPasscode" inputmode="numeric" autocomplete="off" placeholder="At least 4 digits" />
+          <div class="conn-note">Callers must be on the list AND enter this passcode on their keypad; Twilio checks both before the call reaches the bot, and turns everyone else away. The bot can't see or change either. A bot answers one app at a time: turning this on turns the others off.</div>
         </div>
         <!-- WhatsApp calls (#843): same shape as Telegram's, keyed on phone
              numbers. Read by main when a call rings; not agent-settable. -->
@@ -488,7 +527,7 @@
           </label>
           <label for="whatsappAllowedCallers" style="margin-top:6px">Allowed callers</label>
           <textarea id="whatsappAllowedCallers" rows="3" placeholder="Phone numbers with country code, one per line"></textarea>
-          <div class="conn-note">Only these numbers get answered; everyone else just rings out. The bot can't change this list. A bot answers one app at a time: turning this on turns Telegram calls off.</div>
+          <div class="conn-note">Only these numbers get answered; everyone else just rings out. The bot can't change this list. A bot answers one app at a time: turning this on turns the others off.</div>
         </div>
         <!-- Telegram calls (#843): who may call this bot. Read by main when a
              call rings; deliberately not an agent-settable preference. -->
@@ -499,7 +538,7 @@
           </label>
           <label for="telegramAllowedCallers" style="margin-top:6px">Allowed callers</label>
           <textarea id="telegramAllowedCallers" rows="3" placeholder="@username or numeric user id, one per line"></textarea>
-          <div class="conn-note">Only these people get answered; everyone else just rings out. The bot can't change this list. A bot answers one app at a time: turning this on turns WhatsApp calls off.</div>
+          <div class="conn-note">Only these people get answered; everyone else just rings out. The bot can't change this list. A bot answers one app at a time: turning this on turns the others off.</div>
         </div>
 
         <!-- Calendar auto-join identity (#299): add this address as a guest on

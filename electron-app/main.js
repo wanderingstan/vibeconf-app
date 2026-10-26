@@ -11667,8 +11667,56 @@ function activateTeamsProvider(teamsUrl) {
 const CALLING_APP_CALLS = {
   telegram: { label: 'Telegram', preload: 'preload-telegram.js', module: './telegram-call', callerKey: (c) => c && c.id },
   whatsapp: { label: 'WhatsApp', preload: 'preload-whatsapp.js', module: './whatsapp-call', callerKey: (c) => c && c.phone },
+  // A real phone number through Twilio (#882): the gate runs on Twilio's side
+  // (twilio-call.js), the bot's phone is a local page running the Voice SDK.
+  twilio: { label: 'Phone', preload: 'preload-twilio.js', module: './twilio-call', callerKey: (c) => c && c.phone },
 };
-const CALLING_APP_ORDER = ['telegram', 'whatsapp'];
+const CALLING_APP_ORDER = ['telegram', 'whatsapp', 'twilio'];
+
+// --- Twilio (#882): credentials and the gate --------------------------------
+// All of it lives in the profile store under keys that are NOT in
+// preferences-schema.js, so the agent can neither read nor set them; only the
+// Settings panel (set-config / twilio-connect) writes them.
+function twilioCreds() {
+  if (!store) return null;
+  const accountSid = store.get('twilioAccountSid');
+  const apiKeySid = store.get('twilioApiKeySid');
+  const apiKeySecret = store.get('twilioApiKeySecret');
+  return accountSid && apiKeySid && apiKeySecret ? { accountSid, apiKeySid, apiKeySecret } : null;
+}
+
+// Write this bot's gate (allowlist + passcode) into its Studio Flow and point
+// its number at it. With answering off, or no allowlist or passcode, the flow
+// rejects everyone. Serialized, so quick edits can't race each other.
+let _twilioProvisioning = Promise.resolve();
+function provisionTwilioGate(reason) {
+  const run = async () => {
+    const creds = twilioCreds();
+    const phone = store && store.get('twilioPhoneNumber');
+    if (!creds || !phone) return { ok: false, error: 'Twilio is not connected' };
+    const tw = require('./twilio-call');
+    const answering = !!store.get('twilioAnswerCalls');
+    try {
+      const r = await tw.provisionGate({
+        creds,
+        phone,
+        identity: tw.clientIdentity(appProfile),
+        allowlist: answering ? [...tw.parseAllowlist(store.get('twilioAllowedCallers') || '').phones] : [],
+        passcode: answering ? (store.get('twilioPasscode') || '') : '',
+        flowSid: store.get('twilioFlowSid') || null,
+        flowName: tw.FLOW_NAME_PREFIX + ' (' + appProfile + ')',
+      });
+      store.set('twilioFlowSid', r.flowSid);
+      console.log('[electron] Twilio gate updated (' + reason + '): flow ' + r.flowSid + (answering ? '' : ', rejecting all callers (answering off)'));
+      return { ok: true };
+    } catch (err) {
+      console.warn('[electron] Twilio gate update failed (' + reason + '):', err.message);
+      return { ok: false, error: err.message };
+    }
+  };
+  _twilioProvisioning = _twilioProvisioning.then(run, run);
+  return _twilioProvisioning;
+}
 
 // Which app this bot should be waiting in, or null.
 function callingAppStandbyWanted() {
@@ -12740,6 +12788,9 @@ function createMainWindow() {
     const standby = callingAppStandbyWanted();
     if (standby) activateCallingAppStandby(standby, 'app start');
     else loadIdlePage('main-window created');
+    // Re-write the phone's gate on every start, so the flow on Twilio always
+    // matches this version of the app (its prompts, its checks).
+    if (twilioCreds() && store.get('twilioPhoneNumber')) provisionTwilioGate('app start');
   }
 
   // 'close' (cancellable) before 'closed' (already gone).
@@ -13217,7 +13268,9 @@ function setupIPC() {
     if (sessionKeyed) forgetStaleAgentSession(beforePair, agentSessionPair());
     // Calling-app calls (#843): switching answering on/off takes effect now,
     // but only between calls (refreshCallingAppStandby checks the status).
-    if (key === 'telegramAnswerCalls' || key === 'whatsappAnswerCalls') {
+    // The phone's gate follows its allowlist, passcode and switch (#882).
+    if (['twilioAllowedCallers', 'twilioPasscode', 'twilioAnswerCalls'].includes(key)) provisionTwilioGate(key + ' changed');
+    if (key === 'telegramAnswerCalls' || key === 'whatsappAnswerCalls' || key === 'twilioAnswerCalls') {
       // One calling app answers at a time (there is one call view): switching
       // one on switches the others off, here as well as in the panel, so the
       // store can never hold two.
@@ -14749,7 +14802,7 @@ function setupIPC() {
       title: 'Sign the bot into Telegram: log in with the bot\'s phone',
     },
   };
-  const callingAppAccounts = () => ({ whatsapp: null, telegram: null, ...(store?.get('callingAppAccounts') || {}) });
+  const callingAppAccounts = () => ({ whatsapp: null, telegram: null, twilio: null, ...(store?.get('callingAppAccounts') || {}) });
   function setCallingAppAccount(which, account) {
     const all = callingAppAccounts();
     if (JSON.stringify(all[which]) === JSON.stringify(account)) return;
@@ -14802,6 +14855,15 @@ function setupIPC() {
   // session stays listed on the phone until removed there (Telegram: Settings →
   // Devices; WhatsApp: Linked devices), which the panel tells the user.
   ipcMain.handle('calling-app-sign-out', async (_event, { app: which } = {}) => {
+    if (which === 'twilio') {
+      // Forget the credentials on this machine. The number keeps pointing at
+      // the gate flow, which then can't reach a client and the call fails.
+      for (const k of ['twilioAccountSid', 'twilioApiKeySid', 'twilioApiKeySecret']) store.delete(k);
+      store.set('twilioAnswerCalls', false);
+      setCallingAppAccount('twilio', null);
+      if (callingAppMode === 'twilio') refreshCallingAppStandby('Twilio disconnected');
+      return { ok: true };
+    }
     const target = CALLING_APP_SIGN_IN[which];
     if (!target) return { ok: false, error: `unknown calling app: ${which}` };
     const open = callingAppSignInWindows[which];
@@ -14818,6 +14880,48 @@ function setupIPC() {
     setCallingAppAccount(which, null);
     if (callingAppMode === which) refreshCallingAppStandby('signed out of ' + which);
     return { ok: true };
+  });
+
+  // --- Twilio phone (#882) ---
+  // Connect: check the credentials and the number against Twilio, store them,
+  // and write the gate. The secret never goes back to the panel.
+  ipcMain.handle('twilio-connect', async (_event, { accountSid, apiKeySid, apiKeySecret, phoneNumber } = {}) => {
+    const tw = require('./twilio-call');
+    const creds = {
+      accountSid: String(accountSid || '').trim(),
+      apiKeySid: String(apiKeySid || '').trim(),
+      apiKeySecret: String(apiKeySecret || '').trim() || store.get('twilioApiKeySecret') || '',
+    };
+    const digits = tw.phoneDigits(phoneNumber);
+    if (!/^AC[0-9a-f]{32}$/i.test(creds.accountSid)) return { ok: false, error: 'The Account SID starts with AC and is 34 characters' };
+    if (!/^SK[0-9a-f]{32}$/i.test(creds.apiKeySid)) return { ok: false, error: 'The API key SID starts with SK and is 34 characters' };
+    if (!creds.apiKeySecret) return { ok: false, error: 'Enter the API key secret' };
+    if (!digits) return { ok: false, error: 'Enter the phone number with its country code' };
+    try {
+      const number = await tw.makeClient(creds).findNumber(digits);
+      if (!number) return { ok: false, error: '+' + digits + ' is not a number on this Twilio account' };
+    } catch (err) {
+      return { ok: false, error: err.message };
+    }
+    store.set('twilioAccountSid', creds.accountSid);
+    store.set('twilioApiKeySid', creds.apiKeySid);
+    store.set('twilioApiKeySecret', creds.apiKeySecret);
+    store.set('twilioPhoneNumber', digits);
+    setCallingAppAccount('twilio', { label: '+' + digits });
+    const gate = await provisionTwilioGate('connected');
+    return gate.ok ? { ok: true } : { ok: false, error: 'Connected, but the gate could not be written: ' + gate.error };
+  });
+  // The phone page's access token (incoming calls only), minted here so the
+  // API secret never reaches a page.
+  ipcMain.handle('twilio-token', () => {
+    const creds = twilioCreds();
+    if (!creds) return { token: null };
+    const tw = require('./twilio-call');
+    return { token: tw.mintAccessToken({ ...creds, identity: tw.clientIdentity(appProfile) }) };
+  });
+  ipcMain.handle('twilio-number', () => {
+    const d = store && store.get('twilioPhoneNumber');
+    return d ? '+' + d : '';
   });
 
   // --- TTS ---

@@ -2191,6 +2191,9 @@ const localServer = new globalThis.LocalServer({
     // "confirm in-call + start the loop". For Meet, navigate as before.
     if (slackProviderMode || /^slack-/.test(meetCode || '')) {
       console.log('[local-server] Slack join — bot already in huddle, skipping Meet navigation');
+    } else if (/^whatsapp-link-/.test(meetCode || '')) {
+      // A WhatsApp call link: activateWhatsAppCallLink (onJoinWhatsApp) loaded it.
+      console.log('[local-server] WhatsApp call-link join — already loading, skipping Meet navigation');
     } else if (/^teams-/.test(meetCode || '')) {
       // Teams: activateTeamsProvider (via onJoinTeams) already loaded the meeting.
       console.log('[local-server] Teams join — meeting view already loading, skipping Meet navigation');
@@ -2253,6 +2256,10 @@ const localServer = new globalThis.LocalServer({
   onJoinTeams: (url) => {
     console.log('[local-server] Join Teams meeting requested by agent:', url);
     return activateTeamsProvider(url);
+  },
+  onJoinWhatsApp: (url) => {
+    console.log('[local-server] Join WhatsApp call link requested by agent:', url);
+    return activateWhatsAppCallLink(url);
   },
   onJoinZoom: (url) => {
     // Programmatic Zoom join (#318), the Zoom analog of onJoinSlack.
@@ -5762,7 +5769,8 @@ function joinSummonedCall({ url = null, summoned = false } = {}) {
       return;
     }
     const activate = { slack: (u) => { activateSlackProvider(u, { autojoin: true }); return localServer.roomId; },
-      zoom: (u) => activateZoomProvider(u), teams: (u) => activateTeamsProvider(u) }[t.provider];
+      zoom: (u) => activateZoomProvider(u), teams: (u) => activateTeamsProvider(u),
+      whatsapp: (u) => activateWhatsAppCallLink(u) }[t.provider];
     const room = activate && activate(t.url);
     if (room) launchClaudeTerminal(room, { summoned });
     else console.warn('[call-new-bot] not a joinable', t.provider, 'link; skipping');
@@ -10191,7 +10199,9 @@ app.whenReady().then(async () => {
     // the zoom-/teams- room, then start the agent on that room. The calendar
     // context is set AFTER the provider registers its room, because setting the
     // room resets it; joinMeetUrl does the same for Meet.
-    const room = link.provider === 'zoom' ? activateZoomProvider(meetUrl) : activateTeamsProvider(meetUrl);
+    const room = link.provider === 'zoom' ? activateZoomProvider(meetUrl)
+      : link.provider === 'whatsapp' ? activateWhatsAppCallLink(meetUrl)
+      : activateTeamsProvider(meetUrl);
     if (!room) {
       console.warn(`[calendar] Could not start the ${link.provider} join for "${event.summary || event.id}" (${meetUrl})`);
       return;
@@ -10572,6 +10582,7 @@ app.whenReady().then(async () => {
   for (const [channel, activate, label] of [
     ['join-detected-zoom', (url) => activateZoomProvider(url), 'Zoom'],
     ['join-detected-teams', (url) => activateTeamsProvider(url), 'Teams'],
+    ['join-detected-whatsapp', (url) => activateWhatsAppCallLink(url), 'WhatsApp'],
   ]) {
     ipcMain.on(channel, (_event, { url } = {}) => {
       if (!url) return;
@@ -11734,12 +11745,12 @@ function callingAppStandbyWanted() {
   } catch { return null; }
 }
 
-function activateCallingAppStandby(app, reason) {
+function activateCallingAppStandby(app, reason, { startUrl = null } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   const spec = CALLING_APP_CALLS[app];
   if (!spec) return false;
   const { WEB_URL } = require(spec.module);
-  console.log('[electron] ' + spec.label + ' standby (' + reason + '): waiting for calls');
+  console.log('[electron] ' + spec.label + (startUrl ? ' (' + reason + '): opening ' + startUrl : ' standby (' + reason + '): waiting for calls'));
   destroyProviderView();
   slackProviderMode = false;
   slackSurface = null;
@@ -11760,8 +11771,25 @@ function activateCallingAppStandby(app, reason) {
   });
   attachMeetViewForState();
   layoutViews();
-  meetView.webContents.loadURL(WEB_URL);
+  meetView.webContents.loadURL(startUrl || WEB_URL);
   return true;
+}
+
+// Join a WhatsApp call link (#891): the same WhatsApp view as standby, opened
+// on the link, whose pre-join page preload-whatsapp presses "Join call" on.
+// A link call is a group call the bot was SENT to, like a Meet link, so no
+// allowlist applies. Needs the bot signed in to WhatsApp. Returns the room.
+function activateWhatsAppCallLink(url) {
+  const wa = require('./whatsapp-call');
+  const link = wa.parseCallLink(url);
+  if (!link) { console.warn('[electron] WhatsApp: not a call link —', url); return null; }
+  if (!(store && (store.get('callingAppAccounts') || {}).whatsapp)) {
+    console.warn('[electron] WhatsApp call link: this bot is not signed in to WhatsApp (Settings → Bot accounts)');
+    return null;
+  }
+  const canonical = `https://call.whatsapp.com/${link.kind}/${link.token}`;
+  if (!activateCallingAppStandby('whatsapp', 'call link', { startUrl: canonical })) return null;
+  return registerProviderRoom('WhatsApp', wa.roomCodeForLink(link.token), canonical);
 }
 
 // Leave standby (the owner switched calls off, or signed out). Only while

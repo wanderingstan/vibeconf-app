@@ -3605,6 +3605,32 @@
           console.warn('[bots-in-calls] realtime: could not mix', id, err.message);
         }
       }
+      // The same remote audio the STT tap hears, from where the RTC hook can't
+      // see it: a provider's output tap (WhatsApp's playback worklet) and, with
+      // the hook off (Zoom, Teams, Slack), the call's <audio>/<video> elements.
+      // Without these the realtime model heard nothing on those providers
+      // ("mixed-participants 0", live on WhatsApp 2026-10-27).
+      const extra = [...outputTapTracks()];
+      if (window.__vibeconf_disableAudioCapture) {
+        try {
+          for (const el of document.querySelectorAll('audio, video')) {
+            const src = el.srcObject;
+            if (src && typeof src.getAudioTracks === 'function') extra.push(...src.getAudioTracks());
+          }
+        } catch { /* DOM not ready */ }
+      }
+      for (const track of extra) {
+        const id = 'track-' + track.id;
+        if (this.mixed.has(id) || track.readyState !== 'live') continue;
+        try {
+          const src = ctx.createMediaStreamSource(new MediaStream([track]));
+          src.connect(this.mixDest);
+          this.mixed.set(id, src);
+          added++;
+        } catch (err) {
+          console.warn('[bots-in-calls] realtime: could not mix', id, err.message);
+        }
+      }
       return added;
     }
 

@@ -3361,7 +3361,7 @@ server.tool(
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a call — a Google Meet, a Slack huddle, or (experimental) a Zoom or Microsoft Teams meeting. Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle. For Zoom, pass the meeting link (zoom.us/j/<number>, passcode included); the bot joins through the Zoom web client. For Microsoft Teams, pass the meeting link (teams.live.com/meet/... or teams.microsoft.com/...); the bot joins as a guest and an organizer must admit it from the lobby.",
+  "Tell the Vibeconferencing app to join a call — a Google Meet, a Slack huddle, or (experimental) a Zoom or Microsoft Teams meeting or a WhatsApp call link (https://call.whatsapp.com/...; the bot must be signed in to WhatsApp). Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle. For Zoom, pass the meeting link (zoom.us/j/<number>, passcode included); the bot joins through the Zoom web client. For Microsoft Teams, pass the meeting link (teams.live.com/meet/... or teams.microsoft.com/...); the bot joins as a guest and an organizer must admit it from the lobby.",
   {
     room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), a Slack huddle URL (https://app.slack.com/client/<team>/<channel>), a Zoom meeting link (https://zoom.us/j/<number>?pwd=...), OR a Microsoft Teams meeting link (https://teams.live.com/meet/<code>?p=...)."),
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running (see list_call_instances) — the profile keeps its own display name, so `/join-call <code> alice2` joins as whatever alice2 is named. If the name matches no profile and only one instance is running, it is used as a one-off Meet display name instead. Omit to use the sole running instance, or the one this session is pinned to, under its configured name — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),
@@ -3398,6 +3398,43 @@ server.tool(
             text: `Bot identity is locked to "${BOT_NAME}" while the current call is active. Leave the call first (the lock clears automatically once the call ends) or restart the agent.`,
           }],
         };
+      }
+
+      // WhatsApp call link? (#891) https://call.whatsapp.com/video|voice/<token>
+      // or the web.whatsapp.com/call/... page it redirects to. Parsed inline,
+      // not via electron-app/whatsapp-call.js (#708); keep the two in step.
+      const waLink = String(room_id).trim().match(/^https?:\/\/(?:call\.whatsapp\.com\/|web\.whatsapp\.com\/call\/)(video|voice)\/([A-Za-z0-9_-]{8,64})(?:[/?#]|$)/i);
+      if (waLink) {
+        // Lowercase, dash-safe: the app's room route only takes [a-z0-9-].
+        const waRoomId = `whatsapp-link-${waLink[2].toLowerCase().replace(/[^a-z0-9-]/g, '-')}`;
+        const wresp = await vfetch(`${BASE_URL}/api/sync/${waRoomId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(botSyncPayload(joinedBotName, { meta: { action: "join-whatsapp", url: room_id } })),
+        });
+        const wdata = await wresp.json();
+        if (wdata.results?.join?.ok) {
+          ROOM_ID = waRoomId;
+          BOT_NAME = joinedBotName;
+          botNameLocked = true;
+          lastPollTime = null;
+          return {
+            content: [{
+              type: "text",
+              text: [
+                `Joining the WhatsApp call link${routedNote} from this bot's own WhatsApp account. Use \`${waRoomId}\` as room_id for all tool calls.`,
+                ``,
+                `You hear the call through on-device transcription (WhatsApp has no captions). A call link is a group call: several people may be in it.`,
+                `There's no in-call chat on a call link. Screen share works (\`start_share\`).`,
+                ``,
+                `1. Once in the call, \`speak\` a brief one-sentence greeting so participants hear you're on the line.`,
+                `2. Then loop: \`wait_for_speech\` → optionally \`speak\` → \`wait_for_speech\`, and repeat until asked to leave or the call ends.`,
+                `**Do not send a final response to the user while the call is active.** When the call ends or you're asked to leave, call \`leave_call\`.`,
+              ].join('\n'),
+            }],
+          };
+        }
+        return { content: [{ type: "text", text: `Couldn't join the WhatsApp call link: ${wdata.results?.join?.error || wdata.error || 'unknown error'}.` }] };
       }
 
       // Microsoft Teams meeting? A /meet/<code> link (teams.live.com or

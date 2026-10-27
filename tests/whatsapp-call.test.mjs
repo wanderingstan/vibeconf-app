@@ -162,6 +162,15 @@ test('chat sends through WhatsApp\'s own send action, to the caller\'s chat only
   await assert.rejects(() => wa.sendChatMessage(win, 'someone-else@lid', 'x'), /no chat with the caller/);
 });
 
+test('the realtime voice model hears what the STT tap hears (output tap; media elements with the RTC hook off)', () => {
+  const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+  const fn = inject.slice(inject.indexOf('    _mixParticipants(ctx) {'));
+  const body = fn.slice(0, fn.indexOf('\n    }\n'));
+  assert.match(body, /const extra = \[\.\.\.outputTapTracks\(\)\];/);
+  assert.match(body, /if \(window\.__vibeconf_disableAudioCapture\)/);
+  assert.match(body, /const id = 'track-' \+ track\.id;/, 'keyed by track, so nothing is mixed twice');
+});
+
 test('main isolates WhatsApp Web so its calling engine gets SharedArrayBuffer', () => {
   const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
   assert.match(main, /web\\\.whatsapp\\\.com/);

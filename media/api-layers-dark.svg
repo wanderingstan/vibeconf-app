@@ -34,7 +34,7 @@
 <path d="M340,332.0 L400,332.0" fill="none" stroke="#FFE7B3" stroke-width="1.6" marker-end="url(#arr)"/>
 <text x="370" y="322.0" font-size="10" font-weight="700" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#F1D9A4" text-anchor="middle">HTTP</text>
 <text x="370" y="352.0" font-size="10" font-weight="700" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#F1D9A4" text-anchor="middle">JSON</text>
-<rect x="400" y="118" width="320" height="583" rx="6" fill="#4A3140" stroke="#FFE7B3" stroke-width="2" filter="url(#sh)"/>
+<rect x="400" y="118" width="320" height="698" rx="6" fill="#4A3140" stroke="#FFE7B3" stroke-width="2" filter="url(#sh)"/>
 <g transform="translate(540.0,136) scale(0.15625)"><circle cx="64" cy="64" r="56" fill="#D97757"/><rect x="136" y="8" width="112" height="112" rx="6" fill="#7B68EE"/><rect x="8" y="136" width="112" height="112" rx="6" fill="#E95678"/><circle cx="192" cy="192" r="56" fill="#45D4CF"/></g>
 <text x="560.0" y="204" font-size="20" font-weight="800" font-family="Syne, Futura, 'Trebuchet MS', sans-serif" letter-spacing="-0.3" fill="#FFF4DA" text-anchor="middle">the local API</text>
 <text x="560.0" y="222" font-size="11.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#F1D9A4" text-anchor="middle">http://127.0.0.1:7865 · bearer token</text>
@@ -47,42 +47,58 @@
 <text x="432" y="331" font-size="11" font-weight="700" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">POST /api/sync/{room}</text>
 <text x="432" y="345" font-size="9.5" font-weight="400" fill="#F1D9A4" text-anchor="start">speak, write the board, or run an action</text>
 <text x="422" y="376" font-size="11" font-weight="700" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" letter-spacing="2" fill="#E62776" text-anchor="start"><tspan fill="#FFE7B3">✦ </tspan>56 TOOLS, ONE HTTP CALL EACH</text>
-<rect x="422" y="386" width="276" height="285" rx="4" fill="#3F2831" stroke="#6B5566" stroke-width="1"/>
+<rect x="422" y="386" width="276" height="398" rx="4" fill="#3F2831" stroke="#6B5566" stroke-width="1"/>
 <text x="432" y="402" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">join_call</text>
-<text x="432" y="419" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">wait_for_speech</text>
-<text x="432" y="436" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">speak</text>
-<text x="432" y="453" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">leave_call</text>
-<text x="432" y="470" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">start_call</text>
-<text x="432" y="487" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">read_transcripts</text>
-<text x="432" y="504" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">read_chat</text>
-<text x="432" y="521" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">send_chat</text>
-<text x="432" y="538" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">update_whiteboard</text>
-<text x="432" y="555" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">read_whiteboard</text>
-<text x="432" y="572" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">load_url</text>
-<text x="432" y="589" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">start_share</text>
-<text x="432" y="606" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">share_tab</text>
-<text x="432" y="623" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">stop_sharing</text>
-<text x="432" y="640" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">click_share</text>
-<text x="570" y="402" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">type_share</text>
-<text x="570" y="419" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">get_shared_screenshot</text>
-<text x="570" y="436" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">play_audio</text>
-<text x="570" y="453" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_camera</text>
-<text x="570" y="470" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_avatar_emoji</text>
-<text x="570" y="487" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_mode</text>
-<text x="570" y="504" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_caption_language</text>
-<text x="570" y="521" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_voice</text>
-<text x="570" y="538" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">list_voices</text>
-<text x="570" y="555" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">start_recording</text>
-<text x="570" y="572" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">stop_recording</text>
-<text x="570" y="589" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">get_room_info</text>
-<text x="570" y="606" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">get_call_screenshot</text>
-<text x="570" y="623" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">post_understanding</text>
-<text x="570" y="640" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">bank_probe</text>
-<text x="688" y="662" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#F1D9A4" text-anchor="end">…and 26 more</text>
-<path d="M720,409.5 L780,409.5" fill="none" stroke="#FFE7B3" stroke-width="1.6" marker-end="url(#arr)"/>
-<text x="750" y="379.5" font-size="10" font-weight="500" fill="#F1D9A4" text-anchor="middle">the app drives</text>
-<text x="750" y="391.5" font-size="10" font-weight="500" fill="#F1D9A4" text-anchor="middle">each platform’s</text>
-<text x="750" y="403.5" font-size="10" font-weight="500" fill="#F1D9A4" text-anchor="middle">own web client</text>
+<text x="432" y="418" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">wait_for_speech</text>
+<text x="432" y="434" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">speak</text>
+<text x="432" y="450" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">leave_call</text>
+<text x="432" y="466" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">start_call</text>
+<text x="432" y="482" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">read_transcripts</text>
+<text x="432" y="498" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">read_chat</text>
+<text x="432" y="514" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">send_chat</text>
+<text x="432" y="530" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">update_whiteboard</text>
+<text x="432" y="546" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">read_whiteboard</text>
+<text x="432" y="562" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">load_url</text>
+<text x="432" y="578" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">start_share</text>
+<text x="432" y="594" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">share_tab</text>
+<text x="432" y="610" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">stop_sharing</text>
+<text x="432" y="626" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">click_share</text>
+<text x="432" y="642" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">type_share</text>
+<text x="432" y="658" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">get_shared_screenshot</text>
+<text x="432" y="674" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">play_audio</text>
+<text x="432" y="690" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_camera</text>
+<text x="432" y="706" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_avatar_emoji</text>
+<text x="432" y="722" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_mode</text>
+<text x="432" y="738" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_caption_language</text>
+<text x="432" y="754" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_voice</text>
+<text x="570" y="402" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">list_voices</text>
+<text x="570" y="418" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">start_recording</text>
+<text x="570" y="434" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">stop_recording</text>
+<text x="570" y="450" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">get_room_info</text>
+<text x="570" y="466" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">get_call_screenshot</text>
+<text x="570" y="482" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">post_understanding</text>
+<text x="570" y="498" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">bank_probe</text>
+<text x="570" y="514" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">end_session</text>
+<text x="570" y="530" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">play_sound</text>
+<text x="570" y="546" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_whiteboard_style</text>
+<text x="570" y="562" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">reload_share</text>
+<text x="570" y="578" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">scroll_share</text>
+<text x="570" y="594" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_share_size</text>
+<text x="570" y="610" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_share_audio</text>
+<text x="570" y="626" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">find_share_element</text>
+<text x="570" y="642" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">inspect_dom</text>
+<text x="570" y="658" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">eval_share</text>
+<text x="570" y="674" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">get_working_memory</text>
+<text x="570" y="690" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">get_session_log</text>
+<text x="570" y="706" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">list_preferences</text>
+<text x="570" y="722" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">set_preference</text>
+<text x="570" y="738" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">list_call_instances</text>
+<text x="570" y="754" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#FFF4DA" text-anchor="start">suggest_bot_names</text>
+<text x="688" y="775" font-size="10.5" font-weight="500" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" fill="#F1D9A4" text-anchor="end">…and 10 more</text>
+<path d="M720,467.0 L780,467.0" fill="none" stroke="#FFE7B3" stroke-width="1.6" marker-end="url(#arr)"/>
+<text x="750" y="437.0" font-size="10" font-weight="500" fill="#F1D9A4" text-anchor="middle">the app drives</text>
+<text x="750" y="449.0" font-size="10" font-weight="500" fill="#F1D9A4" text-anchor="middle">each platform’s</text>
+<text x="750" y="461.0" font-size="10" font-weight="500" fill="#F1D9A4" text-anchor="middle">own web client</text>
 <text x="1060" y="130" font-size="11" font-weight="700" font-family="'JetBrains Mono', ui-monospace, Menlo, monospace" letter-spacing="2" fill="#E62776" text-anchor="end"><tspan fill="#FFE7B3">✦ </tspan>MEETINGS THE BOT JOINS</text>
 <text x="1060" y="146" font-size="12" font-weight="400" fill="#F1D9A4" text-anchor="end">POST a join action with the link</text>
 <rect x="850" y="160" width="210" height="50" rx="6" fill="#4A3140" stroke="#FFE7B3" stroke-width="1.5" filter="url(#sh)"/>

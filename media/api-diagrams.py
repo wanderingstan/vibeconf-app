@@ -160,14 +160,28 @@ def layers(T):
     import re
     src = open(os.path.join(HERE, '..', 'mcp-server', 'server.js')).read()
     all_tools = re.findall(r'^server\.tool\(\s*\n?\s*"([a-z_]+)"', src, re.M)
+    # In the order they drop off the bottom: the loop first, housekeeping last.
     shown = ['join_call', 'wait_for_speech', 'speak', 'leave_call', 'start_call', 'read_transcripts',
              'read_chat', 'send_chat', 'update_whiteboard', 'read_whiteboard', 'load_url', 'start_share',
              'share_tab', 'stop_sharing', 'click_share', 'type_share', 'get_shared_screenshot', 'play_audio',
              'set_camera', 'set_avatar_emoji', 'set_mode', 'set_caption_language', 'set_voice', 'list_voices',
-             'start_recording', 'stop_recording', 'get_room_info', 'get_call_screenshot', 'post_understanding', 'bank_probe']
-    shown = [t for t in shown if t in all_tools]
-    more = len(all_tools) - len(shown)
-    bh = 170 + len(rows_a) * 42 + 30 + ((len(shown) + 1) // 2) * 17 + 44
+             'start_recording', 'stop_recording', 'get_room_info', 'get_call_screenshot', 'post_understanding', 'bank_probe',
+             'end_session', 'play_sound', 'set_whiteboard_style', 'reload_share', 'scroll_share', 'set_share_size',
+             'set_share_audio', 'find_share_element', 'inspect_dom', 'eval_share', 'get_working_memory', 'get_session_log',
+             'list_preferences', 'set_preference', 'list_call_instances', 'suggest_bot_names', 'hold_voice', 'brief',
+             'get_call_log', 'list_fonts', 'list_visual_assets', 'list_log_instances', 'read_share_console',
+             'read_share_network', 'set_share_title_bar', 'share_whiteboard']
+    shown = [t for t in shown if t in all_tools] + [t for t in all_tools if t not in shown]
+    # The box ends level with the last platform card; the grid takes what is left.
+    box_bottom = 586 + 3 * 60 + 50
+    row_h = 16
+    head_h = 170 + len(rows_a) * 42 + 30
+    rows = (box_bottom - by - head_h - 44) // row_h
+    more = max(0, len(shown) - rows * 2)
+    if more == 0:
+        rows = (len(shown) + 1) // 2
+    shown = shown[:rows * 2]
+    bh = box_bottom - by
     c.box(bx, by, bw, bh, stroke_w=2)
     c.logo(bx + bw / 2 - 20, by + 18)
     c.text(bx + bw / 2, by + 86, 'the local API', 20, 800, family=SYNE, spacing=-0.3, anchor='middle')
@@ -185,12 +199,13 @@ def layers(T):
     c.eyebrow(bx + 22, y, f'{len(all_tools)} TOOLS, ONE HTTP CALL EACH')
     y += 10
     half = (len(shown) + 1) // 2
-    grid_h = half * 17 + 30
+    grid_h = half * row_h + 30
     c.o.append(f'<rect x="{bx + 22}" y="{y}" width="{bw - 44}" height="{grid_h}" rx="4" fill="{T["row_fill"]}" stroke="{T["row_stroke"]}" stroke-width="1"/>')
     for i, t in enumerate(shown):
         col, rowi = divmod(i, half)
-        c.text(bx + 32 + col * 138, y + 16 + rowi * 17, t, 10.5, 500, family=MONO)
-    c.text(bx + bw - 32, y + grid_h - 9, f'…and {more} more', 10.5, 500, fill=T['soft'], family=MONO, anchor='end')
+        c.text(bx + 32 + col * 138, y + 16 + rowi * row_h, t, 10.5, 500, family=MONO)
+    if more:
+        c.text(bx + bw - 32, y + grid_h - 9, f'…and {more} more', 10.5, 500, fill=T['soft'], family=MONO, anchor='end')
     api_mid = by + bh / 2
 
     # ── Right: the platforms, two stacks ──

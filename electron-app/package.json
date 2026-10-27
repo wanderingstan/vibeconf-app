@@ -89,6 +89,14 @@
         ]
       },
       {
+        "from": "../docs/api",
+        "to": "api-docs",
+        "filter": [
+          "openapi.yaml",
+          "explorer.html"
+        ]
+      },
+      {
         "from": "../extension",
         "to": "extension",
         "filter": [

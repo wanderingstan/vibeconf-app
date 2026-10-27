@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibeconferencing API</title>
+<meta name="description" content="One HTTP API that puts a participant into Google Meet, Zoom, Microsoft Teams and Slack huddles. Browse it here, and run it against your own bot.">
+<link rel="icon" href="https://vibeconferencing.com/favicon.svg">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<!--
+  The API explorer. One file, two homes:
+    - vibeconferencing.com/api (copied into the website repo's public/api/)
+    - http://127.0.0.1:<port>/docs, served by any running bot
+
+  The spec it renders is docs/api/openapi.yaml in wanderingstan/vibeconf-app.
+  Hosted, it fetches that file from GitHub so the page never goes stale;
+  app-served, it reads the bundled copy next to it.
+
+  "Try it" runs against the reader's own bot on 127.0.0.1. The page probes
+  the app's directory (port 7864) to find bots; without the app it offers the
+  download instead. The bot's bearer token is pasted by the reader and kept in
+  this browser's localStorage only. Style: docs/STYLE-GUIDE.md.
+-->
+<style>
+  :root {
+    --cream: #FFF4DA; --paper: #FFFDF7; --paper-lo: #FFE7B3;
+    --ink: #4A3140; --ink-soft: #6B5566; --ink-faint: #9A8798;
+    --pink: #E62776; --pink-deep: #B31199; --magenta: #9F0BA4; --line: #F1D9A4;
+    --go: #44CE81; --go-deep: #3BBE74;
+    --shadow: -1px 2px 8px rgba(74, 49, 64, .24);
+    --font-display: Syne, Futura, "Trebuchet MS", sans-serif;
+    --font-body: "DM Sans", "Avenir Next", -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  html, body { margin: 0; background: var(--cream); color: var(--ink); font-family: var(--font-body); }
+  a { color: var(--magenta); text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+  a:hover { color: var(--pink-deep); }
+
+  /* ── The connect band ───────────────────────────────────────────────── */
+  #band { border-bottom: 2px solid var(--ink); background: var(--paper); }
+  #band .wrap { max-width: 1100px; margin: 0 auto; padding: 18px 20px; display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: center; }
+  #band h1 { font: 800 22px/1.05 var(--font-display); letter-spacing: -.02em; margin: 0; }
+  #band h1 span { color: var(--ink-soft); font-weight: 700; }
+  .eyebrow { font: 700 10.5px var(--font-mono); letter-spacing: .18em; text-transform: uppercase; color: var(--magenta); }
+  .eyebrow::before { content: "✦ "; color: var(--pink); }
+  #state { flex: 1 1 420px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; font-size: 14px; }
+  #state .dot { width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--ink); background: var(--paper-lo); display: inline-block; }
+  #state .dot.on { background: var(--go); }
+  #state .dot.off { background: var(--pink); }
+  #state code, .cmd { font: 500 12px var(--font-mono); background: var(--cream); border: 1px solid var(--line); border-radius: 4px; padding: 2px 6px; }
+  .cmd { display: inline-block; user-select: all; }
+  button, .btn {
+    font: 700 12.5px var(--font-display); border-radius: 999px; padding: 8px 16px; border: 1.5px solid var(--ink);
+    cursor: pointer; background: var(--paper); color: var(--ink); text-decoration: none; display: inline-block; line-height: 1.2;
+  }
+  button:hover, .btn:hover { background: var(--paper-lo); color: var(--ink); }
+  .btn.primary { background: var(--pink-deep); color: var(--cream); box-shadow: var(--shadow); }
+  .btn.primary:hover { background: var(--magenta); color: var(--cream); }
+  button.go { background: var(--go); color: var(--ink); box-shadow: var(--shadow); }
+  button.go:hover { background: var(--go-deep); }
+  select, input[type=password], input[type=text] {
+    font: 500 13px var(--font-mono); padding: 7px 10px; border: 1.5px solid var(--ink); border-radius: 5px; background: var(--cream); color: var(--ink); outline: none;
+  }
+  input:focus, select:focus { outline: 2px solid var(--pink); outline-offset: 1px; }
+  input[type=password] { width: 22ch; }
+  .hint { color: var(--ink-soft); font-size: 13px; }
+  .hidden { display: none !important; }
+
+  /* ── Scalar, in the house palette ───────────────────────────────────── */
+  .light-mode, .dark-mode {
+    --scalar-background-1: var(--cream);
+    --scalar-background-2: var(--paper);
+    --scalar-background-3: var(--paper-lo);
+    --scalar-color-1: var(--ink);
+    --scalar-color-2: var(--ink-soft);
+    --scalar-color-3: var(--ink-faint);
+    --scalar-color-accent: var(--pink-deep);
+    --scalar-background-accent: rgba(230, 39, 118, .08);
+    --scalar-border-color: var(--line);
+    --scalar-font: var(--font-body);
+    --scalar-font-code: var(--font-mono);
+    --scalar-radius: 4px; --scalar-radius-lg: 6px; --scalar-radius-xl: 6px;
+    --scalar-sidebar-background-1: var(--paper);
+    --scalar-sidebar-color-1: var(--ink);
+    --scalar-sidebar-color-2: var(--ink-soft);
+    --scalar-sidebar-border-color: var(--line);
+    --scalar-sidebar-item-hover-background: var(--paper-lo);
+    --scalar-sidebar-item-active-background: var(--paper-lo);
+    --scalar-sidebar-color-active: var(--pink-deep);
+    --scalar-sidebar-search-background: var(--cream);
+    --scalar-sidebar-search-border-color: var(--ink);
+    --scalar-color-green: #2a9a5c; --scalar-color-red: var(--pink-deep); --scalar-color-blue: var(--magenta); --scalar-color-orange: #b0641b; --scalar-color-purple: var(--magenta);
+  }
+  .scalar-app h1, .scalar-app h2, .scalar-app .section-header, .scalar-app .t-doc__sidebar h2 { font-family: var(--font-display) !important; letter-spacing: -.01em; }
+</style>
+</head>
+<body>
+
+<div id="band">
+  <div class="wrap">
+    <div>
+      <div class="eyebrow">API reference</div>
+      <h1>vibeconferencing <span>· one API, every call</span></h1>
+    </div>
+    <div id="state">
+      <span class="dot" id="dot"></span>
+      <span id="msg">Looking for the app on this machine…</span>
+      <span id="installUi" class="hidden">
+        <a class="btn primary" href="https://github.com/wanderingstan/vibeconf-app/releases/latest" target="_blank" rel="noopener">Install the app to try it live</a>
+        <span class="hint">macOS, Windows, Linux. This page keeps checking.</span>
+      </span>
+      <span id="connectUi" class="hidden">
+        <select id="bots" aria-label="Which bot"></select>
+        <input id="token" type="password" placeholder="paste the token" autocomplete="off" aria-label="Bot token">
+        <button class="go" id="connect">Connect</button>
+        <span class="hint">Token: <span class="cmd" id="cmd">cat ~/.vibeconferencing/local-tokens/7865.token</span></span>
+      </span>
+      <span id="connectedUi" class="hidden">
+        <button id="disconnect">Disconnect</button>
+      </span>
+    </div>
+  </div>
+</div>
+
+<div id="app"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.76.0"></script>
+<script>
+(() => {
+  const LS = 'vibeconf.explorer';
+  // Served by a bot at http://127.0.0.1:<port>/docs, or hosted on the site?
+  const local = location.pathname.startsWith('/docs');
+  // Testing knobs: ?directory= points the probe at a stub, ?spec= at a local spec file.
+  const qs = new URLSearchParams(location.search);
+  const DIRECTORY = qs.get('directory') || 'http://127.0.0.1:7864';
+  const SPEC = qs.get('spec') || (local
+    ? '/docs/openapi.yaml'
+    : 'https://raw.githubusercontent.com/wanderingstan/vibeconf-app/main/docs/api/openapi.yaml');
+
+  const $ = (id) => document.getElementById(id);
+  const saved = (() => { try { return JSON.parse(localStorage.getItem(LS) || 'null'); } catch { return null; } })();
+  const port = (saved && saved.port) || (local ? location.port : '7865');
+
+  // ── Render the reference, with whatever connection we have ──────────────
+  const config = {
+    url: SPEC,
+    theme: 'none',
+    hideDarkModeToggle: true,
+    metaData: { title: 'Vibeconferencing API' },
+    servers: [{ url: `http://127.0.0.1:${port}`, description: saved ? `Your bot on ${port}` : 'A bot on this machine' }],
+    authentication: saved && saved.token
+      ? { preferredSecurityScheme: 'bearerToken', securitySchemes: { bearerToken: { token: saved.token } } }
+      : { preferredSecurityScheme: 'bearerToken' },
+  };
+  if (window.Scalar && window.Scalar.createApiReference) window.Scalar.createApiReference('#app', config);
+  else $('msg').textContent = 'The reference library did not load (cdn.jsdelivr.net). The spec itself is at ' + SPEC;
+
+  // ── The band: find bots, connect, or point at the download ──────────────
+  let bots = [];
+  const show = (state, text) => {
+    $('dot').className = 'dot ' + (state === 'on' ? 'on' : state === 'off' ? 'off' : '');
+    $('msg').textContent = text;
+    $('installUi').classList.toggle('hidden', state !== 'off');
+    $('connectUi').classList.toggle('hidden', state !== 'found');
+    $('connectedUi').classList.toggle('hidden', state !== 'on');
+  };
+  const callState = (s) => ({ 'in-call': 'in a call', idle: 'idle', 'waiting-to-be-admitted': 'waiting to be admitted', joining: 'joining' }[s] || s || 'idle');
+
+  async function probe() {
+    if (saved && saved.token) {
+      // Connected: confirm the bot is still there, quietly.
+      try {
+        const r = await fetch(`http://127.0.0.1:${saved.port}/api/sync/no-room`, { signal: AbortSignal.timeout(1500) });
+        const j = await r.json();
+        const name = (j.status && (j.status.currentCallBotName || j.status.configuredBotName)) || 'your bot';
+        show('on', `Connected to ${name} on ${saved.port}, ${callState(j.status && j.status.callStatus)}. Requests below run against it.`);
+      } catch {
+        show('on', `Connected to port ${saved.port}, but nothing answered just now. Is the app running?`);
+      }
+      return;
+    }
+    try {
+      const r = await fetch(`${DIRECTORY}/api/instances`, { signal: AbortSignal.timeout(1500) });
+      const j = await r.json();
+      bots = (j.instances || []);
+      if (!bots.length) { show('off', 'The app is running but no bot is up yet. Start one in the app window.'); return; }
+      const sel = $('bots');
+      sel.innerHTML = bots.map((b) => `<option value="${b.port}">${(b.botName || b.profile || 'default')} · ${b.port} · ${callState(b.callStatus)}</option>`).join('');
+      const pick = () => { $('cmd').textContent = `cat ~/.vibeconferencing/local-tokens/${sel.value}.token`; };
+      sel.onchange = pick; pick();
+      show('found', bots.length === 1 ? 'Found your bot. Paste its token to run requests against it:' : `Found ${bots.length} bots. Pick one and paste its token:`);
+    } catch {
+      show('off', 'No app on this machine, so the reference is read-only.');
+    }
+  }
+
+  $('connect').onclick = async () => {
+    const p = $('bots').value, t = $('token').value.trim();
+    if (!t) { $('token').focus(); return; }
+    try {
+      const r = await fetch(`http://127.0.0.1:${p}/api/preferences`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(2500) });
+      if (r.status === 401) { show('found', 'That token was refused. Copy the whole line from the token file and try again.'); return; }
+    } catch {
+      show('found', `Port ${p} did not answer. Is that bot still running?`); return;
+    }
+    try { localStorage.setItem(LS, JSON.stringify({ port: p, token: t })); } catch {}
+    location.reload();
+  };
+  $('disconnect').onclick = () => { try { localStorage.removeItem(LS); } catch {} location.reload(); };
+
+  probe();
+  setInterval(() => { if (!(saved && saved.token)) probe(); }, 5000);
+})();
+</script>
+</body>
+</html>

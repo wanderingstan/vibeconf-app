@@ -1852,6 +1852,27 @@ const localServer = new globalThis.LocalServer({
     let pathname;
     try { pathname = new URL(req.url, 'http://127.0.0.1').pathname; } catch { return false; }
 
+    // The API reference, served by the bot itself: GET /docs is the explorer
+    // (docs/api/explorer.html) and /docs/openapi.yaml the spec it renders.
+    // Same origin as the API, so "try it" needs no CORS and no browser prompt;
+    // the user still pastes the bot's token. Open routes: nothing secret here.
+    if (req.method === 'GET' && (pathname === '/docs' || pathname === '/docs/' || pathname === '/docs/openapi.yaml')) {
+      const docsDir = app.isPackaged
+        ? path.join(process.resourcesPath, 'api-docs')
+        : path.join(__dirname, '..', 'docs', 'api');
+      const isSpec = pathname.endsWith('openapi.yaml');
+      const file = path.join(docsDir, isSpec ? 'openapi.yaml' : 'explorer.html');
+      try {
+        const body = fs.readFileSync(file);
+        res.writeHead(200, { 'Content-Type': isSpec ? 'application/yaml; charset=utf-8' : 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+        res.end(body);
+      } catch {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('API docs are not bundled in this build.');
+      }
+      return true;
+    }
+
     // EXPERIMENT: brief() — the slow model hands the realtime model something
     // it could not know, WITHOUT asking it to say anything. A silent inject:
     // conversation.item.create with no response.create, so it can fire at any

@@ -1,0 +1,1779 @@
+openapi: 3.1.0
+info:
+  title: Vibeconferencing Local API
+  version: 0.8.64
+  summary: One HTTP API that puts a participant into Google Meet, Zoom, Microsoft Teams, Slack huddles and WhatsApp call links, and answers Telegram, WhatsApp and phone calls.
+  description: |
+    Vibeconferencing is a calling API and a desktop app that uses it.
+
+    The app runs on your machine and serves this API on `127.0.0.1`. Every
+    call it makes to a meeting platform goes through the platform's own web
+    client, so the bot shows up as a normal participant: a tile, a name, a
+    camera, a microphone, chat, and screen share. Your code never touches
+    WebRTC, captions, or the platform's DOM. It joins, listens, speaks, and
+    shares through the same handful of endpoints no matter which platform
+    the call is on.
+
+    Think OpenRouter, for calls: one request shape, many providers behind it.
+
+    Two kinds of call share the same endpoints:
+
+    - **Meetings the bot joins.** Google Meet, Zoom, Microsoft Teams, Slack
+      huddles and WhatsApp call links. You send a join action with the link;
+      the bot clicks through pre-join and waits to be admitted.
+    - **Calls the bot answers.** Telegram, WhatsApp and a real phone number
+      (through Twilio). Someone calls the bot; it picks up, if the caller is
+      on its allowlist. These rooms exist only while the call is live, so
+      they cannot be joined or rejoined from the API.
+
+    Planned: FaceTime links, and answering Discord calls.
+
+    ## Base URL and discovery
+
+    One bot is one running app instance on one port. The default bot listens
+    on `http://127.0.0.1:7865`. Named profiles (a second bot on the same
+    machine) take a port from the `7870` to `7899` range. The app's
+    **directory** on `http://127.0.0.1:7864` lists every running bot with its
+    port, name and call state, so clients start there:
+
+    ```
+    curl http://127.0.0.1:7864/api/instances
+    ```
+
+    ## Authentication
+
+    Every request needs a bearer token except `GET /api/sync/no-room`,
+    `GET /asset/{token}` and the directory on port 7864. The app mints a random
+    token each time a bot starts and writes it to a file only your user can
+    read:
+
+    ```
+    ~/.vibeconferencing/local-tokens/<port>.token
+    ```
+
+    Send it as `Authorization: Bearer <token>`. A wrong or missing token
+    returns `401 {"success":false,"error":"unauthorized"}`. Every `POST` must
+    carry `Content-Type: application/json`; anything else returns `415`.
+
+    Set `VIBECONF_REQUIRE_TOKEN=0` in the app's environment to turn the gate
+    off for local experiments. Cross-origin browser pages are only answered
+    when their origin is in `VIBECONF_ALLOWED_ORIGINS`.
+
+    ## Conventions
+
+    Responses are JSON. Success is `{"success": true, ...}`; failure is
+    `{"success": false, "error": "<message>"}` with a 4xx or 5xx status. Room
+    ids name the call: a Meet code (`abc-defg-hij`), or `zoom-<meeting>`,
+    `teams-<id>`, `slack-<team>-<channel>`, `whatsapp-link-<token>`, and for
+    answered calls `telegram-<user id>`, `whatsapp-<number>`, `phone-<number>`.
+    Timestamps are ISO 8601.
+
+    ## The loop
+
+    The whole API is built around one long-poll. `GET /api/sync/{roomId}`
+    with `wait=<seconds>` blocks until someone in the call finishes a
+    sentence, then returns the transcript since your last cursor. You answer
+    with `POST /api/sync/{roomId}` carrying a `transcript` entry, which the
+    bot speaks aloud. Repeat.
+
+    ## Stability
+
+    Endpoints tagged **Calls**, **Listening**, **Speaking**, **Whiteboard**,
+    **Chat**, **Behaviour** and **Preferences** are the surface the app's own
+    MCP server depends on and change deliberately. **Share automation** and
+    **Realtime voice** are experimental. Routes not in this document are
+    internal to the app and may change without notice.
+  license:
+    name: MIT
+    url: https://github.com/wanderingstan/vibeconf-app/blob/main/LICENSE
+  contact:
+    name: Vibeconferencing
+    url: https://github.com/wanderingstan/vibeconf-app
+
+externalDocs:
+  description: Guides, the platform matrix and the MCP tool mapping
+  url: https://github.com/wanderingstan/vibeconf-app/tree/main/docs/api
+
+servers:
+  - url: http://127.0.0.1:{port}
+    description: A running bot. The default bot is on 7865; see the directory for others.
+    variables:
+      port:
+        default: "7865"
+
+security:
+  - bearerToken: []
+
+tags:
+  - name: Discovery
+    description: Find running bots and read their state without a token.
+  - name: Calls
+    description: Join and leave calls on any supported platform.
+  - name: Listening
+    description: Hear the room. One long-poll does the work.
+  - name: Speaking
+    description: Say things aloud through the bot's microphone.
+  - name: Whiteboard
+    description: Show markdown, Mermaid, images or any URL to the room.
+  - name: Share automation
+    description: Drive the page the bot is sharing, like a browser automation tool. Experimental.
+  - name: Chat
+    description: Read and post in the platform's text chat.
+  - name: Behaviour
+    description: Modes, camera, avatar, and the language the bot listens in.
+  - name: Recording
+    description: Record the call to disk.
+  - name: Memory
+    description: The bot's private working memory for the current call.
+  - name: Preferences
+    description: Read and change the bot's settings.
+  - name: Diagnostics
+    description: Logs and screenshots for debugging a call.
+  - name: Realtime voice
+    description: Extra controls when the bot runs on a speech-to-speech model. Experimental.
+  - name: Directory
+    description: The app's directory of running bots, on port 7864. No token.
+
+paths:
+  /api/sync/no-room:
+    get:
+      tags: [Discovery]
+      operationId: getStatus
+      security: []
+      summary: Bot status, no token needed
+      description: |
+        Coarse state of this bot: whether it is in a call, which room, its
+        name, port and profile, and any call links it has noticed in your
+        browser. This is the ping the MCP server and the directory use to
+        find bots, so it stays open.
+      responses:
+        "404":
+          description: Not this bot's route. Nothing else is served without a token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "200":
+          description: The bot's status.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StatusResponse"
+              example:
+                success: true
+                roomId: null
+                callId: null
+                currentMeetUrl: null
+                detectedMeetUrls: ["https://meet.google.com/abc-defg-hij"]
+                detectedSlackHuddleUrl: null
+                status:
+                  callStatus: idle
+                  mode: active
+                  localServerUrl: http://127.0.0.1:7865
+                  localServerPort: 7865
+                  localProfile: null
+                  headless: false
+                  appVersion: 0.8.64
+                  buildType: release
+                  configuredBotName: Jimmy
+                  currentCallBotName: null
+
+  /api/sync/{roomId}:
+    parameters:
+      - $ref: "#/components/parameters/roomId"
+    get:
+      tags: [Listening]
+      operationId: pollRoom
+      summary: Read the transcript, or wait for someone to finish speaking
+      description: |
+        Without `wait`, returns immediately with everything since `since`.
+        With `wait`, blocks until a participant finishes a sentence (a pause
+        of `silence` seconds), until a chat message or screen change wakes
+        it, or until `wait` seconds pass. Either way the response carries
+        the transcript entries since your cursor, the whiteboard, who is in
+        the call, who is speaking, and the bot's own state.
+
+        Use `asOf` from each response as the next `since`.
+
+        Only one waiter per bot. A second waiter from the same `bot` name
+        displaces the first, which returns with `displaced: true`. A waiter
+        from a different bot name gets `409 wrongInstance`, because one agent
+        drives one bot.
+
+        The bot may leave on its own: nobody showed up, it was left alone,
+        or the call ended. The poll then returns with `autoLeft: true` and
+        an `autoLeftReason`.
+      parameters:
+        - name: since
+          in: query
+          description: Cursor. Return entries after this ISO timestamp. Omit for everything the bot has.
+          schema: { type: string, format: date-time }
+        - name: wait
+          in: query
+          description: Seconds to block for speech. `0` or absent returns now. Clamped to the bot's `defaultMaxWaitForSpeechSec` preference.
+          schema: { type: integer, minimum: 0, example: 55 }
+        - name: silence
+          in: query
+          description: Seconds of quiet that count as "finished speaking". Minimum 1. Defaults to the `defaultSilenceSeconds` preference (1.4).
+          schema: { type: number, minimum: 1, example: 1.4 }
+        - name: bot
+          in: query
+          description: The caller's bot name. Lets the bot tell its own agent from a stray one.
+          schema: { type: string, example: Jimmy }
+      responses:
+        "200":
+          description: Transcript and room state. When waiting, this arrives after speech, a wake, or the timeout.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RoomResponse"
+              example:
+                success: true
+                roomId: abc-defg-hij
+                callId: "2026-10-27T17:02:11.000Z"
+                asOf: "2026-10-27T17:05:41.512Z"
+                waited: true
+                elapsed: 4
+                continuationOfPriorResponse: false
+                speechTruncated: null
+                transcript:
+                  count: 1
+                  entries:
+                    - id: t-8812
+                      roomId: abc-defg-hij
+                      participantName: Stan
+                      role: member
+                      text: "Jimmy, can you put the three options on the board?"
+                      isFinal: true
+                      timestamp: "2026-10-27T17:05:39.900Z"
+                whiteboard: { content: "", version: 0, lastModified: null, lastEditor: null, changed: false }
+                chatUnread: 0
+                participants:
+                  - { name: Stan, speaking: false, isSelf: false }
+                  - { name: Jimmy, speaking: false, isSelf: true }
+                screenShares: []
+                status:
+                  callStatus: in-call
+                  botState: listening
+                  mode: active
+                  anyoneSpeaking: false
+                  floorBusy: false
+                  sharing: false
+                  captionsOn: true
+                  localServerPort: 7865
+        "409":
+          description: Another bot name already has a waiter on this instance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WrongInstance"
+        "410":
+          description: A Telegram, WhatsApp or phone room that is not the live call. Those are answered, never joined, so an old room id is gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, const: false }
+                  callEnded: { type: boolean, const: true }
+                  error: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Speaking]
+      operationId: actRoom
+      summary: Speak, write the board, or run a call action
+      description: |
+        The write side of the room. One request can carry any combination of:
+
+        - `transcript`: lines for the bot to **speak** through its microphone.
+        - `whiteboard`: new board content (markdown and Mermaid).
+        - `whiteboardStyle`: CSS for the board.
+        - `reloadWhiteboard`: re-render whatever is shared.
+        - `meta.action`: one call action (join, leave, share, mode, camera, and so on). See the `meta` schema for every action and its fields.
+
+        `sender` is required and names the agent; it also registers the
+        sender as present in the room. Results come back under `results`,
+        one key per thing you asked for.
+
+        Speech is gated by the call's etiquette. In `silent` mode the line is
+        refused with `reason: mode-silent`. If someone is talking and the
+        line's `urgency` is below 0.5, it is stashed and replayed at the next
+        gap (`reason: user-speaking-stashed`). Before the bot is admitted,
+        lines are queued (`queuedUntilInCall: true`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyncRequest"
+            examples:
+              speak:
+                summary: Say a line
+                value:
+                  sender: my-agent
+                  role: bot
+                  transcript:
+                    - text: "Three options. I'll put them on the board."
+                      emoji: "😄"
+                      urgency: 0.4
+              whiteboard:
+                summary: Write the board
+                value:
+                  sender: my-agent
+                  role: bot
+                  whiteboard:
+                    content: "# Options\n\n1. Ship Friday\n2. Ship Monday with the fix\n3. Split the release\n\n```mermaid\nflowchart LR\n  A[Decide] --> B[Ship]\n```"
+              joinWhatsApp:
+                summary: Join a WhatsApp call link
+                value:
+                  sender: my-agent
+                  role: bot
+                  meta:
+                    action: join-whatsapp
+                    url: https://call.whatsapp.com/video/AbCdEfGhIjKlMnOp
+              join:
+                summary: Join a Zoom call
+                value:
+                  sender: my-agent
+                  role: bot
+                  meta:
+                    action: join-zoom
+                    url: https://zoom.us/j/1234567890?pwd=abc
+              leave:
+                summary: Hang up
+                value:
+                  sender: my-agent
+                  role: bot
+                  meta: { action: leave }
+      responses:
+        "200":
+          description: One result per requested effect.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncResponse"
+              example:
+                success: true
+                roomId: abc-defg-hij
+                asOf: "2026-10-27T17:05:43.001Z"
+                results:
+                  transcript:
+                    ok: true
+                    sent: 1
+                    entries: [{ id: t-8813, participantName: Jimmy, role: bot, text: "Three options. I'll put them on the board.", timestamp: "2026-10-27T17:05:43.000Z" }]
+        "400":
+          description: Missing `sender`, or an action with a bad field.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: A board write for a room that is not the current one.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, const: false }
+                  error: { type: string }
+                  roomId: { type: string, description: "The room the bot is in." }
+                  requestedRoomId: { type: string }
+        "410":
+          description: A Telegram, WhatsApp or phone room that is not the live call. Those are answered, never joined, so an old room id is gone.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, const: false }
+                  callEnded: { type: boolean, const: true }
+                  error: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+
+  /api/call/start:
+    post:
+      tags: [Calls]
+      operationId: startCall
+      summary: Create a new Google Meet and join it
+      description: |
+        Asks vibeconferencing.com for a fresh Meet that anyone with the link
+        can join, sends the bot into it, and by default opens the link in
+        your browser. Google Meet only. The bot must be signed in to
+        vibeconferencing.com.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                openBrowser: { type: boolean, default: true, description: "Open the new Meet in the user's browser." }
+                spawnAgent: { type: boolean, default: false, description: "Also start an agent session for this call." }
+      responses:
+        "200":
+          description: The Meet was created and the bot is joining.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, const: true }
+                  roomId: { type: string, example: abc-defg-hij }
+                  url: { type: string, format: uri, example: https://meet.google.com/abc-defg-hij }
+        "502":
+          description: The website refused or failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodedError" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/call/join:
+    post:
+      tags: [Calls]
+      operationId: joinMeetByUrl
+      summary: Join a Google Meet by URL
+      description: |
+        A convenience for Meet links. For every platform, including Meet,
+        the general form is `POST /api/sync/{roomId}` with a `join`,
+        `join-zoom`, `join-teams` or `join-slack` action.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri, example: https://meet.google.com/abc-defg-hij }
+                spawnAgent: { type: boolean, default: false }
+      responses:
+        "200":
+          description: Joining, or already in that call.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, const: true }
+                  roomId: { type: string }
+                  alreadyInCall: { type: boolean }
+        "400":
+          description: "Not a Meet URL (`code: bad-url`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodedError" }
+        "502":
+          description: The join failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CodedError" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/call/record:
+    post:
+      tags: [Recording]
+      operationId: setRecording
+      summary: Start or stop recording the call
+      description: |
+        Records one audio file per track (the bot's own voice and each
+        remote participant where the platform sends them separately) plus a
+        video of the bot's view, muxed to one mp4 when stopped.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                "on": { type: boolean, default: true }
+      responses:
+        "200":
+          description: Recording state changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  code: { type: string }
+                additionalProperties: true
+        "409":
+          description: Could not change state (for example, not in a call).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, const: false }
+                  code: { type: string }
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/chat:
+    post:
+      tags: [Chat]
+      operationId: chat
+      summary: Read or send a chat message
+      description: |
+        `action: read` returns the platform's text chat and clears the
+        bot's unread count. `action: send` posts a message. On Meet the chat
+        pane is opened for about a second to do either; speaker detection
+        pauses and resumes on its own.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  title: Read
+                  properties:
+                    action: { type: string, const: read }
+                - type: object
+                  title: Send
+                  required: [action, text]
+                  properties:
+                    action: { type: string, const: send }
+                    text: { type: string, minLength: 1 }
+            examples:
+              read: { value: { action: read } }
+              send: { value: { action: send, text: "Room link: https://vibeconferencing.com/room/abc-defg-hij" } }
+      responses:
+        "200":
+          description: The messages, or the send result.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  messages:
+                    type: array
+                    description: Present for `read`.
+                    items:
+                      type: object
+                      properties:
+                        id: { type: string }
+                        sender: { type: string }
+                        text: { type: string }
+                  error: { type: string }
+                  reason: { type: string }
+        "400":
+          description: Empty `text` on send.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/working-memory:
+    get:
+      tags: [Memory]
+      operationId: getWorkingMemory
+      summary: Read the bot's working memory for this call
+      responses:
+        "200":
+          description: The memory.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  workingMemory: { $ref: "#/components/schemas/WorkingMemory" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Memory]
+      operationId: updateWorkingMemory
+      summary: Update the bot's working memory
+      description: At least one field is required. The memory is shown on the bot's panel and returned with every poll.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                understanding: { type: string, description: "The running read of what is being discussed." }
+                stance: { type: string, description: "The bot's point of view." }
+                people: { type: string, description: "Who is here and what they want." }
+                engagement: { type: string, description: "How involved the bot should be right now." }
+                updatedBy: { type: string }
+      responses:
+        "200":
+          description: The updated memory.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  workingMemory: { $ref: "#/components/schemas/WorkingMemory" }
+        "400":
+          description: No fields given.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/bank-probe:
+    post:
+      tags: [Memory]
+      operationId: bankProbe
+      summary: Stash a short interjection for the next natural opening
+      description: |
+        Active listening. Give the bot a two-to-six word line ("Which
+        version?", "Is that the free tier?") and it says it at the next
+        pause without the agent round-trip.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, example: "Which version?" }
+      responses:
+        "200":
+          description: Stashed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  bankSize: { type: integer }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/preferences:
+    get:
+      tags: [Preferences]
+      operationId: listPreferences
+      summary: List every user-settable preference
+      description: Current value, default, type and description for each. Secrets are never returned.
+      responses:
+        "200":
+          description: The preference list.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  preferences:
+                    type: array
+                    items: { $ref: "#/components/schemas/Preference" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [Preferences]
+      operationId: setPreferences
+      summary: Change one preference, or several at once
+      description: A batch is validated as a whole; one bad item rejects all of them. Some keys need an app restart, which the response says.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - type: object
+                  title: One
+                  required: [key, value]
+                  properties:
+                    key: { type: string, example: botName }
+                    value: { description: "Must match the preference's type." }
+                - type: object
+                  title: Batch
+                  required: [updates]
+                  properties:
+                    updates:
+                      type: array
+                      minItems: 1
+                      items:
+                        type: object
+                        required: [key, value]
+                        properties:
+                          key: { type: string }
+                          value: {}
+      responses:
+        "200":
+          description: Applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  key: { type: string }
+                  value: {}
+                  updated: { type: array, items: { type: object } }
+                  requiresRestart: { type: boolean }
+                  warning: { type: string }
+        "400":
+          description: Unknown key, wrong type, or empty batch.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      key: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/whiteboard-asset:
+    post:
+      tags: [Whiteboard]
+      operationId: registerWhiteboardAsset
+      summary: Make a local image available to the board
+      description: |
+        Registers an absolute path on this machine and returns an opaque
+        `http://127.0.0.1:{port}/asset/{token}` URL you can embed in board
+        markdown. Images and PDFs only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path: { type: string, example: /Users/me/diagram.png }
+      responses:
+        "200":
+          description: Registered.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  token: { type: string }
+                  url: { type: string, format: uri }
+                  mime: { type: string }
+        "400":
+          description: Not an absolute path, missing file, or unsupported type.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /asset/{token}:
+    get:
+      tags: [Whiteboard]
+      operationId: getAsset
+      security: []
+      summary: Serve a registered asset
+      description: The token in the path is the capability; no bearer token needed. Not cached.
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The file bytes.
+          content:
+            image/*: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+        "404":
+          description: Unknown token.
+
+  /api/whiteboard-history:
+    get:
+      tags: [Whiteboard]
+      operationId: whiteboardHistory
+      summary: Earlier versions of the board
+      description: Proxied from vibeconferencing.com, where the board is synced. Always HTTP 200; look at `success`.
+      parameters:
+        - name: room
+          in: query
+          description: Defaults to the current room.
+          schema: { type: string }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, default: 50 }
+      responses:
+        "200":
+          description: "A page of versions, or a failure with `success: false`."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  roomId: { type: string }
+                  entries: { type: array, items: { type: object, additionalProperties: true } }
+                  total: { type: integer }
+                  hasMore: { type: boolean }
+                  error: { type: string, description: "`no-room`, `no-sync-server`, or an upstream message." }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/call-screenshot:
+    post:
+      tags: [Diagnostics]
+      operationId: callScreenshot
+      summary: Screenshot the call as the bot sees it
+      description: Tiles, names, mic icons, captions, shared content. Returns a PNG path on this machine.
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PathResult" }
+        "500":
+          description: Not in a call, or capture failed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/shared-screenshot:
+    post:
+      tags: [Diagnostics]
+      operationId: sharedScreenshot
+      summary: Screenshot what the bot is sharing
+      description: What participants are seeing right now. Returns a PNG path on this machine.
+      responses:
+        "200":
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PathResult" }
+        "500":
+          description: Nothing is being shared.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/session-log:
+    get:
+      tags: [Diagnostics]
+      operationId: sessionLog
+      summary: Recent lines of the bot's session log
+      parameters:
+        - name: lines
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 5000, default: 200 }
+        - name: grep
+          in: query
+          description: Case-insensitive regex to filter lines.
+          schema: { type: string, example: "share|present" }
+      responses:
+        "200":
+          description: Log lines.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                additionalProperties: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/call-log:
+    get:
+      tags: [Diagnostics]
+      operationId: callLog
+      summary: One call's slice of the session log
+      parameters:
+        - name: callId
+          in: query
+          required: true
+          description: From `callId` in any room response.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The slice.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  callId: { type: string }
+                  filePath: { type: string }
+                  content: { type: string }
+                  lineCount: { type: integer }
+        "400":
+          description: Missing `callId`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/name-suggestions:
+    get:
+      tags: [Behaviour]
+      operationId: nameSuggestions
+      summary: Candidate bot names from the app's curated pool
+      parameters:
+        - name: count
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 24, default: 12 }
+      responses:
+        "200":
+          description: Names.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  names: { type: array, items: { type: string } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/fonts:
+    get:
+      tags: [Whiteboard]
+      operationId: fonts
+      summary: Font families installed on this machine
+      description: For `whiteboardStyle` CSS.
+      responses:
+        "200":
+          description: Families.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  families: { type: array, items: { type: string } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/visual-assets:
+    get:
+      tags: [Behaviour]
+      operationId: visualAssets
+      summary: Bundled avatar faces and background presets
+      responses:
+        "200":
+          description: Absolute paths to the sample art.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  emojiSets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        set: { type: string }
+                        emoji: { type: string }
+                        path: { type: string }
+                  backgrounds: { type: array, items: { type: object, additionalProperties: true } }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /api/realtime/hold:
+    post:
+      tags: [Realtime voice]
+      operationId: realtimeHold
+      summary: Keep the realtime voice quiet for a while
+      description: Only when the bot is running a speech-to-speech session. Otherwise 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [seconds]
+              properties:
+                seconds: { type: number, minimum: 0, maximum: 120 }
+                reason: { type: string }
+      responses:
+        "200":
+          description: Holding.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  seconds: { type: number }
+        "409":
+          description: No realtime session is live.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/realtime/brief:
+    post:
+      tags: [Realtime voice]
+      operationId: realtimeBrief
+      summary: Hand the realtime voice a fact, silently
+      description: The note goes into the voice model's context without being spoken. Only during a realtime session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                note: { type: string, example: "The customer's plan renews on the 3rd." }
+      responses:
+        "200":
+          description: Briefed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+        "400":
+          description: Missing `note`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: No realtime session is live.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/instances:
+    servers:
+      - { url: "http://127.0.0.1:7864", description: "The app's directory." }
+    get:
+      tags: [Directory]
+      operationId: listInstances
+      security: []
+      summary: Every running bot on this machine
+      description: Live, so a bot that just started appears within a moment. Start here to find a bot's port.
+      responses:
+        "200":
+          description: The bots.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  instances:
+                    type: array
+                    items: { $ref: "#/components/schemas/Instance" }
+                  supervisor:
+                    type: object
+                    properties:
+                      port: { type: integer }
+              example:
+                ok: true
+                instances:
+                  - { port: 7865, baseUrl: "http://127.0.0.1:7865", profile: null, botName: Jimmy, configuredBotName: Jimmy, callStatus: in-call, headless: false, roomId: abc-defg-hij }
+                  - { port: 7871, baseUrl: "http://127.0.0.1:7871", profile: codex, botName: Bob, configuredBotName: Bob, callStatus: idle, headless: false, roomId: null }
+                supervisor: { port: 7864 }
+
+  /api/detected-calls:
+    servers:
+      - { url: "http://127.0.0.1:7864", description: "The app's directory." }
+    get:
+      tags: [Directory]
+      operationId: detectedCalls
+      security: []
+      summary: Call links the app has noticed in your browser
+      responses:
+        "200":
+          description: Links.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  scanning: { type: boolean }
+                  meetUrls: { type: array, items: { type: string, format: uri } }
+                  slackHuddleUrl: { type: [string, "null"] }
+
+  /api/health:
+    servers:
+      - { url: "http://127.0.0.1:7864", description: "The app's directory." }
+    get:
+      tags: [Directory]
+      operationId: health
+      security: []
+      summary: Is the app running?
+      responses:
+        "200":
+          description: Yes.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  supervisor:
+                    type: object
+                    properties:
+                      port: { type: integer }
+                      pid: { type: integer }
+                      version: { type: string }
+
+  /api/launch:
+    servers:
+      - { url: "http://127.0.0.1:7864", description: "The app's directory." }
+    post:
+      tags: [Directory]
+      operationId: launchProfile
+      security: []
+      summary: Start a bot
+      description: Starts the named profile as a new bot process, or reports the one already running.
+      parameters:
+        - name: profile
+          in: query
+          description: Profile name. Omit for the default bot.
+          schema: { type: string, example: codex }
+      responses:
+        "200":
+          description: Started, or already running.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  port: { type: integer }
+                  pid: { type: integer }
+                  already: { type: boolean }
+                  error: { type: string }
+
+  /api/select:
+    servers:
+      - { url: "http://127.0.0.1:7864", description: "The app's directory." }
+    post:
+      tags: [Directory]
+      operationId: selectProfile
+      security: []
+      summary: Show a bot's panel in the app window
+      parameters:
+        - name: profile
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Selected.
+
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      description: |
+        The per-launch token from `~/.vibeconferencing/local-tokens/<port>.token`.
+
+  parameters:
+    roomId:
+      name: roomId
+      in: path
+      required: true
+      description: |
+        The call. A Meet code (`abc-defg-hij`), or `zoom-<meeting>`,
+        `teams-<id>`, `slack-<team>-<channel>`, `whatsapp-link-<token>`; for a call the bot answered,
+        `telegram-<user id>`, `whatsapp-<number>` or `phone-<number>` (read it
+        from `roomId` in the status). Lowercase letters, digits and hyphens.
+        If the bot has no room yet, the first request's id becomes its room,
+        except an answered-call id, which returns 410.
+      schema:
+        type: string
+        pattern: "^[a-z0-9-]+$"
+        example: abc-defg-hij
+
+  responses:
+    Unauthorized:
+      description: Missing or wrong bearer token.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, error: unauthorized }
+    UnsupportedMediaType:
+      description: "A POST without `Content-Type: application/json`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { success: false, error: "content-type must be application/json" }
+
+  schemas:
+    Error:
+      type: object
+      required: [success, error]
+      properties:
+        success: { type: boolean, const: false }
+        error: { type: string }
+
+    CodedError:
+      type: object
+      properties:
+        success: { type: boolean, const: false }
+        code: { type: string, description: "A short machine code such as `signed-out`, `rate-limited`, `bad-url`." }
+        detail: { type: string }
+
+    PathResult:
+      type: object
+      properties:
+        success: { type: boolean }
+        path: { type: string, description: "Absolute path to a PNG on this machine." }
+
+    CallStatus:
+      type: string
+      description: Where the bot is in a call's life.
+      enum: [idle, navigating, joining, waiting-to-be-admitted, in-call, after-call-work, call-complete]
+
+    Mode:
+      type: string
+      description: "`active` answers on every pause. `passive` stays quiet until named. `silent` listens and acts but never speaks."
+      enum: [active, passive, silent]
+
+    StatusResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        roomId: { type: [string, "null"] }
+        callId: { type: [string, "null"] }
+        callStartedAt: { type: [string, "null"], format: date-time }
+        currentMeetUrl: { type: [string, "null"] }
+        detectedMeetUrls: { type: array, items: { type: string } }
+        detectedSlackHuddleUrl: { type: [string, "null"] }
+        status:
+          type: object
+          properties:
+            callStatus: { $ref: "#/components/schemas/CallStatus" }
+            mode: { $ref: "#/components/schemas/Mode" }
+            localServerUrl: { type: string }
+            localServerPort: { type: integer }
+            localProfile: { type: [string, "null"] }
+            headless: { type: boolean }
+            appVersion: { type: string }
+            buildType: { type: string, enum: [release, source] }
+            lastResponseMs: { type: [number, "null"] }
+            responsePerf: { type: object, additionalProperties: true }
+            configuredBotName: { type: string }
+            currentCallBotName: { type: [string, "null"] }
+
+    TranscriptEntry:
+      type: object
+      properties:
+        id: { type: string }
+        roomId: { type: string }
+        participantName: { type: string }
+        role: { type: string, enum: [member, bot] }
+        text: { type: string }
+        isFinal: { type: boolean }
+        timestamp: { type: string, format: date-time }
+        voice: { type: string, description: "Bot lines only." }
+        urgency: { type: number, description: "Bot lines only." }
+
+    Participant:
+      type: object
+      properties:
+        name: { type: string }
+        speaking: { type: boolean }
+        isSelf: { type: boolean }
+
+    Whiteboard:
+      type: object
+      properties:
+        content: { type: string, description: "Markdown, with Mermaid fences." }
+        version: { type: integer }
+        lastModified: { type: [string, "null"], format: date-time }
+        lastEditor: { type: [string, "null"] }
+        changed: { type: boolean }
+
+    WorkingMemory:
+      type: object
+      properties:
+        understanding: { type: string }
+        stance: { type: string }
+        people: { type: string }
+        engagement: { type: string }
+        updatedAt: { type: string, format: date-time }
+        updatedBy: { type: string }
+
+    RoomStatus:
+      type: object
+      description: The bot's own state. Returned with every room read.
+      properties:
+        callStatus: { $ref: "#/components/schemas/CallStatus" }
+        botState: { type: string, description: "The avatar's state: `idle`, `listening`, `thinking`, `speaking`, `yielding`, and so on." }
+        mode: { $ref: "#/components/schemas/Mode" }
+        anyoneSpeaking: { type: boolean }
+        audioFloorSpeaking: { type: boolean }
+        floorBusy: { type: boolean, description: "Someone has the floor; a low-urgency line would wait." }
+        sharing: { type: boolean, description: "The bot is screen-sharing." }
+        someoneElsePresenting: { type: boolean }
+        presenterName: { type: [string, "null"] }
+        captionsOn: { type: boolean, description: "The bot can hear. Captions are how it listens." }
+        localServerUrl: { type: string }
+        localServerPort: { type: integer }
+        localProfile: { type: [string, "null"] }
+        agentWorkdir: { type: [string, "null"] }
+        errors: { type: array, items: { type: object, additionalProperties: true } }
+        permissions: { type: object, additionalProperties: true }
+        lastResponseMs: { type: [number, "null"] }
+        responsePerf: { type: object, additionalProperties: true }
+        workingMemory: { $ref: "#/components/schemas/WorkingMemory" }
+        chatUnread: { type: integer }
+        roomUrl: { type: [string, "null"], format: uri, description: "The room on vibeconferencing.com." }
+        whiteboardUrl: { type: [string, "null"], format: uri }
+        screenShareUrl: { type: [string, "null"], description: "What the share window has loaded." }
+        sessionLogPath: { type: [string, "null"] }
+        calendarEventContext: { type: [object, "null"], additionalProperties: true }
+
+    RoomResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        roomId: { type: string }
+        callId: { type: [string, "null"] }
+        asOf: { type: string, format: date-time, description: "Use as the next `since`." }
+        waited: { type: boolean }
+        elapsed: { type: integer, description: "Seconds the poll blocked." }
+        continuationOfPriorResponse: { type: boolean, description: "The speaker is still on the same thought you already answered." }
+        previousAckPhrase: { type: [string, "null"], description: "A filler the bot already said while you were thinking. Do not repeat it." }
+        voiceRequests: { type: [array, "null"], items: { type: object, additionalProperties: true } }
+        replayedBargeInStash: { type: [object, "null"], additionalProperties: true }
+        discardedBargeInStash: { type: [object, "null"], additionalProperties: true }
+        speechTruncated: { type: [object, "null"], additionalProperties: true, description: "A line the bot cut short because someone spoke over it." }
+        transcript:
+          type: object
+          properties:
+            entries: { type: array, items: { $ref: "#/components/schemas/TranscriptEntry" } }
+            count: { type: integer }
+        whiteboard: { $ref: "#/components/schemas/Whiteboard" }
+        chatUnread: { type: integer }
+        members: { type: array, items: { type: object, additionalProperties: true }, description: "Agents that have posted to this room." }
+        participants: { type: array, items: { $ref: "#/components/schemas/Participant" } }
+        screenShares: { type: array, items: { type: object, additionalProperties: true } }
+        detectedMeetUrls: { type: array, items: { type: string } }
+        detectedSlackHuddleUrl: { type: [string, "null"] }
+        currentMeetUrl: { type: [string, "null"] }
+        status: { $ref: "#/components/schemas/RoomStatus" }
+        displaced: { type: boolean, description: "Another waiter from the same bot took over this poll." }
+        aborted: { type: boolean }
+        callFailed: { type: boolean }
+        chatWake: { type: boolean, description: "Woke because a chat message arrived." }
+        screenWake: { type: boolean, description: "Woke because the shared screen changed." }
+        backgroundTick: { type: boolean }
+        autoLeft: { type: boolean }
+        autoLeftReason: { type: string, enum: [no-show, left-alone, call-ended] }
+        autoLeftDetail: { type: string }
+
+    WrongInstance:
+      type: object
+      properties:
+        success: { type: boolean, const: false }
+        wrongInstance: { type: boolean, const: true }
+        error: { type: string }
+        instance:
+          type: object
+          properties:
+            bot: { type: string }
+            port: { type: integer }
+            drivenBy: { type: string }
+
+    SpeechLine:
+      type: object
+      required: [text]
+      properties:
+        text: { type: string, description: "Spoken as written. Keep it short; it plays in real time." }
+        voice: { type: string, description: "One-off voice override." }
+        emoji: { type: string, description: "The face the avatar wears while saying it." }
+        urgency:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.4
+          description: Below 0.5 waits for a gap. At or above, may play over a speaker.
+
+    SyncRequest:
+      type: object
+      required: [sender]
+      properties:
+        sender: { type: string, description: "Your agent's id. Registers you as present." }
+        role: { type: string, enum: [bot, member], default: bot, description: "`bot` lines are spoken. `member` lines are transcript only." }
+        ownerName: { type: string }
+        displayName: { type: string }
+        versions:
+          type: object
+          properties:
+            mcp: { type: string }
+            node: { type: string }
+        transcript:
+          type: array
+          items: { $ref: "#/components/schemas/SpeechLine" }
+        whiteboard:
+          type: object
+          required: [content]
+          properties:
+            content: { type: string }
+        whiteboardStyle: { type: string, description: "CSS applied to the board." }
+        reloadWhiteboard: { type: boolean }
+        meta: { $ref: "#/components/schemas/Action" }
+
+    Action:
+      type: object
+      description: One call action. `action` picks the kind; the other fields belong to that kind.
+      required: [action]
+      discriminator:
+        propertyName: action
+        mapping:
+          join: "#/components/schemas/JoinMeet"
+          join-zoom: "#/components/schemas/JoinByUrl"
+          join-teams: "#/components/schemas/JoinByUrl"
+          join-slack: "#/components/schemas/JoinByUrl"
+          join-whatsapp: "#/components/schemas/JoinByUrl"
+          leave: "#/components/schemas/Bare"
+          end-session: "#/components/schemas/Bare"
+          share-whiteboard: "#/components/schemas/ShareWhiteboard"
+          stop-sharing: "#/components/schemas/Bare"
+          share-tab: "#/components/schemas/ShareTab"
+          load-url: "#/components/schemas/LoadUrl"
+          scroll-share: "#/components/schemas/ScrollShare"
+          set-share-size: "#/components/schemas/SetShareSize"
+          set-share-title-bar: "#/components/schemas/SetShareTitleBar"
+          set-share-audio: "#/components/schemas/SetShareAudio"
+          share-click: "#/components/schemas/ShareClick"
+          share-type: "#/components/schemas/ShareType"
+          find-share-element: "#/components/schemas/FindShareElement"
+          eval-share: "#/components/schemas/EvalShare"
+          inspect-dom: "#/components/schemas/InspectDom"
+          read-share-console: "#/components/schemas/Limit"
+          read-share-network: "#/components/schemas/Limit"
+          play-audio: "#/components/schemas/PlayAudio"
+          play-sound: "#/components/schemas/PlaySound"
+          set-mode: "#/components/schemas/SetMode"
+          set-camera: "#/components/schemas/SetCamera"
+          set-avatar-emoji: "#/components/schemas/SetAvatarEmoji"
+          set-caption-language: "#/components/schemas/SetCaptionLanguage"
+      oneOf:
+        - $ref: "#/components/schemas/JoinMeet"
+        - $ref: "#/components/schemas/JoinByUrl"
+        - $ref: "#/components/schemas/Bare"
+        - $ref: "#/components/schemas/ShareWhiteboard"
+        - $ref: "#/components/schemas/ShareTab"
+        - $ref: "#/components/schemas/LoadUrl"
+        - $ref: "#/components/schemas/ScrollShare"
+        - $ref: "#/components/schemas/SetShareSize"
+        - $ref: "#/components/schemas/SetShareTitleBar"
+        - $ref: "#/components/schemas/SetShareAudio"
+        - $ref: "#/components/schemas/ShareClick"
+        - $ref: "#/components/schemas/ShareType"
+        - $ref: "#/components/schemas/FindShareElement"
+        - $ref: "#/components/schemas/EvalShare"
+        - $ref: "#/components/schemas/InspectDom"
+        - $ref: "#/components/schemas/Limit"
+        - $ref: "#/components/schemas/PlayAudio"
+        - $ref: "#/components/schemas/PlaySound"
+        - $ref: "#/components/schemas/SetMode"
+        - $ref: "#/components/schemas/SetCamera"
+        - $ref: "#/components/schemas/SetAvatarEmoji"
+        - $ref: "#/components/schemas/SetCaptionLanguage"
+
+    JoinMeet:
+      type: object
+      title: join (Google Meet)
+      description: Join a Google Meet. The bot clicks through pre-join, then waits to be admitted. The name is locked for the call.
+      required: [action]
+      properties:
+        action: { type: string, const: join }
+        meetCode: { type: string, description: "Defaults to the room id in the path." }
+        botName: { type: string }
+        force: { type: boolean, default: false, description: "Tear down a working call and rebuild it. Without it a repeat join is a no-op." }
+
+    JoinByUrl:
+      type: object
+      title: join-zoom / join-teams / join-slack / join-whatsapp
+      description: "Join by the platform's own link. Zoom handles the waiting room; Teams the guest lobby; Slack needs the app signed in to that workspace; WhatsApp takes a `call.whatsapp.com/video|voice/<token>` link and needs the bot signed in to WhatsApp (the room becomes `whatsapp-link-<token>`). There is no join for Telegram, phone, or a WhatsApp call to the bot's own number; the bot answers those when called."
+      required: [action, url]
+      properties:
+        action: { type: string, enum: [join-zoom, join-teams, join-slack, join-whatsapp] }
+        url: { type: string, format: uri }
+
+    Bare:
+      type: object
+      title: leave / end-session / stop-sharing
+      description: "`leave` hangs up; if after-call work is on, the bot enters that phase instead of shutting down. `end-session` finishes after-call work and releases the app. `stop-sharing` ends the screen share."
+      required: [action]
+      properties:
+        action: { type: string, enum: [leave, end-session, stop-sharing] }
+
+    ShareWhiteboard:
+      type: object
+      title: share-whiteboard
+      description: Present the bot's share window (the board, or a loaded URL) into the call.
+      required: [action]
+      properties:
+        action: { type: string, const: share-whiteboard }
+        shareType: { type: string, default: whiteboard }
+
+    ShareTab:
+      type: object
+      title: share-tab
+      description: Share a specific Chrome or Brave tab by URL. macOS only.
+      required: [action, url]
+      properties:
+        action: { type: string, const: share-tab }
+        url: { type: string, format: uri }
+        appName: { type: string, example: Google Chrome }
+
+    LoadUrl:
+      type: object
+      title: load-url
+      description: Load any web page into the share window instead of the board.
+      required: [action, url]
+      properties:
+        action: { type: string, const: load-url }
+        url: { type: string, format: uri }
+
+    ScrollShare:
+      type: object
+      title: scroll-share
+      required: [action]
+      properties:
+        action: { type: string, const: scroll-share }
+        direction: { type: string, enum: [down, up, top, bottom], default: down }
+        amount: { type: number }
+
+    SetShareSize:
+      type: object
+      title: set-share-size
+      required: [action]
+      properties:
+        action: { type: string, const: set-share-size }
+        width: { type: integer }
+        height: { type: integer }
+
+    SetShareTitleBar:
+      type: object
+      title: set-share-title-bar
+      required: [action, visible]
+      properties:
+        action: { type: string, const: set-share-title-bar }
+        visible: { type: boolean }
+
+    SetShareAudio:
+      type: object
+      title: set-share-audio
+      description: Mute the sound from what is shared without stopping the share. Meet and Zoom.
+      required: [action, muted]
+      properties:
+        action: { type: string, const: set-share-audio }
+        muted: { type: boolean }
+
+    ShareClick:
+      type: object
+      title: share-click
+      description: A real mouse click in the shared page. Prefer a selector over coordinates.
+      required: [action]
+      properties:
+        action: { type: string, const: share-click }
+        selector: { type: string }
+        x: { type: number }
+        y: { type: number }
+        button: { type: string, enum: [left, right, middle], default: left }
+        clickCount: { type: integer, default: 1 }
+
+    ShareType:
+      type: object
+      title: share-type
+      description: Real key events in the shared page.
+      required: [action]
+      properties:
+        action: { type: string, const: share-type }
+        text: { type: string }
+        key: { type: string, example: Enter }
+        modifiers: { type: array, items: { type: string, enum: [shift, control, alt, meta] } }
+        selector: { type: string, description: "Focus this element first." }
+
+    FindShareElement:
+      type: object
+      title: find-share-element
+      description: Find an element in the shared page from a plain-language description.
+      required: [action, description]
+      properties:
+        action: { type: string, const: find-share-element }
+        description: { type: string, example: the blue Submit button }
+        maxResults: { type: integer }
+
+    EvalShare:
+      type: object
+      title: eval-share
+      description: Run JavaScript in the shared page and return the result.
+      required: [action, expression]
+      properties:
+        action: { type: string, const: eval-share }
+        expression: { type: string }
+
+    InspectDom:
+      type: object
+      title: inspect-dom
+      description: Read matched elements' outerHTML from the call page or the shared page.
+      required: [action]
+      properties:
+        action: { type: string, const: inspect-dom }
+        target: { type: string, enum: [meet, share], default: share }
+        selector: { type: string, default: body }
+        maxElements: { type: integer }
+        maxChars: { type: integer }
+
+    Limit:
+      type: object
+      title: read-share-console / read-share-network
+      required: [action]
+      properties:
+        action: { type: string, enum: [read-share-console, read-share-network] }
+        limit: { type: integer }
+
+    PlayAudio:
+      type: object
+      title: play-audio
+      description: Play an audio file into the call through the bot's microphone. One of `url`, `path`, `audioData`.
+      required: [action]
+      properties:
+        action: { type: string, const: play-audio }
+        url: { type: string, format: uri }
+        path: { type: string, description: "Absolute path on this machine." }
+        audioData: { type: string, contentEncoding: base64 }
+        emoji: { type: string }
+        uninterruptible: { type: boolean }
+
+    PlaySound:
+      type: object
+      title: play-sound
+      description: Play a bundled sound effect by catalogue name.
+      required: [action, name]
+      properties:
+        action: { type: string, const: play-sound }
+        name: { type: string, example: reactions/applause }
+        emoji: { type: string }
+
+    SetMode:
+      type: object
+      title: set-mode
+      required: [action, mode]
+      properties:
+        action: { type: string, const: set-mode }
+        mode: { $ref: "#/components/schemas/Mode" }
+
+    SetCamera:
+      type: object
+      title: set-camera
+      required: [action, "on"]
+      properties:
+        action: { type: string, const: set-camera }
+        "on": { type: boolean }
+
+    SetAvatarEmoji:
+      type: object
+      title: set-avatar-emoji
+      description: Override the resting faces for the rest of the call. An empty string clears one.
+      required: [action]
+      properties:
+        action: { type: string, const: set-avatar-emoji }
+        idle: { type: string, example: "🙂" }
+        listening: { type: string, example: "🤔" }
+        yielding: { type: string, example: "🤐" }
+
+    SetCaptionLanguage:
+      type: object
+      title: set-caption-language
+      description: "The language the bot listens in. Google Meet only today; other platforms return `ok: false`."
+      required: [action, language]
+      properties:
+        action: { type: string, const: set-caption-language }
+        language: { type: string, example: de-DE, description: "BCP-47. A bare `de` takes the first regional variant the platform lists." }
+
+    SyncResponse:
+      type: object
+      properties:
+        success: { type: boolean }
+        roomId: { type: string }
+        asOf: { type: string, format: date-time }
+        results:
+          type: object
+          description: One key per effect requested. Action results use the camelCased action name (`join`, `leave`, `setMode`, `shareClick`, and so on).
+          properties:
+            transcript:
+              type: object
+              properties:
+                ok: { type: boolean }
+                sent: { type: integer }
+                entries: { type: array, items: { $ref: "#/components/schemas/TranscriptEntry" } }
+                reason: { type: string, enum: [mode-silent, user-speaking-stashed] }
+                queuedUntilInCall: { type: boolean }
+                callStatus: { $ref: "#/components/schemas/CallStatus" }
+            whiteboard:
+              type: object
+              properties:
+                ok: { type: boolean }
+                delivered: { type: [boolean, "null"], description: "`true` synced to the website, `false` failed, `null` no sync configured." }
+                readable: { type: boolean }
+                version: { type: integer }
+                fitNote: { type: string, description: "A warning when the content will not fit the shared window." }
+                error: { type: string }
+            join:
+              type: object
+              properties:
+                ok: { type: boolean }
+                alreadyInCall: { type: boolean }
+                roomId: { type: string }
+                status: { $ref: "#/components/schemas/CallStatus" }
+                botName: { type: string }
+                error: { type: string }
+            leave:
+              type: object
+              properties:
+                ok: { type: boolean }
+                afterCallWork: { type: boolean }
+          additionalProperties:
+            type: object
+            additionalProperties: true
+
+    Preference:
+      type: object
+      properties:
+        key: { type: string }
+        scope: { type: string, enum: [app, profile] }
+        type: { type: string }
+        value: {}
+        default: {}
+        description: { type: string }
+        min: { type: number }
+        max: { type: number }
+        minItems: { type: integer }
+        requiresRestart: { type: boolean }
+        isDefault: { type: boolean }
+
+    Instance:
+      type: object
+      properties:
+        port: { type: integer }
+        baseUrl: { type: string, format: uri }
+        profile: { type: [string, "null"], description: "`null` is the default bot." }
+        botName: { type: string }
+        configuredBotName: { type: string }
+        callStatus: { $ref: "#/components/schemas/CallStatus" }
+        headless: { type: boolean }
+        roomId: { type: [string, "null"] }

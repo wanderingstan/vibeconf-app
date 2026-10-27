@@ -5682,14 +5682,15 @@ class LocalServer {
       // Do NOT hand a browser a wildcard once locked down. Our MCP client is a
       // same-user Node process and sends no Origin (CORS N/A). App webviews that
       // legitimately need cross-origin reads can be allowlisted via env.
-      const origin = req.headers.origin;
-      const allowed = (process.env.VIBECONF_ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
-      if (origin && allowed.includes(origin)) res.setHeader('Access-Control-Allow-Origin', origin);
+      // The site's API explorer is allowed by default (docs-origins.js).
+      require('./docs-origins.js').applyCors(req, res);
     } else {
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (!res.getHeader('Access-Control-Allow-Methods')) {
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    }
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);

@@ -10,7 +10,7 @@ Prereqs: you've [installed](install.md) the app, granted Mic/Camera permissions,
 
 Any Meet works — a personal room, a calendar event, an instant meeting. The bot joins as a guest participant. Open the Meet in your browser like normal.
 
-> **Tip:** "Meet" here means the Meet web app. The bot won't join Zoom, Teams, or anything else.
+> **Tip:** this walkthrough uses Google Meet. The same steps work for Zoom, Microsoft Teams and Slack huddles (pass the link instead of a Meet code), and the bot can answer Telegram, WhatsApp and phone calls. See [the API docs](api/platforms.md) for what each platform supports.
 
 ### 2. Launch Vibeconferencing
 
@@ -26,7 +26,7 @@ You don't need to type the Meet URL — the app autodetects it from the next ste
 
 That's it. The skill:
 - Picks up the Meet URL from your active Chrome/Brave tab automatically
-- Reads your project's `CLAUDE.md` for a bot persona/character name (falls back to "Jimmy" or whatever you set in the panel's Bot Name field)
+- Reads your project's `CLAUDE.md` for a bot persona/character name (falls back to whatever you set in the panel's Bot Name field)
 - Calls `join_call` on the MCP server
 - Starts a `wait_for_speech` loop so the bot is listening
 
@@ -86,5 +86,6 @@ Once the bot is in the call, any of these work from Claude Code:
 ## Next
 
 - Two bots in one call → **[Multi-bot setups](multi-bot.md)**
-- Bot modes (active / passive / silent), states (yielding, thinking), avatar tuning → coming soon in `modes-and-states.md`
-- Full list of MCP tools → coming soon in `mcp-tools.md`
+- Bot modes (active / passive / silent), states (yielding, thinking), avatar tuning → [modes-and-states.md](modes-and-states.md)
+- Full list of MCP tools → [mcp-tools.md](mcp-tools.md)
+- The HTTP API under the tools → [api/README.md](api/README.md)

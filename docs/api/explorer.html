@@ -92,6 +92,15 @@
     --scalar-color-green: #2a9a5c; --scalar-color-red: var(--pink-deep); --scalar-color-blue: var(--magenta); --scalar-color-orange: #b0641b; --scalar-color-purple: var(--magenta);
   }
   .scalar-app h1, .scalar-app h2, .scalar-app .section-header, .scalar-app .t-doc__sidebar h2 { font-family: var(--font-display) !important; letter-spacing: -.01em; }
+  /* The test client's Send Request button, tagged by the script below: the one
+     thing on that panel people should find, so it is the call-green pill. */
+  button.vc-send {
+    background: var(--go) !important; color: var(--ink) !important; border: 1.5px solid var(--ink) !important;
+    border-radius: 999px !important; padding: 8px 16px !important; font: 700 12.5px var(--font-display) !important;
+    box-shadow: var(--shadow) !important;
+  }
+  button.vc-send:hover { background: var(--go-deep) !important; }
+  button.vc-send * { color: var(--ink) !important; }
 </style>
 </head>
 <body>
@@ -221,6 +230,15 @@
 
   probe();
   setInterval(() => { if (!(saved && saved.token)) probe(); }, 5000);
+
+  // Scalar's Send Request button carries no stable class, so tag it by its
+  // text whenever the test client renders. Cheap: a few buttons per mutation.
+  const tagSend = () => {
+    for (const b of document.querySelectorAll('button:not(.vc-send)')) {
+      if (/^\s*send request/i.test(b.textContent)) b.classList.add('vc-send');
+    }
+  };
+  new MutationObserver(tagSend).observe(document.body, { childList: true, subtree: true });
 })();
 </script>
 </body>

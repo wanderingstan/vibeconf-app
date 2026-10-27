@@ -16,6 +16,9 @@ info:
 
     Think OpenRouter, for calls: one request shape, many providers behind it.
 
+    **[Skip to the endpoints ↓](#tag/discovery)** or read on for the model,
+    auth and the loop.
+
     Two kinds of call share the same endpoints:
 
     - **Meetings the bot joins.** Google Meet, Zoom, Microsoft Teams, Slack

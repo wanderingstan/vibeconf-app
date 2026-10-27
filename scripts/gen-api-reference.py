@@ -62,6 +62,8 @@ out = []
 w = out.append
 info = doc['info']
 w(f'# {info["title"]}: endpoint reference\n')
+# The intro's skip link points at Scalar's tag anchor; here the tag is a heading.
+info = dict(info, description=(info.get('description') or '').replace('(#tag/discovery)', '(#discovery)'))
 w(f'Generated from [`openapi.yaml`](openapi.yaml) (version {info["version"]}) by `scripts/gen-api-reference.py`. Do not edit by hand; edit the spec.\n')
 w('Base URL `http://127.0.0.1:7865` unless the endpoint says otherwise. Every request needs `Authorization: Bearer <token>` unless marked open. See the [guide](README.md) for the model, and the [explorer](https://vibeconferencing.com/api) for try-it.\n')
 

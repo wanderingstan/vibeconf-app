@@ -114,7 +114,7 @@
       <h1>vibeconferencing <span>· one API, every call</span></h1>
       <nav class="links">
         <a href="#tag/discovery">Skip to the endpoints ↓</a>
-        <a id="specLink" href="openapi.yaml">openapi.yaml</a>
+        <a id="specLink" href="openapi.yaml" download="vibeconferencing-openapi.yaml">Download openapi.yaml</a>
         <a href="https://github.com/wanderingstan/vibeconf-app/tree/main/docs/api" target="_blank" rel="noopener">Guides on GitHub</a>
       </nav>
     </div>
@@ -158,7 +158,20 @@
   const port = (saved && saved.port) || (local ? location.port : '7865');
 
   // ── Render the reference, with whatever connection we have ──────────────
+  // A direct link to the YAML. `download` only works same-origin, and the
+  // hosted page reads the spec from GitHub, so fetch it and save it as a file;
+  // the plain href stays as the fallback if that fails.
   $('specLink').href = SPEC;
+  $('specLink').addEventListener('click', async (e) => {
+    e.preventDefault();
+    try {
+      const blob = await (await fetch(SPEC)).blob();
+      const u = URL.createObjectURL(blob);
+      const a = Object.assign(document.createElement('a'), { href: u, download: 'vibeconferencing-openapi.yaml' });
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(u), 10000);
+    } catch { location.href = SPEC; }
+  });
 
   const config = {
     url: SPEC,

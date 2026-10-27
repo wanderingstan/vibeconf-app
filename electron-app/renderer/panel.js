@@ -3219,6 +3219,75 @@ function setConnStatus(statusId, text, ok, rowId) {
   if (rowId) document.getElementById(rowId)?.classList.toggle('unusable', !ok);
 }
 
+// The platforms whose links this bot can join, as logos under the Meeting
+// link box, and the same list in its placeholder: Meet, Zoom and Teams as a
+// guest; Slack only while the bot is signed in (a huddle has no guest join).
+const LINK_PROVIDERS = [
+  { id: 'meet', name: 'Meet', full: 'Google Meet' },
+  { id: 'zoom', name: 'Zoom', full: 'Zoom' },
+  { id: 'teams', name: 'Teams', full: 'Microsoft Teams' },
+  { id: 'slack', name: 'Slack', full: 'Slack huddle', needsSignIn: true },
+];
+let slackSignedInForLinks = false;
+// The calling app this bot answers (connected AND switched on), for the end of
+// the row: { app, label } or null.
+let answersForLinks = null;
+const ANSWER_NAMES = { telegram: 'Telegram', whatsapp: 'WhatsApp', twilio: 'phone' };
+let callingAccountsForLinks = {};
+async function refreshAnswersForLinks() {
+  try {
+    const cfg = await api.invoke('get-config', Object.keys(ANSWER_NAMES).map((a) => a + 'AnswerCalls'));
+    const app = Object.keys(ANSWER_NAMES).find((a) => cfg?.[a + 'AnswerCalls'] && callingAccountsForLinks[a]);
+    answersForLinks = app ? { app, label: callingAccountsForLinks[app].label || '' } : null;
+  } catch { /* keep the last */ }
+  renderLinkProviders();
+}
+function renderLinkProviders() {
+  const usable = LINK_PROVIDERS.filter((p) => !p.needsSignIn || slackSignedInForLinks);
+  const row = document.getElementById('linkProviders');
+  if (row) {
+    row.textContent = '';
+    for (const p of usable) {
+      const chip = document.createElement('span');
+      chip.className = 'link-provider';
+      chip.title = `Joins ${p.full} links`;
+      chip.setAttribute('role', 'img');
+      chip.setAttribute('aria-label', p.full);
+      const logo = document.createElement('span');
+      logo.className = 'conn-logo provider-' + p.id;
+      logo.setAttribute('aria-hidden', 'true');
+      chip.appendChild(logo);
+      row.appendChild(chip);
+    }
+    const a = answersForLinks;
+    if (a && ANSWER_NAMES[a.app]) {
+      const sep = document.createElement('span');
+      sep.className = 'reach-sep';
+      row.appendChild(sep);
+      const chip = document.createElement('span');
+      chip.className = 'link-provider answers';
+      chip.title = `Answers ${ANSWER_NAMES[a.app]} calls from its allowlist${a.label ? ': ' + a.label : ''}`;
+      const logo = document.createElement('span');
+      if (a.app === 'twilio') { logo.className = 'conn-logo'; logo.textContent = '📞'; logo.style.cssText = 'font-size:11px;line-height:14px;text-align:center'; }
+      else logo.className = 'conn-logo provider-' + a.app;
+      logo.setAttribute('aria-hidden', 'true');
+      chip.appendChild(logo);
+      const label = document.createElement('span');
+      label.className = 'reach-label';
+      label.textContent = a.app === 'twilio' && a.label ? 'answers ' + a.label : 'answers ' + ANSWER_NAMES[a.app] + ' calls';
+      chip.appendChild(label);
+      row.appendChild(chip);
+    }
+  }
+  const input = document.getElementById('meetUrl');
+  if (input) {
+    const names = usable.map((p) => p.name);
+    const list = names.length > 1 ? names.slice(0, -1).join(', ') + ' or ' + names[names.length - 1] : names[0];
+    input.placeholder = `Paste a ${list} link (or invite)`;
+  }
+}
+renderLinkProviders();
+
 async function refreshSlackIdentity() {
   // Cookie-authoritative connected check (get-slack-mode → the `d` session
   // cookie). We can't read WHICH workspace/user without the huddle DOM (#283).
@@ -3228,6 +3297,8 @@ async function refreshSlackIdentity() {
   if (slackSignOutBtn) slackSignOutBtn.style.display = signedIn ? '' : 'none';
   if (slackSignInBtn) slackSignInBtn.style.display = signedIn ? 'none' : '';
   setConnStatus('slackStatus', signedIn ? '✓ Signed in' : 'Not connected', signedIn, 'slackConnRow');
+  slackSignedInForLinks = signedIn;
+  renderLinkProviders();
 }
 refreshSlackIdentity();
 
@@ -3504,6 +3575,8 @@ for (const btn of document.querySelectorAll('button[data-calling-app]')) {
 const CALLING_APP_NAMES = { whatsapp: 'WhatsApp', telegram: 'Telegram', twilio: 'the phone number' };
 const CALLING_APPS = ['telegram', 'whatsapp', 'twilio'];
 function applyCallingAppStatus(status) {
+  callingAccountsForLinks = status || {};
+  refreshAnswersForLinks();
   for (const btn of document.querySelectorAll('button[data-calling-app-sign-out]')) {
     btn.style.display = status?.[btn.dataset.callingAppSignOut] ? '' : 'none';
   }
@@ -3548,7 +3621,7 @@ for (const app of CALLING_APPS) {
         if (other !== app && box) box.checked = false;
       }
     }
-    setConfig(app + 'AnswerCalls', answer.checked);
+    setConfig(app + 'AnswerCalls', answer.checked).then(refreshAnswersForLinks);
   });
   allowed?.addEventListener('change', () => setConfig(app + 'AllowedCallers', allowed.value));
 }
@@ -4570,6 +4643,10 @@ function setupHostedLayout() {
   callNowBtn.addEventListener('click', () => { startFreshCall(); });
   buttons.append(joinBtn, callNowBtn);
   controls.append(buttons);
+  // How to reach the bot (links it joins, the app it answers), under the
+  // buttons: moved out of the hero, which is hidden here.
+  const reach = document.getElementById('linkProviders');
+  if (reach) controls.append(reach);
   after.push(controls);
 
   const incall = hero.querySelector('.hero-incall');

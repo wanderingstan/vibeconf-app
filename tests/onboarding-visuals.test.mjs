@@ -85,20 +85,24 @@ test('several images can go on one board, so a grid is possible', () => {
   // image_path handles ONE image appended after the text, which cannot express
   // "eight backgrounds in a table". Local paths written into the markdown are
   // registered and rewritten in place, so the agent controls the layout.
-  const fn = mcp.slice(mcp.indexOf('const localImg ='));
+  // The matching itself (paths with spaces, file:// URLs) lives in
+  // mcp-server/whiteboard-images.js, covered by whiteboard-images.test.mjs.
+  const fn = mcp.slice(mcp.indexOf('const imageFailures = []'));
   const body = fn.slice(0, fn.indexOf('if (image_path)'));
-  assert.match(body, /matchAll\(localImg\)/);
+  assert.match(body, /findLocalImages\(content\)/);
   assert.match(body, /api\/whiteboard-asset/);
-  assert.match(body, /content\.replace\(localImg/);
   // A path that will not register is left alone rather than deleted: a broken
   // image is visible and findable; a silently dropped one looks like a choice.
-  assert.match(body, /seen\.has\(p\) \? .* : whole/);
+  // rewriteLocalImages only touches registered paths (whiteboard-images.test).
+  assert.match(body, /rewriteLocalImages\(content, seen\)/);
+  // ...and the agent is told which ones failed and why.
+  assert.match(body, /imageFailures\.push/);
 });
 
 test('the same image is registered once, not per occurrence', () => {
-  const fn = mcp.slice(mcp.indexOf('const localImg ='));
+  const fn = mcp.slice(mcp.indexOf('const imageFailures = []'));
   const body = fn.slice(0, fn.indexOf('if (image_path)'));
-  assert.match(body, /if \(seen\.has\(p\)\) continue;/);
+  assert.match(body, /if \(tried\.has\(p\)\) continue;/);
 });
 
 test('the docs no longer forbid what now works', () => {

@@ -3630,7 +3630,13 @@ const localServer = new globalThis.LocalServer({
     // the thing only the user's machine knows. Converted on WRITE so the stored
     // preference is always real SVG — nothing downstream needs to know.
     if (key === 'avatarBackgroundSvg' && /^file:/.test(String(value || ''))) {
-      const filePath = String(value).slice(5).trim();
+      // `file:/abs/path` is the documented form (path used as written), but an
+      // agent will just as often pass a real file:// URL, which must be
+      // percent-decoded ("Family%20Archives" is "Family Archives" on disk).
+      const raw = String(value).trim();
+      const filePath = /^file:\/\//i.test(raw)
+        ? require('./local-file-access.js').localPathFromRef(raw)
+        : raw.slice(5).trim();
       return buildBackgroundSvgFromImage(filePath).then((svg) => {
         store?.set('avatarBackgroundSvg', svg);
         try { store?.set('avatarBackgroundCaption', require('path').basename(filePath)); } catch { /* noop */ }

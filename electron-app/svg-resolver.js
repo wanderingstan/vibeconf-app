@@ -9,6 +9,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { localPathFromRef, describeReadError } = require('./local-file-access.js');
 
 const HREF_ATTR_RE = /\s(?:xlink:href|href)\s*=\s*(["'])([^"']+)\1/g;
 const SCRIPT_TAG_RE = /<script\b[^>]*>[\s\S]*?<\/script>/gi;
@@ -35,10 +36,18 @@ function extFromPath(p) {
 async function resolveRef(href) {
   if (href.startsWith('data:')) return href;
 
-  if (href.startsWith('file://') || href.startsWith('/') || href.startsWith('~/')) {
-    let p = href.replace(/^file:\/\//, '');
-    if (p.startsWith('~/')) p = path.join(require('os').homedir(), p.slice(2));
-    const buf = await fs.promises.readFile(p);
+  // file:// URLs are percent-decoded (a space arrives as %20); raw absolute
+  // and ~/ paths are used as written. See local-file-access.js.
+  const p = /^file:/i.test(href) || href.startsWith('/') || href.startsWith('~/')
+    ? localPathFromRef(href)
+    : null;
+  if (p) {
+    let buf;
+    try {
+      buf = await fs.promises.readFile(p);
+    } catch (err) {
+      throw new Error(describeReadError(err, p));
+    }
     return `data:image/${extFromPath(p)};base64,${buf.toString('base64')}`;
   }
 
@@ -78,7 +87,7 @@ async function resolveSvg(svg) {
     try {
       resolved[href] = await resolveRef(href);
     } catch (err) {
-      console.warn('[svg-resolver] Failed to resolve', href + ':', err.message);
+      console.error('[svg-resolver] ❌ Failed to resolve', href + ':', err.message);
       // Leave original — renderer will skip the missing image but the rest
       // of the SVG still renders.
       resolved[href] = href;
@@ -91,4 +100,4 @@ async function resolveSvg(svg) {
   });
 }
 
-module.exports = { resolveSvg };
+module.exports = { resolveSvg, resolveRef };

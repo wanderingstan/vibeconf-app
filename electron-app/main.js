@@ -98,6 +98,7 @@ const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 // than throwing.
 let adoptSessionAsBot = null;
 const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
+const { installShareKeepalive } = require('./share-keepalive.js');
 const { readFitScriptFor: boardFitReaderFor, FIT_VERSION_SCRIPT: BOARD_FIT_VERSION_SCRIPT } = require('./board-fit.js');
 const { CallRecordingSession } = require('./call-recorder.js');
 const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
@@ -5611,6 +5612,13 @@ function createWhiteboardWindow(roomUrl) {
   const wcId = win.webContents.id;
   installShareNetworkListeners();
   installShareConsoleListener(win.webContents);
+  // A static board sends no frames (the capture is repaint-driven), and
+  // WhatsApp mobile swaps a frameless share for the bot's profile photo after
+  // a few seconds. An invisible 1px repaint a few times a second keeps frames
+  // flowing; it lives and dies with this window. See share-keepalive.js.
+  installShareKeepalive(win.webContents, {
+    log: (line) => console.warn(line),
+  });
   win.loadURL(roomUrl);
   win.webContents.on('did-finish-load', () => {
     console.log('[electron] Whiteboard window loaded OK:', win.webContents.getURL());

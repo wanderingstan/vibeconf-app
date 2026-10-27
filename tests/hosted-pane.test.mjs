@@ -25,7 +25,7 @@ test('the green follows the link field: Add with a link, Start without one', () 
   const fn = panel.slice(panel.indexOf('function syncCallNowBtn()'));
   assert.match(fn.slice(0, 900), /joinBtn\.classList\.toggle\('primary', hasUrl\);\s*\n\s*callNowBtn\.classList\.toggle\('primary', !hasUrl\);/);
   assert.match(panel, /joinBtn\.textContent = 'Add to this call';/);
-  assert.match(fn.slice(0, 900), /'Start a new call'/);
+  assert.match(fn.slice(0, 900), /`Call \$\{name\} now`/);
 });
 
 test('Add appears only once there is a link to add the bot to', () => {

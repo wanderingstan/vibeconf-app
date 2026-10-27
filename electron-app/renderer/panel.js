@@ -4575,7 +4575,7 @@ function syncCallNowBtn() {
   syncJoiningFlag();
   if (!callNowBtn) return;
   const name = currentBotName || 'your bot';
-  callNowBtn.textContent = joinPhase === 'starting' ? 'Starting…' : 'Start a new call';
+  callNowBtn.textContent = joinPhase === 'starting' ? 'Starting…' : `Call ${name} now`;
   callNowBtn.title = `Start a new meeting and bring ${name} into it`;
   callNowBtn.disabled = !!joinPhase;
   // The green follows the field: with a link in it, adding the bot to that

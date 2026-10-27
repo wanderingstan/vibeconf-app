@@ -285,7 +285,7 @@ function eventLinkText(html) {
 
 // Providers calendar auto-join can put the bot into. Slack huddles have no
 // calendar shape, so a stray Slack link in a description is not a meeting.
-const CALENDAR_JOINABLE = new Set(['meet', 'zoom', 'teams']);
+const CALENDAR_JOINABLE = new Set(['meet', 'zoom', 'teams', 'whatsapp']);
 
 // The call an event is FOR (#813): { provider: 'meet'|'zoom'|'teams', url },
 // or null. Meet's hangoutLink wins; then the event's video entry points (where

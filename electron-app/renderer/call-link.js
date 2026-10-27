@@ -23,6 +23,8 @@
     { id: 'meet', test: (u) => /(^|\.)meet\.google\.com$/i.test(u.hostname) && /^\/(?:meet\/)?[a-z]+-[a-z]+-[a-z]+(\/|$)/i.test(u.pathname) },
     { id: 'slack', test: (u) => /^app\.slack\.com$/i.test(u.hostname) && /^\/client\/[^/]+\/[^/?#]+/.test(u.pathname) },
     { id: 'zoom', test: (u) => /(^|\.)zoom\.us$/i.test(u.hostname) && /\/(j|wc(\/join)?)\/\d{9,11}(\/|$)/.test(u.pathname) },
+    { id: 'whatsapp', test: (u) => (/^call\.whatsapp\.com$/i.test(u.hostname) && /^\/(video|voice)\/[A-Za-z0-9_-]{8,64}(\/|$)/i.test(u.pathname))
+      || (/^web\.whatsapp\.com$/i.test(u.hostname) && /^\/call\/(video|voice)\/[A-Za-z0-9_-]{8,64}(\/|$)/i.test(u.pathname)) },
     {
       id: 'teams',
       test: (u) => /(^|\.)teams\.(live|microsoft)\.com$/i.test(u.hostname)
@@ -31,7 +33,7 @@
   ];
 
   // Candidate URL-ish tokens: with a scheme, or a bare host we know.
-  const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+|\b(?:[a-z0-9-]+\.)*(?:meet\.google\.com|zoom\.us|teams\.live\.com|teams\.microsoft\.com|app\.slack\.com)\/[^\s<>"'`]+/gi;
+  const URL_RE = /\bhttps?:\/\/[^\s<>"'`]+|\b(?:[a-z0-9-]+\.)*(?:meet\.google\.com|zoom\.us|teams\.live\.com|teams\.microsoft\.com|app\.slack\.com|call\.whatsapp\.com)\/[^\s<>"'`]+/gi;
 
   function clean(token) {
     // Trailing punctuation from prose ("…/j/123456789." or "(link)").

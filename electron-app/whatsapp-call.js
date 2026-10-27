@@ -24,6 +24,12 @@
 //     texts) and sent with WhatsApp's own
 //     require('WAWebSendTextMsgChatAction').sendTextMsgToChat(chat, text).
 //     It persists after the call, which suits a link or a summary.
+//   - Call links (#891, live 2026-10-27): https://call.whatsapp.com/video|voice/
+//     <token> redirects to web.whatsapp.com/call/video|voice/<token>/, a
+//     pre-join page ("Joining as <bot>", a "Join call" button, no waiting room
+//     on a plain link). Joining goes back to the main page with the call live;
+//     its record has isCallLink, callLinkToken, isGroup, outgoing: true (the
+//     bot's side), and groupCallParticipants as ids, names via Contact.
 //   - Audio never becomes a track or a media element: WhatsApp's WASM engine
 //     plays it through an AudioWorklet named
 //     "voip-shared-buffer-playback-processor" (16 kHz mono), which
@@ -61,6 +67,22 @@ function isCallerAllowed(allow, caller) {
   if (!allow || !caller) return false;
   const d = phoneDigits(caller.phone);
   return !!d && allow.phones.has(d);
+}
+
+// A WhatsApp call link, in either of its forms: { kind, token } or null.
+const CALL_LINK_RE = /^https?:\/\/(?:call\.whatsapp\.com\/|web\.whatsapp\.com\/call\/)(video|voice)\/([A-Za-z0-9_-]{8,64})(?:[/?#]|$)/i;
+function parseCallLink(url) {
+  const m = CALL_LINK_RE.exec(String(url || '').trim());
+  return m ? { kind: m[1].toLowerCase(), token: m[2] } : null;
+}
+// The room a call link registers as. Lowercase letters, digits and dashes
+// only: the local server's room route is /^\/api\/sync\/([a-z0-9-]+)$/, and a
+// token's capitals and underscores made every agent tool "Not found" (live,
+// 2026-10-27). The link itself keeps the real token. Kept in step with
+// mcp-server/server.js (which parses it inline).
+function roomCodeForLink(token) {
+  const t = String(token || '').toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  return /[a-z0-9]/.test(t) ? `whatsapp-link-${t}` : null;
 }
 
 function roomCodeForCaller(phone) {
@@ -170,12 +192,49 @@ function readCall(win) {
     const c = win.require('WAWebCollections').Contact.get(peer);
     name = (c && (c.pushname || c.name || c.formattedName)) || null;
   } catch { /* no contact */ }
+  if (a.isCallLink) {
+    // A call link the bot joined: a group call, "outgoing" from its side.
+    return {
+      phase: a.wasEverConnected ? 'active' : 'connecting',
+      isCallLink: true,
+      linkToken: a.callLinkToken || null,
+      participants: linkParticipants(win, a),
+      peerJid, phone, name,
+    };
+  }
   let phase;
   if (a.outgoing) phase = 'outgoing';
   else if (a.wasEverConnected) phase = 'active';
   else if (findButton(win.document, 'accept')) phase = 'ringing';
   else phase = 'connecting';
   return { phase, peerJid, phone, name };
+}
+
+// The other people in a call-link call, by name (the bot itself left out).
+function linkParticipants(win, a) {
+  const ids = Array.from(a.groupCallParticipantsConnected || a.groupCallParticipants || []);
+  let me = new Set();
+  try {
+    const mine = win.require('WAWebApiContact').getMeUserWids();
+    me = new Set(Object.values(mine || {}).map((w) => w && (w._serialized || String(w))).filter(Boolean));
+  } catch { /* unknown: names below still skip the unnamed */ }
+  const out = [];
+  for (const w of ids) {
+    const jid = w && (w._serialized || String(w));
+    if (!jid || me.has(jid)) continue;
+    let name = null;
+    try { const c = win.require('WAWebCollections').Contact.get(w); name = c && (c.pushname || c.name || c.formattedName); } catch { /* no contact */ }
+    out.push(name || 'Participant');
+  }
+  return out;
+}
+
+// The pre-join page's "Join call" button.
+function findJoinCallButton(doc) {
+  for (const b of doc.querySelectorAll('button, [role="button"]')) {
+    if ((b.innerText || b.textContent || '').trim().toLowerCase() === 'join call') return b;
+  }
+  return null;
 }
 
 module.exports = {
@@ -185,6 +244,9 @@ module.exports = {
   parseAllowlist,
   isCallerAllowed,
   roomCodeForCaller,
+  parseCallLink,
+  roomCodeForLink,
+  findJoinCallButton,
   findButton,
   callMenuButton,
   findMenuItem,

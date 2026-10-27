@@ -61,6 +61,11 @@ function parseCallTarget(raw) {
   const zoom = ZOOM_HOST.test(s) && s.match(ZOOM_MEETING);
   if (zoom) return { ok: true, provider: 'zoom', roomId: `zoom-${zoom[1]}`, url: s };
   if (TEAMS_URL.test(s)) return { ok: true, provider: 'teams', roomId: null, url: s };
+  const waLink = require('./whatsapp-call').parseCallLink(s);
+  if (waLink) {
+    const { roomCodeForLink } = require('./whatsapp-call');
+    return { ok: true, provider: 'whatsapp', roomId: roomCodeForLink(waLink.token), url: `https://call.whatsapp.com/${waLink.kind}/${waLink.token}` };
+  }
 
   if (/meet\.google\.com/i.test(s)) {
     return { ok: false, error: `"${s}" is a Google Meet link, but no meet code (abc-defg-hij) could be read from it. Open it in a browser and pass the code from the address bar.` };
@@ -90,6 +95,9 @@ function providerRoomIdForUrl(url) {
   const s = String(url || '');
   if (TEAMS_URL.test(s)) return TEAMS.roomCodeFromUrl(s);
   if (ZOOM_HOST.test(s)) return ZOOM.roomCodeFromUrl(s);
+  const wa = require('./whatsapp-call');
+  const waLink = wa.parseCallLink(s);
+  if (waLink) return wa.roomCodeForLink(waLink.token);
   return null;
 }
 

@@ -71,7 +71,9 @@ test('page-inject honours a screen request that refuses audio (Telegram takes th
 
 test('a request for a calling-app room that isn\'t the current call is refused, never adopted', () => {
   const server = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
-  assert.match(server, /const CALLING_APP_ROOM_RE = \/\^\(telegram\|whatsapp\|phone\)-\/;/);
+  const re = new Function('return ' + server.match(/const CALLING_APP_ROOM_RE = (\/.*\/);/)[1])();
+  for (const room of ['telegram-6785998012', 'whatsapp-19175752435', 'phone-19175752435']) assert.ok(re.test(room), room + ' is answer-only');
+  assert.ok(!re.test('whatsapp-link-9ZdwSdAQ0inbIntbYiXJ24'), 'a WhatsApp call-link room is joinable');
   const guard = server.indexOf('if (CALLING_APP_ROOM_RE.test(roomId) && roomId !== this.roomId) {');
   const adopt = server.indexOf('if (!this.roomId) {\n      this.setRoom(roomId);');
   assert.ok(guard > 0 && adopt > guard, 'the refusal comes before the adoption');

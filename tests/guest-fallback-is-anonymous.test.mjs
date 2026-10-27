@@ -86,7 +86,11 @@ test('a guest attempt that also hits sign-in fails loudly instead of sitting at 
   // The button must reveal a HOME-partition sign-in page. Signing in on the
   // guest view would re-pollute the guest jar and leave the real login broken.
   assert.match(dead, /activeMeetPartition = SESSION_PARTITION;/);
-  assert.match(dead, /navigateMeetView\(MEET_SIGN_IN_URL\)/);
+  assert.match(dead, /navigateMeetView\(MEET_SIGN_IN_URL\b/);
+  // Except a bot in calling-app standby, which goes back to waiting for calls
+  // and signs in through the side window instead (calling-app-standby.test.mjs).
+  assert.match(dead, /OPEN_BOT_SIGN_IN_ACTION/);
+  assert.match(dead, /activateCallingAppStandby\(standby, /);
   assert.ok(dead.indexOf('destroyProviderView()') < dead.indexOf('activeMeetPartition = SESSION_PARTITION'),
     'tear the guest view down before stepping back home');
 });
@@ -146,7 +150,11 @@ test('the panel can run the new action, and main answers it', () => {
 test('"Sign in to Google as bot" mid-call signs in on the side instead of hanging up', () => {
   const i = main.indexOf("ipcMain.handle('meet-sign-in-as-bot'");
   const body = main.slice(i, main.indexOf('\n  });', i));
-  const gate = body.indexOf('if (isInCall(localServer.callStatus))');
+  // The call-in-flight check lives in googleSignInRoute now (it also routes a
+  // bot in calling-app standby to the side window); its cases are pinned in
+  // calling-app-standby.test.mjs.
+  assert.match(body, /callStatus: localServer\.callStatus/);
+  const gate = body.indexOf("if (route === 'window')");
   assert.ok(gate > 0, 'must check for a call in flight first');
   assert.ok(body.indexOf('openBotSignInWindow()') > gate);
   assert.ok(body.indexOf('navigateMeetView(') > body.indexOf('openBotSignInWindow()'),

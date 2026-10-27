@@ -190,6 +190,17 @@
       sel.onchange = pick; pick();
       show('found', bots.length === 1 ? 'Found your bot. Paste its token to run requests against it:' : `Found ${bots.length} bots. Pick one and paste its token:`);
     } catch {
+      // Chrome 152+ gates public pages' access to the local network behind a
+      // permission. Denied means the probe can never succeed; say so rather
+      // than "no app", which would send a user with the app running to the
+      // download page.
+      let lna = null;
+      try { lna = (await navigator.permissions.query({ name: 'local-network-access' })).state; } catch {}
+      if (!local && lna === 'denied') {
+        show('off', 'Your browser is blocking this page from reaching your own machine. In Chrome: click the icon left of the address bar, open Site settings, set Local network to Allow, then reload.');
+        $('installUi').classList.add('hidden');
+        return;
+      }
       show('off', 'No app on this machine, so the reference is read-only.');
     }
   }

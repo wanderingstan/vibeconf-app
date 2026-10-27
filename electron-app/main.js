@@ -10232,7 +10232,7 @@ app.whenReady().then(async () => {
     }
     console.log(`[calendar] Auto-joining calendar event "${event.summary || event.id}" (${link.provider})`);
     if (link.provider === 'meet') {
-      activateMeetProvider(); // no-op if already on a live Meet view
+      activateMeetProvider({ via: 'calendar auto-join', forCall: true }); // no-op if already on a live Meet view
       joinMeetUrl(meetUrl, { spawnAgent: true, calendarEvent: event });
       return;
     }
@@ -10579,7 +10579,7 @@ app.whenReady().then(async () => {
   ipcMain.on('join-detected-meet', (_event, { url, meetCode }) => {
     // Runtime provider switch: if we're currently on Slack, rebuild a Meet view
     // first so loadMeetURL doesn't try to drive the Slack surface.
-    activateMeetProvider();
+    activateMeetProvider({ via: 'join-detected-meet', forCall: true });
     currentMeetUrl = url;
     loadMeetURL(url);
     localServer.setRoom(meetCode);
@@ -11525,12 +11525,12 @@ function setPanelPoppedOut(out) {
 // (#282): identity lives in cookies, so this just navigates. Ensures a Meet
 // view exists first (switching back from Slack if needed) and notifies the
 // panel to refresh its sign-in/out button.
-function navigateMeetView(url) {
+function navigateMeetView(url, via = 'navigateMeetView') {
   if (!mainWindow || mainWindow.isDestroyed()) {
     console.warn('[electron] navigateMeetView: no mainWindow');
     return;
   }
-  activateMeetProvider(); // rebuilds meetView on SESSION_PARTITION if we were on Slack
+  activateMeetProvider({ via }); // rebuilds meetView on SESSION_PARTITION if we were on Slack
   if (meetView && !meetView.webContents.isDestroyed()) {
     meetView.webContents.loadURL(url || MEET_HOME_URL);
   }
@@ -11566,6 +11566,7 @@ function setupSlackRoom(slackUrl) {
 function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   console.log('[electron] Activating Slack provider:', slackUrl);
+  noteCallingAppStandbyTeardown(autojoin ? 'Slack huddle join' : 'Slack sign-in', { forCall: autojoin });
   destroyProviderView();
   ensureMeetSessionConfigured(SESSION_PARTITION);
   const { createSlackSurface } = require('./slack-surface');
@@ -11590,11 +11591,14 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
 }
 
 // Ensure the embedded view is a Google Meet view (switching back from Slack if
-// needed) before loading a Meet URL.
-function activateMeetProvider() {
+// needed) before loading a Meet URL. `via` names the caller and `forCall` says
+// whether a call is about to take the view: both only matter when this tears
+// down a calling-app standby (noteCallingAppStandbyTeardown).
+function activateMeetProvider({ via = 'activateMeetProvider', forCall = false } = {}) {
   if (!slackProviderMode && !zoomProviderMode && !teamsProviderMode && !callingAppMode && meetView && !meetView.webContents.isDestroyed()) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ', zoom=' + zoomProviderMode + ', teams=' + teamsProviderMode + ', calling app=' + callingAppMode + ')');
+  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ', zoom=' + zoomProviderMode + ', teams=' + teamsProviderMode + ', calling app=' + callingAppMode + ') via ' + via);
+  noteCallingAppStandbyTeardown(via, { forCall });
   destroyProviderView();
   slackProviderMode = false;
   zoomProviderMode = false;
@@ -11663,6 +11667,7 @@ function activateTeamsProvider(teamsUrl) {
   const { TEAMS } = require('./teams-selectors');
   if (!TEAMS.isTeamsUrl(teamsUrl)) { console.warn('[electron] Teams: not a meeting link —', teamsUrl); return null; }
   console.log('[electron] Activating Teams provider:', teamsUrl);
+  noteCallingAppStandbyTeardown('Teams join', { forCall: true });
   destroyProviderView();
   slackProviderMode = false;
   slackSurface = null;
@@ -11787,12 +11792,111 @@ function callingAppStandbyWanted() {
   } catch { return null; }
 }
 
+// --- Keeping standby up (calling-app-standby.js) ---------------------------
+// Standby is the bot's one view, so anything else that takes the view (a Meet
+// join, Google/Slack/Zoom sign-in) tears it down. A call puts it back at
+// teardown (showIdle); nothing else did, and a bot whose Google sign-in failed
+// sat on accounts.google.com ignoring WhatsApp calls with no error anywhere
+// (live, 2026-10-27). So: every switch that drops standby reports it here, and
+// checkCallingAppStandby (on a timer) puts it back once nothing is using the
+// view any more.
+const CALLING_APP_STANDBY_ERROR_KEY = 'calling-app-standby';
+const CALLING_APP_STANDBY_CHECK_MS = 15 * 1000;
+// What took the view: { app, via, at, forCall }. null while standby is up.
+let callingAppStandbyInterruption = null;
+// For an unrecorded loss: when the check first saw standby missing.
+let callingAppStandbyLostSeenAt = null;
+// The bot view's last navigation, as the check saw it: a view whose URL keeps
+// changing is being used (someone signing in), one that sits still is not.
+let callingAppStandbyLastViewUrl = null;
+let callingAppStandbyLastViewActivityAt = null;
+let callingAppStandbyTimer = null;
+
+// Called by every provider switch BEFORE it clears callingAppMode. Silent when
+// no standby was up or it is not wanted (deliberately switched off). A call
+// taking the view is routine; anything else is loud, in the log and the panel,
+// because from here until standby returns the bot answers no calls.
+function noteCallingAppStandbyTeardown(via, { forCall = false } = {}) {
+  if (!callingAppMode) return;
+  const { standbyTeardownSeverity } = require('./calling-app-standby');
+  const standbyWanted = callingAppStandbyWanted();
+  const callStatus = localServer?.callStatus;
+  const severity = standbyTeardownSeverity({ callingAppMode, standbyWanted, callStatus, forCall });
+  if (severity === 'none') return;
+  const label = CALLING_APP_CALLS[callingAppMode]?.label || callingAppMode;
+  callingAppStandbyInterruption = { app: callingAppMode, via, at: Date.now(), forCall: severity === 'call' };
+  callingAppStandbyLostSeenAt = null;
+  callingAppStandbyLastViewUrl = null;
+  callingAppStandbyLastViewActivityAt = null;
+  if (severity === 'call') {
+    console.log('[electron] ' + label + ' standby paused for a call (' + via + ', callStatus=' + callStatus + ')');
+    return;
+  }
+  console.warn('[electron] ⚠️ ' + label + ' standby torn down OUTSIDE a call by ' + via + ' (callStatus=' + callStatus
+    + '): incoming ' + label + ' calls are NOT being answered until standby resumes');
+  const botLabel = resolvedBotName() || 'The bot';
+  broadcastError(botLabel + ' is not answering ' + label + ' calls right now: its view was switched away for '
+    + via + '. It goes back to waiting for calls once that is finished.', CALLING_APP_STANDBY_ERROR_KEY);
+}
+
+// The safety net. Idle (or call-complete), standby wanted, and the view is
+// somewhere else: put standby back, unless the owner is plainly still using
+// the view (see standbyRecovery). A call or its after-call work is never
+// touched; showIdle restores standby when that ends.
+function checkCallingAppStandby() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const { standbyRecovery } = require('./calling-app-standby');
+  const now = Date.now();
+  const standbyWanted = callingAppStandbyWanted();
+  // Watch the view's URL, the cheap signal for "someone is using it".
+  let url = null;
+  try { if (meetView && !meetView.webContents.isDestroyed()) url = meetView.webContents.getURL(); } catch { /* gone */ }
+  if (url !== callingAppStandbyLastViewUrl) {
+    callingAppStandbyLastViewUrl = url;
+    callingAppStandbyLastViewActivityAt = now;
+  }
+  if (standbyWanted && callingAppMode !== standbyWanted && !callingAppStandbyInterruption && !callingAppStandbyLostSeenAt) {
+    callingAppStandbyLostSeenAt = now;
+  }
+  const verdict = standbyRecovery({
+    standbyWanted,
+    callingAppMode,
+    callStatus: localServer?.callStatus,
+    interruption: callingAppStandbyInterruption,
+    firstSeenAt: callingAppStandbyLostSeenAt,
+    viewRevealed: botViewState === 'popped',
+    lastViewActivityAt: callingAppStandbyLastViewActivityAt,
+    now,
+  });
+  if (verdict.action === 'ok') {
+    callingAppStandbyLostSeenAt = null;
+    if (callingAppStandbyInterruption && !standbyWanted) {
+      // Answering was switched off meanwhile: nothing to come back to.
+      callingAppStandbyInterruption = null;
+      clearBroadcastError(CALLING_APP_STANDBY_ERROR_KEY);
+    }
+    return;
+  }
+  // A loss first seen during a call is timed from when the call is over, so it
+  // gets its grace too (showIdle normally restores standby before then).
+  if (verdict.action === 'busy') { callingAppStandbyLostSeenAt = null; return; }
+  if (verdict.action !== 'restore') return;
+  const via = callingAppStandbyInterruption ? callingAppStandbyInterruption.via : 'an unrecorded switch';
+  console.warn('[electron] ' + CALLING_APP_CALLS[standbyWanted].label + ' standby was down since ' + via
+    + ' with no call (' + verdict.reason + ', view at ' + (url || 'none') + '): resuming standby');
+  activateCallingAppStandby(standbyWanted, 'resumed after ' + via);
+}
+
 function activateCallingAppStandby(app, reason, { startUrl = null } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   const spec = CALLING_APP_CALLS[app];
   if (!spec) return false;
   const { WEB_URL } = require(spec.module);
   console.log('[electron] ' + spec.label + (startUrl ? ' (' + reason + '): opening ' + startUrl : ' standby (' + reason + '): waiting for calls'));
+  // Back in the app: whatever took the view is over, and so is the warning.
+  callingAppStandbyInterruption = null;
+  callingAppStandbyLostSeenAt = null;
+  clearBroadcastError(CALLING_APP_STANDBY_ERROR_KEY);
   destroyProviderView();
   slackProviderMode = false;
   slackSurface = null;
@@ -11841,7 +11945,7 @@ function deactivateCallingAppStandby(reason) {
   const status = localServer?.callStatus;
   if (status && status !== 'idle' && status !== 'call-complete') return;
   console.log('[electron] ' + CALLING_APP_CALLS[callingAppMode].label + ' standby off (' + reason + ')');
-  activateMeetProvider();
+  activateMeetProvider({ via: 'standby off: ' + reason });
   loadIdlePage('calling-app standby off');
 }
 
@@ -11907,6 +12011,7 @@ function activateZoomProvider(zoomUrl) {
     webUrl = zoomUrl;
   }
   console.log('[electron] Activating Zoom provider:', webUrl);
+  noteCallingAppStandbyTeardown(isMeeting ? 'Zoom join' : 'Zoom sign-in', { forCall: isMeeting });
   destroyProviderView();
   slackProviderMode = false;
   slackSurface = null;
@@ -12869,6 +12974,11 @@ function createMainWindow() {
     // matches this version of the app (its prompts, its checks).
     if (twilioCreds() && store.get('twilioPhoneNumber')) provisionTwilioGate('app start');
   }
+  // The safety net for calling-app standby (checkCallingAppStandby), whatever
+  // provider the bot launched on: answering can be switched on later. Cheap
+  // when there is nothing to do, one store read and a URL read. Once per
+  // process: createMainWindow can run again.
+  if (!callingAppStandbyTimer) callingAppStandbyTimer = setInterval(checkCallingAppStandby, CALLING_APP_STANDBY_CHECK_MS);
 
   // 'close' (cancellable) before 'closed' (already gone).
   mainWindow.on('close', confirmQuitBeforeClose);
@@ -13053,6 +13163,7 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
   const urlToLoad = boundEmail ? pinAuthUser(meetUrl, boundEmail) : meetUrl;
   if (boundEmail) console.log('[electron] Pinning Meet account via authuser:', boundEmail);
 
+  noteCallingAppStandbyTeardown('Meet join', { forCall: true });
   meetView = createMeetView(activeMeetPartition);
   zoomProviderMode = false; // a Meet view replaces any Zoom one (#318)
   teamsProviderMode = false; // ... or Teams one
@@ -14660,13 +14771,20 @@ function setupIPC() {
   // home if already signed in.
   ipcMain.handle('meet-sign-in-as-bot', () => {
     // Mid-call (a guest fallback included), navigating meetView would hang up
-    // the meeting, so sign in on the side instead. At rest the view is free,
-    // and signing in there lets the account chip on Meet home report the email.
-    if (isInCall(localServer.callStatus)) {
+    // the meeting, so sign in on the side instead. Same for a bot in
+    // calling-app standby: the view IS the standby, and navigating it to
+    // Google stopped the bot answering WhatsApp calls with nothing to bring it
+    // back (live, 2026-10-27). At rest on Meet the view is free, and signing in
+    // there lets the account chip on Meet home report the email.
+    const { googleSignInRoute } = require('./calling-app-standby');
+    const route = googleSignInRoute({
+      callStatus: localServer.callStatus, callingAppMode, standbyWanted: callingAppStandbyWanted(),
+    });
+    if (route === 'window') {
       openBotSignInWindow();
       return { ok: true, mode: 'account', window: true };
     }
-    navigateMeetView(MEET_SIGN_IN_URL);
+    navigateMeetView(MEET_SIGN_IN_URL, 'Google sign-in');
     // #498: the bot view is hidden by default, so without this the sign-in page
     // loads somewhere nobody can see and the button looks broken. You cannot
     // type a Google password into a window that isn't on screen — pop the view
@@ -14779,7 +14897,19 @@ function setupIPC() {
     } catch (err) {
       console.warn('[electron] meet-sign-out-bot clear failed:', err.message);
     }
-    navigateMeetView(MEET_HOME_URL);
+    // Reloading Meet home only refreshes what the view shows; the cookies are
+    // already gone. Mid-call that reload would hang up, and in calling-app
+    // standby it would stop the bot answering calls, so there just tell the
+    // panel to re-read the (cookie-derived) mode.
+    const { signOutMayNavigateView } = require('./calling-app-standby');
+    if (signOutMayNavigateView({ callStatus: localServer.callStatus, callingAppMode, standbyWanted: callingAppStandbyWanted() })) {
+      navigateMeetView(MEET_HOME_URL, 'Google sign-out');
+    } else {
+      console.log('[electron] Google sign-out: leaving the bot view where it is (callStatus=' + localServer.callStatus
+        + ', calling app=' + callingAppMode + ')');
+      broadcastToRenderers('meet-mode-changed', { partition: SESSION_PARTITION });
+      broadcastAuthChanged();
+    }
     return { ok: true, mode: 'guest' };
   });
 
@@ -15663,10 +15793,16 @@ function setupIPC() {
           + 'did not get past it either, so it could not join the call. '
           + 'Sign the bot back in to Google, then start the call again.';
         localServer.addError(message);
-        handleMeetStatusUpdate(`Error: ${message}`, SIGN_BOT_IN_ACTION);
+        // A bot that answers calling-app calls goes straight back to standby
+        // instead: parking its one view on Google's sign-in page would leave
+        // it answering nothing. Sign-in then happens in the side window,
+        // which is on the same (home) jar.
+        const standby = callingAppStandbyWanted();
+        handleMeetStatusUpdate(`Error: ${message}`, standby ? OPEN_BOT_SIGN_IN_ACTION : SIGN_BOT_IN_ACTION);
         destroyProviderView();
         activeMeetPartition = SESSION_PARTITION;
-        navigateMeetView(MEET_SIGN_IN_URL);
+        if (standby) activateCallingAppStandby(standby, 'guest join failed');
+        else navigateMeetView(MEET_SIGN_IN_URL, 'guest join failed');
         return;
       }
 

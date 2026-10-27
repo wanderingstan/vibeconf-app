@@ -1227,18 +1227,10 @@
       ctx.restore();
     }
 
-    getTrack() {
-      // If Meet stopped the previous track (camera-off toggle calls
-      // track.stop()), the cached stream's track is now in readyState
-      // 'ended' and emits a black frame forever. Re-capture from the
-      // same canvas — the render loop is still running, so this gives
-      // us a fresh live track without rebuilding the whole camera.
-      const existing = this.stream.getVideoTracks()[0];
-      if (!existing || existing.readyState === 'ended') {
-        console.log('[bots-in-calls] Video track was stopped, re-capturing from canvas');
-        this.stream = this.canvas.captureStream(config.fps);
-      }
-      return this.stream.getVideoTracks()[0];
+    getTrack(consumer = 'unknown') {
+      // Camera twin of the #274 mic fix: hand out a CLONE of a live master, never the
+      // master itself. See handOutCameraTrack (module scope, unit-tested).
+      return handOutCameraTrack(this, consumer, config.fps);
     }
 
     destroy() {
@@ -1790,6 +1782,41 @@
   // camera toggle) still picks it up — otherwise the avatar is dropped on a timing race. (codex.)
   let pendingAvatarVideo = null;
 
+  // Camera handout (WhatsApp dead-video fix, mirrors the #274 mic clones).
+  //
+  // The bug: getCamera() caches one VirtualCamera per resolution, and getTrack() used to
+  // return the camera's ONE canvas track to every getUserMedia caller. WhatsApp Web probes
+  // the camera before answering (a 1280x720 preview), then at answer calls getUserMedia
+  // again at the same size and only afterwards stop()s the probe stream. Both callers held
+  // the SAME track object, so stopping the "probe" killed the call's video: the caller saw
+  // nothing until set_camera off/on forced a fresh getUserMedia. (The old ended-check only
+  // helped when the stop landed BEFORE the next request; here it landed after.) When the
+  // probe and the answer asked for different sizes, the answer got its own camera and the
+  // bug hid, which is why an earlier call the same day worked.
+  //
+  // The fix: the camera's canvas track is a master that is never handed out; every
+  // consumer gets master.clone(), so a consumer stopping its track only ends its own
+  // clone. If the master itself is dead (should not happen, nobody outside holds it),
+  // re-capture from the same canvas (the render loop is still running) and log loudly.
+  // Pure aside from cam.canvas.captureStream(), so tests drive it with fakes.
+  function handOutCameraTrack(cam, consumer, fps) {
+    let master = cam.stream && cam.stream.getVideoTracks()[0];
+    if (!master || master.readyState === 'ended') {
+      console.warn(`[bots-in-calls] camera GUARD: master dead (consumer=${consumer} master=${master ? master.readyState : 'none'}), re-capturing from canvas`);
+      cam.stream = cam.canvas.captureStream(fps);
+      master = cam.stream.getVideoTracks()[0];
+    }
+    const clone = master.clone();
+    console.log(`[bots-in-calls] camera getTrack consumer=${consumer} size=${cam.canvas.width}x${cam.canvas.height} clone=${clone.id} master=${master.id} (masterState=${master.readyState} cloneState=${clone.readyState})`);
+    // Note: a consumer's own stop() does not fire 'ended'; this catches the master
+    // (source) ending underneath a clone, which would otherwise be silent.
+    clone.addEventListener('ended', () => {
+      const m = cam.stream && cam.stream.getVideoTracks()[0];
+      console.log(`[bots-in-calls] camera clone ENDED consumer=${consumer} clone=${clone.id} (master now ${m ? m.readyState : 'none'})`);
+    });
+    return clone;
+  }
+
   function getCamera(width, height) {
     const key = `${width}x${height}`;
     if (!cameras.has(key)) {
@@ -1826,7 +1853,7 @@
     if (constraints?.video) {
       const { width, height } = parseVideoDimensions(constraints.video);
       const camera = getCamera(width, height);
-      tracks.push(camera.getTrack());
+      tracks.push(camera.getTrack('call:getUserMedia'));
     }
 
     if (constraints?.audio) {

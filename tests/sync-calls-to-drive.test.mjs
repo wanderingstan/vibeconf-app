@@ -14,6 +14,7 @@ const mod = await import('../scripts/sync-calls-to-drive.mjs');
 const {
   parseCallId, destinationFor, botFolderName, isQuiescent, needsSync,
   botNameFor, pickBackend, listProfiles, main, DEFAULTS, loadConfigFile, collisionSuffixes,
+  prunableFiles,
 } = mod;
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'sync-calls-'));
@@ -260,4 +261,97 @@ test('end to end: a second same-day call in one room lands beside the first, not
   assert.match(bots[1], /^jimmy-\d{4}$/);
   assert.equal(fs.readFileSync(path.join(archive, day, 'jimmy', 'summary.md'), 'utf8'), 'first');
   assert.equal(fs.readFileSync(path.join(archive, day, bots[1], 'summary.md'), 'utf8'), 'second');
+});
+
+// A stand-in for ssh: drops the -o options and the host, runs the rest
+// locally. rsync -e and the verify step both go through it, so the ssh
+// backend runs end to end against a temp dir with no real remote.
+function fakeSsh() {
+  const bin = path.join(tmp(), 'fake-ssh');
+  fs.writeFileSync(bin, '#!/bin/sh\nwhile [ "$1" = "-o" ]; do shift 2; done\nshift\nexec /bin/sh -c "$*"\n', { mode: 0o755 });
+  return bin;
+}
+function runMain(args) {
+  const logs = [];
+  const origLog = console.log; const origErr = console.error;
+  console.log = (...a) => logs.push(a.join(' ')); console.error = (...a) => logs.push(a.join(' '));
+  try { return { code: main(args), out: logs.join('\n') }; }
+  finally { console.log = origLog; console.error = origErr; }
+}
+
+test('ssh destination: host:/absolute/path, and it takes precedence over the Drive folder', () => {
+  assert.deepEqual(pickBackend({ sshDest: 'vibeconf-mini:/Volumes/Archive/calls/', dest: tmp() }), { kind: 'ssh', host: 'vibeconf-mini', dest: '/Volumes/Archive/calls' });
+  assert.match(pickBackend({ sshDest: 'vibeconf-mini:relative/path' }).reason, /host:\/absolute\/path/);
+});
+
+test('needsSync: a call synced to one destination root still needs syncing to another', () => {
+  const root = tmp();
+  const dir = fakeCall(root, 'Default', 'aaa-bbbb-ccc-20260901T100000Z', { ageMin: 60 });
+  const rel = 'aaa-bbbb-ccc-2026-09-01/jimmy';
+  fs.writeFileSync(path.join(dir, DEFAULTS.markerFile), JSON.stringify({ newestMtime: Date.now(), rel, root: '/drive/folder' }));
+  assert.equal(needsSync(dir, DEFAULTS.markerFile, rel, '/drive/folder'), false);
+  assert.equal(needsSync(dir, DEFAULTS.markerFile, rel, 'mini:/archive'), true);
+  fs.writeFileSync(path.join(dir, DEFAULTS.markerFile), JSON.stringify({ newestMtime: Date.now(), rel }));
+  assert.equal(needsSync(dir, DEFAULTS.markerFile, rel, '/drive/folder'), true, 'a marker from before roots were recorded → one extra pass');
+});
+
+test('--prune is refused for any backend but ssh: a copy into the Drive folder proves nothing', () => {
+  const root = tmp();
+  const call = fakeCall(root, 'Default', 'wcj-odpo-wrb-20260901T150000Z', { ageMin: 30 });
+  const { code, out } = runMain(['--profiles-root', root, '--dest', tmp(), '--profiles', 'Default', '--prune']);
+  assert.equal(code, 2);
+  assert.match(out, /cannot prune with the rsync backend/);
+  assert.ok(fs.existsSync(path.join(call, 'call-recording.mp4')));
+});
+
+test('end to end through the ssh backend with --prune: recordings are deleted locally only once their hashes match the remote copy', { skip: !HAVE_RSYNC }, () => {
+  process.env.VIBECONF_SYNC_SSH_CMD = fakeSsh();
+  try {
+    const root = tmp();
+    const archive = tmp();
+    const call = fakeCall(root, 'Default', 'wcj-odpo-wrb-20260901T150000Z', { botName: 'Jimmy', ageMin: 30, files: { 'summary.md': 'hi', 'call-recording-share.webm': 'share' } });
+    const rel = destinationFor('wcj-odpo-wrb-20260901T150000Z', 'Jimmy');
+    const dest = path.join(archive, rel);
+    // A different file already sits at the destination under one recording's
+    // name: it is never overwritten, so that recording must NOT verify.
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(path.join(dest, 'call-recording-share.webm'), 'someone else\'s bytes');
+
+    let r = runMain(['--profiles-root', root, '--ssh-dest', `fakehost:${archive}`, '--profiles', 'Default', '--prune']);
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /FAILED .*kept 1 file\(s\) that did not verify: call-recording-share\.webm \(hash differs\)/);
+    assert.ok(!fs.existsSync(path.join(call, 'call-recording.mp4')), 'the verified recording is gone locally');
+    assert.equal(fs.readFileSync(path.join(dest, 'call-recording.mp4'), 'utf8'), 'not really video', '…and intact on the remote');
+    assert.ok(fs.existsSync(path.join(call, 'call-recording-share.webm')), 'the unverified one is kept');
+    assert.ok(fs.existsSync(path.join(call, 'summary.md')), 'non-recordings are never pruned');
+    assert.ok(fs.existsSync(path.join(dest, 'summary.md')));
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(call, DEFAULTS.markerFile), 'utf8')).pruned.map((f) => f.file), ['call-recording.mp4']);
+
+    // The conflict is resolved on the remote; the next run verifies and prunes the rest.
+    fs.rmSync(path.join(dest, 'call-recording-share.webm'));
+    r = runMain(['--profiles-root', root, '--ssh-dest', `fakehost:${archive}`, '--profiles', 'Default', '--prune']);
+    assert.equal(r.code, 0, r.out);
+    assert.match(r.out, /pruned 1 recording/);
+    assert.deepEqual(prunableFiles(call), []);
+    assert.equal(fs.readFileSync(path.join(dest, 'call-recording-share.webm'), 'utf8'), 'share');
+    const marker = JSON.parse(fs.readFileSync(path.join(call, DEFAULTS.markerFile), 'utf8'));
+    assert.deepEqual(marker.pruned.map((f) => f.file).sort(), ['call-recording-share.webm', 'call-recording.mp4']);
+    assert.equal(marker.root, `fakehost:${archive}`);
+
+    // Nothing left: up to date.
+    r = runMain(['--profiles-root', root, '--ssh-dest', `fakehost:${archive}`, '--profiles', 'Default', '--prune']);
+    assert.match(r.out, /0 synced, 1 already up to date/);
+  } finally { delete process.env.VIBECONF_SYNC_SSH_CMD; }
+});
+
+test('VIBECONF_SYNC_PROFILES="*" means every profile with calls', () => {
+  const root = tmp();
+  fakeCall(root, 'Default', 'wcj-odpo-wrb-20260901T150000Z', { ageMin: 1 });
+  fakeCall(root, 'bot8', 'wcj-odpo-wrb-20260901T150000Z', { ageMin: 1 });
+  process.env.VIBECONF_SYNC_PROFILES = '*';
+  try {
+    const { out } = runMain(['--profiles-root', root, '--status']);
+    assert.match(out, /Default\/wcj/);
+    assert.match(out, /bot8\/wcj/);
+  } finally { delete process.env.VIBECONF_SYNC_PROFILES; }
 });

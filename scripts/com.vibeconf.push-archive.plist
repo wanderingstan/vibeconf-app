@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Upload the Mac mini's on-disk call archive to the shared Drive folder
+  (scripts/push-archive-to-drive.sh has the why). Laptops ship calls here with
+  sync-calls-to-drive.mjs (VIBECONF_SYNC_SSH_DEST); this pushes them on.
+  Mac mini only.
+
+    cp scripts/com.vibeconf.push-archive.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.vibeconf.push-archive.plist
+
+  Check it:      launchctl list | grep vibeconf.push-archive
+  Run it now:    launchctl start com.vibeconf.push-archive
+  See what it did:  tail /tmp/vibeconf-push-archive.out
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.vibeconf.push-archive</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <!-- zsh LOGIN shell: ~/.zprofile's `brew shellenv` puts node and rclone on
+         PATH; launchd's own environment has neither. It does NOT read ~/.zshrc
+         (non-interactive), which is why the VIBECONF_* settings live in
+         ~/.config/vibeconf/sync-calls.env and the script reads that itself. -->
+    <string>"$HOME/Developer/vibeconf-app/scripts/push-archive-to-drive.sh"</string>
+  </array>
+
+  <!-- Every 30 minutes; the script's lock skips a run while one is still uploading. -->
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/vibeconf-push-archive.out</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/vibeconf-push-archive.err</string>
+
+  <!-- Background job: the nightly test suite on the same machine comes first. -->
+  <key>Nice</key>
+  <integer>10</integer>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

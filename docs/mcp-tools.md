@@ -1,6 +1,6 @@
 # MCP tools
 
-The MCP server (`mcp-server/server.js`) exposes these tools to any MCP-speaking agent. Each one is a thin HTTP call to the Electron app's local server. This page is the user-facing reference; the canonical descriptions live in the `server.tool(…)` calls in `mcp-server/server.js`.
+The MCP server (`mcp-server/server.js`) exposes these tools to any MCP-speaking agent. Nearly every one is a thin HTTP call to the app's local server; [api/mcp.md](api/mcp.md) maps each tool onto its endpoint, and [api/README.md](api/README.md) documents that API on its own. This page is the user-facing reference; the canonical descriptions live in the `server.tool(…)` calls in `mcp-server/server.js`.
 
 Call-scoped tools accept an optional `room_id` argument, falling back to `VIBECONF_ROOM_ID` from the environment. Discovery, preference, voice, setup, recording, and logging tools have their own schemas — the registered parameters in `server.js` are authoritative.
 
@@ -8,7 +8,7 @@ Call-scoped tools accept an optional `room_id` argument, falling back to `VIBECO
 
 | Tool | What |
 |---|---|
-| **`join_call`** | Join a call — a Google Meet (pass the **meet code**, `xxx-xxxx-xxx`) or a **Slack huddle** (pass the huddle URL). Optional `bot_name` routes to a running profile; `force` rebuilds a wedged session (tears down a working call — default false makes repeat joins a no-op). |
+| **`join_call`** | Join a call: a Google Meet (the **meet code** `xxx-xxxx-xxx` or the full URL), a **Slack huddle** (the huddle URL), a **Zoom** meeting (the `zoom.us/j/…` link) or a **Microsoft Teams** meeting (the `teams.live.com/meet/…` link). Optional `bot_name` routes to a running profile; `force` rebuilds a wedged session (tears down a working call — default false makes repeat joins a no-op). |
 | **`leave_call`** | Hang up. If after-call work is enabled the bot enters that phase rather than shutting down; the reply says so. |
 | **`end_session`** | Finish after-call work and release the app. Call it as soon as the wrap-up is done — the app holds the room, transcript and terminal open until you do. |
 | **`get_room_info`** | The primary "what's happening" query. Returns participants, speaker state, sharing status, errors, detected Meet URLs (when not in a call), local server URL, profile name, session log path. Call this first whenever you're unsure of state. |
@@ -25,7 +25,7 @@ Call-scoped tools accept an optional `room_id` argument, falling back to `VIBECO
 | Tool | What |
 |---|---|
 | **`speak`** | Say something aloud via TTS. Keep messages concise — they're spoken in real time. Optional: `emoji` (avatar face for this response), `voice` (one-off voice override), and `urgency` 0–1 — the interruption gate: below 0.5 the reply waits for a gap; at or above it may play over a speaker. 0.4 is a normal answer. |
-| **`list_voices`** | List available TTS voices. Shows ElevenLabs voices if an API key is configured, otherwise macOS system voices. |
+| **`list_voices`** | List available TTS voices: Voicebox profiles, ElevenLabs voices when a key is configured, and the OS voices (macOS or Windows), together. |
 | **`set_voice`** | Change the bot's TTS voice. Persists. |
 
 ## Chat
@@ -47,7 +47,7 @@ Call-scoped tools accept an optional `room_id` argument, falling back to `VIBECO
 
 ## Screen share manipulation (`*_share` / `share_tab`)
 
-Two different automation targets: the `*_share` tools manipulate the bot's own Electron share surface (whiteboard, or any URL loaded into it) directly. `share_tab` hands a real Chrome tab off to the Claude-in-Chrome extension, which then owns manipulation of that tab.
+Two different automation targets: the `*_share` tools manipulate the bot's own Electron share surface (whiteboard, or any URL loaded into it) directly. `share_tab` shares a real Chrome or Brave tab, found by URL through AppleScript (macOS only); the share tools do not reach inside that tab.
 
 | Tool | What |
 |---|---|
@@ -59,7 +59,7 @@ Two different automation targets: the `*_share` tools manipulate the bot's own E
 | **`eval_share`** | Run JavaScript in the share surface and return the result. Sandboxed to that page's own context. |
 | **`read_share_console`** | Read recent console messages captured from the share surface (buffered continuously while something is shared). |
 | **`read_share_network`** | Read recent network requests captured from the share surface (buffered continuously while something is shared). |
-| **`share_tab`** | Share a specific Chrome tab (by URL) into the call, live. macOS only for now. Once shared, manipulation is via the `mcp__claude-in-chrome__*` tools, not this server. |
+| **`share_tab`** | Share a specific Chrome or Brave tab (by URL) into the call, live. macOS only for now. |
 
 ## Avatar & camera
 
@@ -86,7 +86,7 @@ Two different automation targets: the `*_share` tools manipulate the bot's own E
 
 | Tool | What |
 |---|---|
-| **`get_session_log`** | Recent lines from the Electron app's session log. Each session writes to `userData/logs/session-{ts}.log` and the path is also in `get_room_info`'s `status.sessionLogPath`. Optional `grep` filters by case-insensitive regex (e.g. `'screen\|share\|present'` to focus on screen-share lines). Use this to post-mortem mid-call weirdness without scrambling to capture terminal output. |
+| **`get_session_log`** | Recent lines from the Electron app's session log (or, with `instance`, a remote instance's log from the website). Each session writes to `userData/logs/session-{ts}.log` and the path is also in `get_room_info`'s `status.sessionLogPath`. Optional `grep` filters by case-insensitive regex (e.g. `'screen\|share\|present'` to focus on screen-share lines). Use this to post-mortem mid-call weirdness without scrambling to capture terminal output. |
 | **`get_call_screenshot`** | Capture a screenshot of the Meet view as the bot sees it (participant tiles, names, mic icons, captions, shared content, surrounding Meet chrome). Returns an absolute path to a PNG. After receiving the path, read the file with your normal image-reading tool to actually look at it. |
 
 ## Patterns
@@ -145,7 +145,8 @@ One-line index, grouped; the canonical description for each is its `server.tool(
 
 | Tool | What |
 |---|---|
-| **`play_audio`** | Play an audio file INTO the Google Meet call through the bot's virtual mic — everyone hears it. |
+| **`play_audio`** | Play an audio file INTO the call through the bot's virtual mic — everyone hears it. |
+| **`play_sound`** | Play a bundled sound effect by catalogue name (`category/name`). |
 
 ### Recording
 
@@ -153,6 +154,13 @@ One-line index, grouped; the canonical description for each is its `server.tool(
 |---|---|
 | **`start_recording`** | Record the current call to disk — one audio file per track (the bot's own voice plus each remote participant's audio, which Meet sends separately) plus video of the bot's own Meet view, muxed to one mp4 on stop… |
 | **`stop_recording`** | Stop the call recording started by start_recording (or by the recordCallAudio pref) — finalizes the per-track audio + video files and… |
+
+### Realtime voice (experimental)
+
+| Tool | What |
+|---|---|
+| **`hold_voice`** | When the bot runs a speech-to-speech model: keep the voice quiet for up to 120 seconds. |
+| **`brief`** | Hand the voice model a fact silently, without asking it to say anything. |
 
 ### Working memory (active listening)
 

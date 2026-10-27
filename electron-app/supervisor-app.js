@@ -733,6 +733,12 @@ function startDirectory() {
       res.end(JSON.stringify(body));
     };
     const url = new URL(req.url, `http://127.0.0.1:${port}`);
+    // The API explorer probes this directory to find the user's bots, from
+    // vibeconferencing.com or from a bot's own /docs page (docs-origins.js).
+    // The running bots' origins are allowed so /docs on any port can ask.
+    const botOrigins = botChildren.names().map((n) => botChildren.get(n)).map((c) => c && c.port).filter(Boolean).map((p) => `http://127.0.0.1:${p}`);
+    require('./docs-origins.js').applyCors(req, res, { extra: botOrigins });
+    if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
     try {
       if (url.pathname === '/api/instances') {
         // Probed live rather than served from a memory of what we launched: a

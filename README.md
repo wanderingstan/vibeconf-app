@@ -21,6 +21,17 @@ Or grab a build for macOS, Linux or Windows from the **[latest release](https://
 
 Your agent is the brain; the app is the body. The agent calls MCP tools (or raw HTTP) to speak, listen and draw. The app does the real-time media work: it plays synthesized speech into a virtual mic, renders the avatar and whiteboard into a virtual camera, and drives the call's web UI so the bot shows up as a normal participant. Dashed boxes are planned or in progress.
 
+## It is an API
+
+The app is a **calling API** first, and a desktop app that uses it. One HTTP API on `127.0.0.1` joins Google Meet, Zoom, Microsoft Teams and Slack huddles, and answers Telegram, WhatsApp and phone calls, with the same handful of endpoints on every one: join, wait for someone to finish speaking, speak, chat, show a board, share a screen. Think OpenRouter, for calls.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/api-layers-dark.svg">
+  <img alt="Diagram, left to right. Your code (Claude Code and Codex via MCP, curl, your app, the API explorer) sends HTTP and JSON to the local API at http://127.0.0.1:7865 with a bearer token: one request shape, GET /api/sync/{room}?wait=55 to hear the room and POST /api/sync/{room} to speak, write the board or run an action. The app drives each platform's own web client as a participant: meetings the bot joins (Google Meet, Zoom, Microsoft Teams, Slack huddles, with WhatsApp call links in progress and FaceTime planned) and calls the bot answers (Telegram, WhatsApp, a phone number through Twilio, with Discord planned). What the room sees: a tile with a name and a face, a microphone that speaks, a camera with an avatar or a board, chat messages, a screen share." src="media/api-layers-light.svg">
+</picture>
+
+Browse and try it at **[vibeconferencing.com/api](https://vibeconferencing.com/api)**, read the **[API guide](docs/api/README.md)**, or import **[`openapi.yaml`](docs/api/openapi.yaml)** into your client. The bundled MCP server is a thin client of this API; [docs/api/mcp.md](docs/api/mcp.md) maps the tools onto the endpoints.
+
 ## Not notes. The thing.
 
 Most bots send a summary after everyone leaves. This one works **in the call**. Because the bot **is** your Claude Code / Codex / Cursor session, it can do anything your agent can do in a normal session, live in the room: research a question, send the email, update the website, analyze the data, or build the thing you're discussing. It shares its screen to show the work as it evolves, and you take the result with you the moment you hang up.
@@ -131,7 +142,7 @@ Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issue
 
 ## More docs
 
-[Install](docs/install.md) · [Quickstart](docs/quickstart.md) · [Multi-bot setups](docs/multi-bot.md) · [Preferences](docs/preferences.md) · [What you can ask (MCP tools)](docs/mcp-tools.md) · [Modes & states](docs/modes-and-states.md) · [Troubleshooting](docs/troubleshooting.md)
+[Install](docs/install.md) · [Quickstart](docs/quickstart.md) · [The API](docs/api/README.md) · [Multi-bot setups](docs/multi-bot.md) · [Preferences](docs/preferences.md) · [What you can ask (MCP tools)](docs/mcp-tools.md) · [Modes & states](docs/modes-and-states.md) · [Troubleshooting](docs/troubleshooting.md)
 
 ---
 
@@ -142,7 +153,7 @@ Found a bug? [Open an issue](https://github.com/wanderingstan/vibeconf-app/issue
 | Dir | What it is |
 |-----|------------|
 | `electron-app/` | The Electron app: audio pipeline, virtual camera, Meet/Zoom/Teams/Slack automation, turn-taking, the local control server, and the settings UI. |
-| `mcp-server/` | The MCP server the agent talks to (tools like `join_call`, `wait_for_speech`, `speak`, `update_whiteboard`, `set_voice`). Bundled into the app. |
+| `mcp-server/` | The MCP server the agent talks to (tools like `join_call`, `wait_for_speech`, `speak`, `update_whiteboard`, `set_voice`). A thin client of the local HTTP API ([docs/api/](docs/api/README.md)). Bundled into the app. |
 | `extension/` | Injected page scripts (Runway avatar bridge, LiveKit client). Bundled into the app. |
 | `scripts/`, `tests/`, `docs/` | Test harness (fleet + nightly), unit/e2e tests, and user docs. The visual system for the app and the website is in [docs/STYLE-GUIDE.md](docs/STYLE-GUIDE.md). |
 

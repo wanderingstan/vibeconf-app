@@ -41,6 +41,8 @@
   #band .wrap { max-width: 1100px; margin: 0 auto; padding: 18px 20px; display: flex; flex-wrap: wrap; gap: 16px 28px; align-items: center; }
   #band h1 { font: 800 22px/1.05 var(--font-display); letter-spacing: -.02em; margin: 0; }
   #band h1 span { color: var(--ink-soft); font-weight: 700; }
+  #band .links { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 13px; font-weight: 500; }
+  #band .links a:first-child { color: var(--pink-deep); font-weight: 700; }
   .eyebrow { font: 700 10.5px var(--font-mono); letter-spacing: .18em; text-transform: uppercase; color: var(--magenta); }
   .eyebrow::before { content: "✦ "; color: var(--pink); }
   #state { flex: 1 1 420px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; font-size: 14px; }
@@ -110,6 +112,11 @@
     <div>
       <div class="eyebrow">API reference</div>
       <h1>vibeconferencing <span>· one API, every call</span></h1>
+      <nav class="links">
+        <a href="#tag/discovery">Skip to the endpoints ↓</a>
+        <a id="specLink" href="openapi.yaml">openapi.yaml</a>
+        <a href="https://github.com/wanderingstan/vibeconf-app/tree/main/docs/api" target="_blank" rel="noopener">Guides on GitHub</a>
+      </nav>
     </div>
     <div id="state">
       <span class="dot" id="dot"></span>
@@ -151,10 +158,13 @@
   const port = (saved && saved.port) || (local ? location.port : '7865');
 
   // ── Render the reference, with whatever connection we have ──────────────
+  $('specLink').href = SPEC;
+
   const config = {
     url: SPEC,
     theme: 'none',
     hideDarkModeToggle: true,
+    documentDownloadType: 'none',   // the band links the YAML directly instead
     metaData: { title: 'Vibeconferencing API' },
     servers: [{ url: `http://127.0.0.1:${port}`, description: saved ? `Your bot on ${port}` : 'A bot on this machine' }],
     authentication: saved && saved.token

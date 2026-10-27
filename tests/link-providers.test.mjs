@@ -14,7 +14,8 @@ const css = readFileSync(join(root, 'electron-app/renderer/provider-logos.css'),
 
 test('Slack is listed only while the bot is signed in to it', () => {
   assert.match(panel, /\{ id: 'slack', name: 'Slack', full: 'Slack huddle', needsSignIn: true \}/);
-  assert.match(panel, /LINK_PROVIDERS\.filter\(\(p\) => !p\.needsSignIn \|\| slackSignedInForLinks\)/);
+  assert.match(panel, /LINK_PROVIDERS\.filter\(\(p\) => \(!p\.needsSignIn \|\| slackSignedInForLinks\)/);
+  assert.match(panel, /\(!p\.needsWhatsApp \|\| !!callingAccountsForLinks\.whatsapp\)/, 'WhatsApp call links only for a bot signed in to WhatsApp');
   assert.match(panel, /slackSignedInForLinks = signedIn;/);
 });
 

@@ -22,7 +22,9 @@ const { URL } = require('url');
 const RESTING_STATES = ['idle', 'listening', 'ticking', 'thinking', 'working'];
 // Rooms that only exist while someone calls the bot (#843, #882): never
 // adopted from a request, see handleRequest.
-const CALLING_APP_ROOM_RE = /^(telegram|whatsapp|phone)-/;
+// (A WhatsApp CALL LINK room, whatsapp-link-<token>, is joinable like a Meet
+// code, so it is not one of them.)
+const CALLING_APP_ROOM_RE = /^(telegram-|phone-|whatsapp-(?!link-))/;
 
 // #824: activity-feed lines that are the bot TALKING or LISTENING, not working.
 // The agent's own wait_for_speech call lands in the feed as a 🔧 line just as
@@ -138,7 +140,7 @@ function namesDiffer(a, b) {
 const { formatFitReport, formatBudget } = require('./board-fit.js');
 
 class LocalServer {
-  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onJoinZoom, onJoinTeams, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onBoardFitVersion, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onJoinMeet, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
+  constructor({ port, appVersion, packaged, onBotSpeech, onStopTts, onResumeTts, onWhiteboardUpdate, onWhiteboardStyle, onReloadWhiteboard, onLeaveCall, onEndSession, onShareWhiteboard, onShareTab, onStopSharing, onLoadUrl, onJoinCall, onListFonts, onJoinSlack, onJoinZoom, onJoinTeams, onJoinWhatsApp, onBotStateChange, onModeChange, onCallStatusChange, onNameMentioned, onAnyoneSpeakingChange, onSilenceGateChange, onCaptionsChange, onWorkingMemoryChange, onComprehensionDue, onTriageAck, onProbeOpening, onParticipantsFirstSeen, onAvatarEmojiOverride, onSetCamera, onCaptureScreenshot, onCaptureSharedScreenshot, onReadChat, onSendChat, onScrollShare, onSetShareAudio, onSetCaptionLanguage, onSetShareSize, onSetShareTitleBar, onShareClick, onShareType, onInspectDom, onFindShareElement, onEvalShare, onMeasureBoardFit, onBoardFitVersion, onReadShareConsole, onReadShareNetwork, onPlayAudio, onFocusRequest, onStartCall, onJoinMeet, onRecord, getWebsiteUrl, getWhiteboardLoadedUrl, getConfiguredBotName, getTakenBotNames, getPref, setPref, applyPref, getAgentWorkdir, getUnfinishedWrapUp, clearUnfinishedWrapUp, extraRoutes } = {}) {
     this.port = port || DEFAULT_PORT;
     // Optional custom-route hook: async (req, res) => boolean. Runs BEFORE auth so it can
     // serve open localhost routes (e.g. the Claude-ready ping). Returns true if handled.
@@ -185,6 +187,7 @@ class LocalServer {
     this.onJoinSlack = onJoinSlack || (() => {});
     this.onJoinZoom = onJoinZoom || (() => null);
     this.onJoinTeams = onJoinTeams || (() => null);
+    this.onJoinWhatsApp = onJoinWhatsApp || (() => null);
     this.onLoadUrl = onLoadUrl || (() => {});
     this.onScrollShare = onScrollShare || (async () => ({ ok: false, error: 'not implemented' }));
     this.onSetShareSize = onSetShareSize || (async () => ({ ok: false, error: 'not implemented' }));
@@ -6851,6 +6854,19 @@ class LocalServer {
         if (data.sender) this.currentCallBotName = data.sender;
         this.onJoinSlack(url);
         results.join = { ok: true };
+      }
+    }
+
+    // Handle join-whatsapp: join a WhatsApp call link (#891). roomId becomes
+    // whatsapp-link-<token>.
+    if (data.meta?.action === 'join-whatsapp') {
+      const url = data.meta.url;
+      if (!url) {
+        results.join = { ok: false, error: 'join-whatsapp requires a WhatsApp call link' };
+      } else {
+        if (data.sender) this.currentCallBotName = data.sender;
+        const room = this.onJoinWhatsApp(url);
+        results.join = room ? { ok: true, roomId: room } : { ok: false, error: 'Could not join that WhatsApp call link (is this bot signed in to WhatsApp?): ' + url };
       }
     }
 

@@ -2877,6 +2877,8 @@ joinBtn.addEventListener('click', async (e) => {
     api.send('join-detected-zoom', { url });
   } else if (link.provider === 'teams') {
     api.send('join-detected-teams', { url });
+  } else if (link.provider === 'whatsapp') {
+    api.send('join-detected-whatsapp', { url });
   } else {
     api.joinMeet(url);
   }
@@ -3227,6 +3229,8 @@ const LINK_PROVIDERS = [
   { id: 'zoom', name: 'Zoom', full: 'Zoom' },
   { id: 'teams', name: 'Teams', full: 'Microsoft Teams' },
   { id: 'slack', name: 'Slack', full: 'Slack huddle', needsSignIn: true },
+  // A WhatsApp call link (#891): only for a bot signed in to WhatsApp.
+  { id: 'whatsapp', name: 'WhatsApp call', full: 'WhatsApp call', needsWhatsApp: true },
 ];
 let slackSignedInForLinks = false;
 // The calling app this bot answers (connected AND switched on), for the end of
@@ -3243,7 +3247,8 @@ async function refreshAnswersForLinks() {
   renderLinkProviders();
 }
 function renderLinkProviders() {
-  const usable = LINK_PROVIDERS.filter((p) => !p.needsSignIn || slackSignedInForLinks);
+  const usable = LINK_PROVIDERS.filter((p) => (!p.needsSignIn || slackSignedInForLinks)
+    && (!p.needsWhatsApp || !!callingAccountsForLinks.whatsapp));
   const row = document.getElementById('linkProviders');
   if (row) {
     row.textContent = '';

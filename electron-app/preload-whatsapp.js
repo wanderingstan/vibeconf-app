@@ -160,6 +160,7 @@ function newestFromCaller(messages) {
 }
 ipcRenderer.on(CALL_COMMANDS.readChat, (_e, { requestId }) => {
   if (state !== 'in-call') { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'not in a WhatsApp call' }); return; }
+  if (!caller) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'A WhatsApp call-link call has no chat' }); return; }
   try {
     const messages = chatMessages();
     lastReadChatId = newestFromCaller(messages);
@@ -168,7 +169,8 @@ ipcRenderer.on(CALL_COMMANDS.readChat, (_e, { requestId }) => {
   } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
 });
 ipcRenderer.on(CALL_COMMANDS.sendChat, async (_e, { requestId, text }) => {
-  if (state !== 'in-call' || !caller || !caller.peerJid) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'not in a WhatsApp call' }); return; }
+  if (state !== 'in-call') { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'not in a WhatsApp call' }); return; }
+  if (!caller || !caller.peerJid) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'A WhatsApp call-link call has no chat' }); return; }
   try {
     await whatsappCall.sendChatMessage(window, caller.peerJid, text);
     console.log('[whatsapp] sent a chat message to', caller.name || caller.phone);
@@ -256,13 +258,54 @@ async function decide(call) {
   state = 'answering';
 }
 
+// A call link (#891): main opened it in this view, so this page IS the
+// pre-join screen. Press "Join call" once; the page then returns to the main
+// app with the call live, which the heartbeat below picks up.
+let joinPressed = false;
+function joinCallLinkPage() {
+  if (!/^\/call\/(video|voice)\//.test(location.pathname) || joinPressed) return false;
+  const btn = whatsappCall.findJoinCallButton(document);
+  if (!btn) return true; // still drawing
+  joinPressed = true;
+  console.log('[whatsapp] joining the call link');
+  btn.click();
+  return true;
+}
+
+let linkRoster = '';
 function tick() {
   dismissWhatsNew();
+  if (joinCallLinkPage()) return;
   let call;
   try { call = whatsappCall.readCall(window); } catch { return; }
 
+  // A call link the bot joined: a group call, not an answered caller. In the
+  // call once connected; everyone else in it, by name, is the roster.
+  if (call.isCallLink) {
+    if (call.phase === 'active' && state !== 'in-call') {
+      state = 'in-call';
+      caller = null; // no 1:1 chat on a link call
+      emit(CALL_EVENTS.statusUpdate, 'In call (WhatsApp)');
+      emit(CALL_EVENTS.botJoinedCall, { meetCode: '', botName });
+      console.log('[whatsapp] in the call-link call');
+      setMicMuted(false);
+    }
+    if (state === 'in-call') {
+      const roster = JSON.stringify(call.participants || []);
+      if (roster !== linkRoster) {
+        linkRoster = roster;
+        emit(CALL_EVENTS.participantsUpdated, [
+          ...(call.participants || []).map((n) => ({ name: n, speaking: false, isSelf: false })),
+          { name: botName || 'Bot', speaking: false, isSelf: true },
+        ]);
+      }
+    }
+    return;
+  }
+
   if (call.phase === 'none') {
     if (state === 'in-call') {
+      linkRoster = '';
       reportSharing(false);
       console.log('[whatsapp] call ended');
       emit(CALL_EVENTS.statusUpdate, 'Call ended: the WhatsApp call was hung up');

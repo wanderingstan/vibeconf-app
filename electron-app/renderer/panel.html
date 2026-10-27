@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="fonts.css" />
   <link rel="stylesheet" href="ui-icons.css" />
   <link rel="stylesheet" href="panel.css" />
+  <link rel="stylesheet" href="provider-logos.css" />
 </head>
 <body>
   <!-- Main Screen -->
@@ -143,6 +144,12 @@
                  icon carries .join-caret so CSS rotates IT, not the button pill. -->
             <button id="manualUrlToggle" class="join-more" aria-expanded="false" title="Add the bot to a call that's already running. Paste its meeting link, or the whole invite"><i class="ui-icon ui-icon-plus join-caret"></i></button>
           </div>
+          <!-- How to reach this bot, at a glance, under the button and link box:
+               the platforms whose links it can join (what the link box's
+               placeholder lists; Slack only while signed in, a guest can't join
+               a huddle), then the calling app it answers, if one is connected
+               and switched on. panel.js renderLinkProviders(). -->
+          <div class="link-providers" id="linkProviders" aria-label="How to reach this bot"></div>
           </div>
 
           <!-- IN-CALL: the same footprint as the pre-call controls, in the same

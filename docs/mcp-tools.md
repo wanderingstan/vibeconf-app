@@ -8,7 +8,7 @@ Call-scoped tools accept an optional `room_id` argument, falling back to `VIBECO
 
 | Tool | What |
 |---|---|
-| **`join_call`** | Join a call: a Google Meet (the **meet code** `xxx-xxxx-xxx` or the full URL), a **Slack huddle** (the huddle URL), a **Zoom** meeting (the `zoom.us/j/…` link) or a **Microsoft Teams** meeting (the `teams.live.com/meet/…` link). Optional `bot_name` routes to a running profile; `force` rebuilds a wedged session (tears down a working call — default false makes repeat joins a no-op). |
+| **`join_call`** | Join a call: a Google Meet (the **meet code** `xxx-xxxx-xxx` or the full URL), a **Slack huddle** (the huddle URL), a **Zoom** meeting (the `zoom.us/j/…` link), a **Microsoft Teams** meeting (the `teams.live.com/meet/…` link) or a **WhatsApp call link** (`call.whatsapp.com/…`, the bot signed in to WhatsApp). Optional `bot_name` routes to a running profile; `force` rebuilds a wedged session (tears down a working call — default false makes repeat joins a no-op). |
 | **`leave_call`** | Hang up. If after-call work is enabled the bot enters that phase rather than shutting down; the reply says so. |
 | **`end_session`** | Finish after-call work and release the app. Call it as soon as the wrap-up is done — the app holds the room, transcript and terminal open until you do. |
 | **`get_room_info`** | The primary "what's happening" query. Returns participants, speaker state, sharing status, errors, detected Meet URLs (when not in a call), local server URL, profile name, session log path. Call this first whenever you're unsure of state. |

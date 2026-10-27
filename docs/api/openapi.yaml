@@ -2,7 +2,7 @@ openapi: 3.1.0
 info:
   title: Vibeconferencing Local API
   version: 0.8.64
-  summary: One HTTP API that puts a participant into Google Meet, Zoom, Microsoft Teams and Slack huddles, and answers Telegram, WhatsApp and phone calls.
+  summary: One HTTP API that puts a participant into Google Meet, Zoom, Microsoft Teams, Slack huddles and WhatsApp call links, and answers Telegram, WhatsApp and phone calls.
   description: |
     Vibeconferencing is a calling API and a desktop app that uses it.
 
@@ -18,16 +18,15 @@ info:
 
     Two kinds of call share the same endpoints:
 
-    - **Meetings the bot joins.** Google Meet, Zoom, Microsoft Teams and
-      Slack huddles. You send a join action with the link; the bot clicks
-      through pre-join and waits to be admitted.
+    - **Meetings the bot joins.** Google Meet, Zoom, Microsoft Teams, Slack
+      huddles and WhatsApp call links. You send a join action with the link;
+      the bot clicks through pre-join and waits to be admitted.
     - **Calls the bot answers.** Telegram, WhatsApp and a real phone number
       (through Twilio). Someone calls the bot; it picks up, if the caller is
       on its allowlist. These rooms exist only while the call is live, so
       they cannot be joined or rejoined from the API.
 
-    In progress and planned: joining WhatsApp calls by call link, FaceTime
-    links, and answering Discord calls.
+    Planned: FaceTime links, and answering Discord calls.
 
     ## Base URL and discovery
 
@@ -65,9 +64,9 @@ info:
     Responses are JSON. Success is `{"success": true, ...}`; failure is
     `{"success": false, "error": "<message>"}` with a 4xx or 5xx status. Room
     ids name the call: a Meet code (`abc-defg-hij`), or `zoom-<meeting>`,
-    `teams-<id>`, `slack-<team>-<channel>`, and for answered calls
-    `telegram-<user id>`, `whatsapp-<number>`, `phone-<number>`. Timestamps
-    are ISO 8601.
+    `teams-<id>`, `slack-<team>-<channel>`, `whatsapp-link-<token>`, and for
+    answered calls `telegram-<user id>`, `whatsapp-<number>`, `phone-<number>`.
+    Timestamps are ISO 8601.
 
     ## The loop
 
@@ -324,6 +323,14 @@ paths:
                   role: bot
                   whiteboard:
                     content: "# Options\n\n1. Ship Friday\n2. Ship Monday with the fix\n3. Split the release\n\n```mermaid\nflowchart LR\n  A[Decide] --> B[Ship]\n```"
+              joinWhatsApp:
+                summary: Join a WhatsApp call link
+                value:
+                  sender: my-agent
+                  role: bot
+                  meta:
+                    action: join-whatsapp
+                    url: https://call.whatsapp.com/video/AbCdEfGhIjKlMnOp
               join:
                 summary: Join a Zoom call
                 value:
@@ -1184,7 +1191,7 @@ components:
       required: true
       description: |
         The call. A Meet code (`abc-defg-hij`), or `zoom-<meeting>`,
-        `teams-<id>`, `slack-<team>-<channel>`; for a call the bot answered,
+        `teams-<id>`, `slack-<team>-<channel>`, `whatsapp-link-<token>`; for a call the bot answered,
         `telegram-<user id>`, `whatsapp-<number>` or `phone-<number>` (read it
         from `roomId` in the status). Lowercase letters, digits and hyphens.
         If the bot has no room yet, the first request's id becomes its room,
@@ -1436,6 +1443,7 @@ components:
           join-zoom: "#/components/schemas/JoinByUrl"
           join-teams: "#/components/schemas/JoinByUrl"
           join-slack: "#/components/schemas/JoinByUrl"
+          join-whatsapp: "#/components/schemas/JoinByUrl"
           leave: "#/components/schemas/Bare"
           end-session: "#/components/schemas/Bare"
           share-whiteboard: "#/components/schemas/ShareWhiteboard"
@@ -1496,11 +1504,11 @@ components:
 
     JoinByUrl:
       type: object
-      title: join-zoom / join-teams / join-slack
-      description: Join by the platform's own link. Zoom handles the waiting room; Teams the guest lobby; Slack needs the app signed in to that workspace. There is no join for Telegram, WhatsApp or phone; the bot answers those when called.
+      title: join-zoom / join-teams / join-slack / join-whatsapp
+      description: "Join by the platform's own link. Zoom handles the waiting room; Teams the guest lobby; Slack needs the app signed in to that workspace; WhatsApp takes a `call.whatsapp.com/video|voice/<token>` link and needs the bot signed in to WhatsApp (the room becomes `whatsapp-link-<token>`). There is no join for Telegram, phone, or a WhatsApp call to the bot's own number; the bot answers those when called."
       required: [action, url]
       properties:
-        action: { type: string, enum: [join-zoom, join-teams, join-slack] }
+        action: { type: string, enum: [join-zoom, join-teams, join-slack, join-whatsapp] }
         url: { type: string, format: uri }
 
     Bare:

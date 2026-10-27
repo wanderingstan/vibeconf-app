@@ -122,7 +122,7 @@ Parameters:
 
 | Name | In | Type | |
 | --- | --- | --- | --- |
-| `roomId` (required) | path | string | The call. A Meet code (`abc-defg-hij`), or `zoom-<meeting>`, `teams-<id>`, `slack-<team>-<channel>`; for a call the bot answered, `telegram-<user id>`, `whatsapp-<number>` or `phone-<number>` (read it from `roomId` in the status). Lowercase letters, digits and hyphens. If the bot has no room yet, the first request's id becomes its room, except an answered-call id, which returns 410. |
+| `roomId` (required) | path | string | The call. A Meet code (`abc-defg-hij`), or `zoom-<meeting>`, `teams-<id>`, `slack-<team>-<channel>`, `whatsapp-link-<token>`; for a call the bot answered, `telegram-<user id>`, `whatsapp-<number>` or `phone-<number>` (read it from `roomId` in the status). Lowercase letters, digits and hyphens. If the bot has no room yet, the first request's id becomes its room, except an answered-call id, which returns 410. |
 | `since` | query | string | Cursor. Return entries after this ISO timestamp. Omit for everything the bot has. |
 | `wait` | query | integer | Seconds to block for speech. `0` or absent returns now. Clamped to the bot's `defaultMaxWaitForSpeechSec` preference. |
 | `silence` | query | number | Seconds of quiet that count as "finished speaking". Minimum 1. Defaults to the `defaultSilenceSeconds` preference (1.4). |
@@ -167,7 +167,7 @@ Parameters:
 
 | Name | In | Type | |
 | --- | --- | --- | --- |
-| `roomId` (required) | path | string | The call. A Meet code (`abc-defg-hij`), or `zoom-<meeting>`, `teams-<id>`, `slack-<team>-<channel>`; for a call the bot answered, `telegram-<user id>`, `whatsapp-<number>` or `phone-<number>` (read it from `roomId` in the status). Lowercase letters, digits and hyphens. If the bot has no room yet, the first request's id becomes its room, except an answered-call id, which returns 410. |
+| `roomId` (required) | path | string | The call. A Meet code (`abc-defg-hij`), or `zoom-<meeting>`, `teams-<id>`, `slack-<team>-<channel>`, `whatsapp-link-<token>`; for a call the bot answered, `telegram-<user id>`, `whatsapp-<number>` or `phone-<number>` (read it from `roomId` in the status). Lowercase letters, digits and hyphens. If the bot has no room yet, the first request's id becomes its room, except an answered-call id, which returns 410. |
 
 Request body (`application/json`):
 
@@ -197,6 +197,19 @@ Example (Write the board):
   "role": "bot",
   "whiteboard": {
     "content": "# Options\n\n1. Ship Friday\n2. Ship Monday with the fix\n3. Split the release\n\n```mermaid\nflowchart LR\n  A[Decide] --> B[Ship]\n```"
+  }
+}
+```
+
+Example (Join a WhatsApp call link):
+
+```json
+{
+  "sender": "my-agent",
+  "role": "bot",
+  "meta": {
+    "action": "join-whatsapp",
+    "url": "https://call.whatsapp.com/video/AbCdEfGhIjKlMnOp"
   }
 }
 ```
@@ -927,11 +940,11 @@ Join a Google Meet. The bot clicks through pre-join, then waits to be admitted. 
 
 ### JoinByUrl
 
-Join by the platform's own link. Zoom handles the waiting room; Teams the guest lobby; Slack needs the app signed in to that workspace. There is no join for Telegram, WhatsApp or phone; the bot answers those when called.
+Join by the platform's own link. Zoom handles the waiting room; Teams the guest lobby; Slack needs the app signed in to that workspace; WhatsApp takes a `call.whatsapp.com/video|voice/<token>` link and needs the bot signed in to WhatsApp (the room becomes `whatsapp-link-<token>`). There is no join for Telegram, phone, or a WhatsApp call to the bot's own number; the bot answers those when called.
 
 | Field | Type | |
 | --- | --- | --- |
-| `action` (required) | `join-zoom` or `join-teams` or `join-slack` |  |
+| `action` (required) | `join-zoom` or `join-teams` or `join-slack` or `join-whatsapp` |  |
 | `url` (required) | string |  |
 
 ### Bare

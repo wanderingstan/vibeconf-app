@@ -9,22 +9,23 @@ endpoint works as documented; anything else says how it falls short.
 You send a join action with the link; the bot clicks through the
 platform's pre-join and waits to be admitted.
 
-| | Google Meet | Zoom | Microsoft Teams | Slack huddles |
-| --- | --- | --- | --- | --- |
-| Join | `join` with a Meet code or URL | `join-zoom` with a `zoom.us/j/…` link, passcode included | `join-teams` with a `teams.live.com/meet/…` or `teams.microsoft.com/…` link | `join-slack` with the huddle URL |
-| Admission | The host admits the bot | Waiting room, when the meeting has one | Guest lobby, an organizer admits | The app must be signed in to the workspace |
-| Create a new call | `POST /api/call/start` | | | |
-| Hearing (captions) | Yes | Yes | Yes | Yes |
-| `set-caption-language` | Yes | Returns `ok: false`, not wired yet | Returns `ok: false`, not wired yet | No caption language to set |
-| Speak | Yes | Yes | Yes | Yes |
-| Chat read and send | Yes | Yes | Yes | Yes, the huddle thread |
-| Camera on and off | Yes | Yes | Yes | Yes |
-| Screen share (board or URL) | Yes | Yes | Yes | Yes |
-| Share audio mute | Yes | Yes | Not handled | Not handled |
-| See others' shares | Yes | Yes | Yes | No |
-| Studio sound | Yes | No | No | No |
-| Record | Yes, one track per participant | Yes | Yes | Yes |
-| Reactions | No platform has a reactions endpoint | | | |
+| | Google Meet | Zoom | Microsoft Teams | Slack huddles | WhatsApp call link |
+| --- | --- | --- | --- | --- | --- |
+| Join | `join` with a Meet code or URL | `join-zoom` with a `zoom.us/j/…` link, passcode included | `join-teams` with a `teams.live.com/meet/…` or `teams.microsoft.com/…` link | `join-slack` with the huddle URL | `join-whatsapp` with a `call.whatsapp.com/video\|voice/…` link |
+| Admission | The host admits the bot | Waiting room, when the meeting has one | Guest lobby, an organizer admits | The app must be signed in to the workspace | The bot must be signed in to WhatsApp |
+| Room id | the Meet code | `zoom-<meeting>` | `teams-<id>` | `slack-<team>-<channel>` | `whatsapp-link-<token>` |
+| Create a new call | `POST /api/call/start` | | | | |
+| Hearing | Captions | Captions | Captions | Captions | On-device transcription |
+| `set-caption-language` | Yes | Returns `ok: false`, not wired yet | Returns `ok: false`, not wired yet | No caption language to set | No captions |
+| Speak | Yes | Yes | Yes | Yes | Yes |
+| Chat read and send | Yes | Yes | Yes | Yes, the huddle thread | The 1:1 chat |
+| Camera on and off | Yes | Yes | Yes | Yes | Yes |
+| Screen share (board or URL) | Yes | Yes | Yes | Yes | Yes, the board |
+| Share audio mute | Yes | Yes | Not handled | Not handled | Not handled |
+| See others' shares | Yes | Yes | Yes | No | No |
+| Studio sound | Yes | No | No | No | No |
+| Record | Yes, one track per participant | Yes | Yes | Yes | Yes |
+| Reactions | No platform has a reactions endpoint | | | | |
 
 Zoom and Teams are newer than Meet and Slack and are marked experimental in
 the app. The share-automation actions (`share-click`, `share-type`,
@@ -54,10 +55,8 @@ These three have no captions, so the bot hears them through the app's own
 speech-to-text rather than by reading the platform's captions. That is
 the `captions: false` case in `call-provider.js`.
 
-## In progress and planned
+## Planned
 
-- **WhatsApp call links**, so WhatsApp lands in both tables: a call the bot
-  joins by link, as well as one it answers. In progress on a branch.
 - **FaceTime** links, a call the bot joins. Planned.
 - **Discord**, a call the bot answers. Planned.
 

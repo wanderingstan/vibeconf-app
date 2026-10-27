@@ -8,15 +8,15 @@ it, the app drives each platform's own web client, so whatever you build
 shows up in the call as a normal participant: a tile with a name and a face,
 a microphone, a camera, chat, screen share. Your code never touches WebRTC,
 captions or anyone's DOM. It joins, listens, speaks and shares through the
-same few endpoints whether the call is on Google Meet, Zoom, Microsoft Teams
-or a Slack huddle, and the same endpoints carry a Telegram, WhatsApp or
-phone call that the bot has answered.
+same few endpoints whether the call is on Google Meet, Zoom, Microsoft Teams,
+a Slack huddle or a WhatsApp call link, and the same endpoints carry a
+Telegram, WhatsApp or phone call that the bot has answered.
 
 Think OpenRouter, for calls. One request shape, many providers behind it.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="../../media/api-layers-dark.svg">
-  <img alt="Layer diagram. Top row, your code: Claude Code and Codex via MCP, curl, your app in any language, the API explorer. All feed one band, the local API at http://127.0.0.1:7865 with a bearer token and JSON: join, wait for speech, speak, chat, whiteboard, share, camera, mode, record. Below it the app drives each platform's own web client as a participant: meetings the bot joins (Google Meet, Zoom, Microsoft Teams, Slack huddles) and calls the bot answers (Telegram, WhatsApp, a phone number through Twilio; Discord planned); WhatsApp call links and FaceTime are marked as in progress and planned under meetings the bot joins. Bottom row, what the room sees: a tile with a name and a face, a microphone that speaks, a camera with an avatar or a board, chat messages, a screen share." src="../../media/api-layers-light.svg">
+  <img alt="Layer diagram. Top row, your code: Claude Code and Codex via MCP, curl, your app in any language, the API explorer. All feed one band, the local API at http://127.0.0.1:7865 with a bearer token and JSON: join, wait for speech, speak, chat, whiteboard, share, camera, mode, record. Below it the app drives each platform's own web client as a participant: meetings the bot joins (Google Meet, Zoom, Microsoft Teams, Slack huddles) and meetings the bot joins also include WhatsApp call links, with FaceTime planned; calls the bot answers (Telegram, WhatsApp, a phone number through Twilio; Discord planned). Bottom row, what the room sees: a tile with a name and a face, a microphone that speaks, a camera with an avatar or a board, chat messages, a screen share." src="../../media/api-layers-light.svg">
 </picture>
 
 | Where to go | What it is |
@@ -46,8 +46,8 @@ curl -s http://127.0.0.1:7864/api/instances
 
 **One room, one long-poll.** A call is a room, named by the platform:
 a Meet code like `abc-defg-hij`, or `zoom-<meeting>`, `teams-<id>`,
-`slack-<team>-<channel>`, `telegram-<user id>`, `whatsapp-<number>`,
-`phone-<number>`. Everything that happens in a room is read through one
+`slack-<team>-<channel>`, `whatsapp-link-<token>`, `telegram-<user id>`,
+`whatsapp-<number>`, `phone-<number>`. Everything that happens in a room is read through one
 endpoint, and everything the bot does in it is written through the same
 path with POST.
 
@@ -129,8 +129,8 @@ curl -s "${H[@]}" -X POST $API -d '{"sender":"me","role":"bot","meta":{"action":
 curl -s "${H[@]}" -X POST $API -d '{"sender":"me","role":"bot","meta":{"action":"leave"}}'
 ```
 
-Swap the join action for `join-zoom`, `join-teams` or `join-slack` with a
-`url`, and nothing else changes.
+Swap the join action for `join-zoom`, `join-teams`, `join-slack` or
+`join-whatsapp` with a `url`, and nothing else changes.
 
 ## The loop
 
@@ -160,7 +160,7 @@ for. The actions:
 
 | Action | Does |
 | --- | --- |
-| `join`, `join-zoom`, `join-teams`, `join-slack` | Join a meeting. |
+| `join`, `join-zoom`, `join-teams`, `join-slack`, `join-whatsapp` | Join a meeting or a call link. |
 | `leave`, `end-session` | Hang up; finish after-call work and release the app. |
 | `share-whiteboard`, `stop-sharing`, `load-url`, `share-tab` | Present the board or any URL; share a Chrome tab (macOS). |
 | `scroll-share`, `set-share-size`, `set-share-title-bar`, `set-share-audio` | Shape the share. |

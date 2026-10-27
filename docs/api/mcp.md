@@ -27,7 +27,7 @@ the bot with that profile or name, using the directory.
 
 | Tool | Endpoint |
 | --- | --- |
-| `join_call` | `POST room` with `meta.action` = `join` (Meet), `join-zoom`, `join-teams` or `join-slack`, picked from the link. Locks the bot name for the call. |
+| `join_call` | `POST room` with `meta.action` = `join` (Meet), `join-zoom`, `join-teams`, `join-slack` or `join-whatsapp`, picked from the link. Locks the bot name for the call. |
 | `start_call` | `POST /api/call/start` |
 | `leave_call` | `POST room` `meta.action: leave` |
 | `end_session` | `POST room` `meta.action: end-session` |

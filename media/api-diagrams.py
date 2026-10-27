@@ -203,7 +203,7 @@ def layers(T):
     c.eyebrow(rx + rw, 130, 'MEETINGS THE BOT JOINS', 'POST a join action with the link', anchor='end')
     joins = [('Google Meet', 'Google Meet', 'join by code or link', False), ('Zoom', 'Zoom', 'join by link', False),
              ('Microsoft Teams', 'Microsoft Teams', 'join by link, lobby', False), ('Slack Huddles', 'Slack huddles', 'join by huddle URL', False),
-             ('WhatsApp', 'WhatsApp', 'call links, in progress', True), ('FaceTime', 'FaceTime', 'planned', True)]
+             ('WhatsApp', 'WhatsApp', 'join by call link', False), ('FaceTime', 'FaceTime', 'planned', True)]
     ys1 = stack(160, joins)
     c.eyebrow(rx + rw, 556, 'CALLS THE BOT ANSWERS', 'Someone calls the bot; it picks up', anchor='end')
     answers = [('Telegram', 'Telegram', 'audio, chat', False), ('WhatsApp', 'WhatsApp', 'audio, video, share, chat', False),

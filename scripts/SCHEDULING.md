@@ -414,10 +414,40 @@ folder per person instead, set `VIBECONF_SYNC_OWNER=stan` (layout becomes
    archive folder's Drive id (`1G2Xgeo0ds0xb4ZWPxPa84YSycOUoKbHs` today):
    rclone is re-rooted there for the copy, nothing in its config changes.
 
-With neither configured the run exits 2 and says so.
+3. `VIBECONF_SYNC_SSH_DEST` — `host:/absolute/path` on another machine,
+   reached with `rsync` over ssh. Wins over the other two when set. This is how
+   Stan's laptop archives: calls go to the Mac mini's 14 TB disk, and the mini
+   uploads them to Drive (below). Laptops should use this rather than the
+   Drive folder: the Drive desktop app keeps a local copy of everything copied
+   into its folder and uploads multi-GB videos slowly, so the disk fills twice
+   over and the app's other syncing stalls behind the queue.
+
+       VIBECONF_SYNC_SSH_DEST=vibeconf-mini:/Volumes/Stan-Exos14-Archive/VibeArchive/vibeconf-call-archives-drive
+       VIBECONF_SYNC_PRUNE_AFTER_VERIFY=1
+       VIBECONF_SYNC_PROFILES=*
+
+   With `VIBECONF_SYNC_PRUNE_AFTER_VERIFY=1` (or `--prune`), each recording
+   (`.mp4`, `.webm`, …) is sha256-hashed on both machines after the copy, and
+   the local file is deleted only if the hashes match. Transcripts, summaries
+   and logs stay put; what was pruned is listed in the call's
+   `.drive-sync.json`. A file that doesn't verify is kept and the call is
+   reported `FAILED` every run until it does. Pruning is refused with the other
+   two backends.
+
+With none configured the run exits 2 and says so.
+
+**On the mini: archive disk → Drive.** `scripts/push-archive-to-drive.sh`
+runs `rclone copy --ignore-existing` from
+`/Volumes/Stan-Exos14-Archive/VibeArchive/vibeconf-call-archives-drive` to
+the archive folder (via `--drive-root-folder-id`). It never deletes anything,
+on Drive or on the disk, which stays as the backup. Install it on the mini:
+
+    cp scripts/com.vibeconf.push-archive.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.vibeconf.push-archive.plist
+    tail /tmp/vibeconf-push-archive.out
 
 **What gets copied:** profiles listed in `VIBECONF_SYNC_PROFILES` (default
-`Default`; `--all-profiles` for everything, test fleets included). A call is
+`Default`; `*` or `--all-profiles` for everything, test fleets included). A call is
 only picked up once nothing in its folder has changed for
 `VIBECONF_SYNC_MIN_AGE_MIN` minutes (default 10) — a merge still running or a
 summary still being written holds it back. A folder that gains files later (the

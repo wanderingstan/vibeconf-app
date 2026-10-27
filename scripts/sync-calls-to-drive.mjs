@@ -47,8 +47,24 @@
 //      passed as --drive-root-folder-id, which re-roots the remote at that
 //      folder for this command only, and the archive path is then "" (the
 //      root itself). No rclone reconfiguration needed.
-//   With neither configured it exits 2 and says so; it never silently does
+//   3. ssh (VIBECONF_SYNC_SSH_DEST="host:/abs/path", or --ssh-dest): rsync
+//      over ssh to another machine's disk — the Mac mini's 14 TB archive
+//      drive — which then pushes to Drive with rclone on its own timer
+//      (scripts/push-archive-to-drive.sh). Takes precedence over the other
+//      two when set. The only backend that can PRUNE (below).
+//   With none configured it exits 2 and says so; it never silently does
 //   nothing.
+//
+// PRUNING (VIBECONF_SYNC_PRUNE_AFTER_VERIFY=1, or --prune; ssh backend only):
+// WHY: a laptop recording a few calls a day fills its disk, and the Drive
+// desktop app copying multi-GB videos into its own local cache made that
+// worse, not better. After a call is copied, each recording file (mp4, webm,
+// …: PRUNE_EXTENSIONS) is sha256-hashed here and on the remote; only a file
+// whose hashes match is deleted locally. Transcripts, summaries and logs are
+// kept, so the agent still has the call's history. A mismatch or a missing
+// remote file keeps the local copy and fails the call loudly. Pruning is
+// refused for the Drive-folder backend (a copy into the Drive app's folder
+// proves nothing about Drive) and for rclone (not implemented — use ssh).
 //
 // CONFIGURATION lives in ~/.config/vibeconf/sync-calls.env (KEY=VALUE lines,
 // read by this script itself), not in a shell profile: launchd runs a
@@ -75,7 +91,7 @@
 //   node scripts/sync-calls-to-drive.mjs [--dry-run] [--status] [--verbose]
 //        [--profiles Default,dev | --all-profiles] [--min-age-min N]
 //        [--dest /path/to/synced/archive] [--remote "Name:path"] [--owner stan]
-//        [--root-folder-id <Drive folder id>]
+//        [--root-folder-id <Drive folder id>] [--ssh-dest host:/path] [--prune]
 //   Config file: ~/.config/vibeconf/sync-calls.env (VIBECONF_* KEY=VALUE lines)
 //
 // Install the timer: see scripts/com.vibeconf.sync-calls.plist and
@@ -114,6 +130,11 @@ export const DEFAULTS = {
   rcloneArchivePath: 'vibeconf-call-archives',
   markerFile: '.drive-sync.json',
 };
+
+// What --prune deletes once verified: the recordings, which are nearly all of
+// a call's bytes. Everything else (transcripts, summary, logs, manifests)
+// stays on disk because the agent reads it.
+export const PRUNE_EXTENSIONS = ['.mp4', '.webm', '.mkv', '.mov', '.m4a', '.wav', '.ogg', '.opus'];
 
 // ---- pure helpers (unit-tested in tests/sync-calls-to-drive.test.mjs) ----
 
@@ -220,13 +241,19 @@ export function readMarker(callDir, markerFile = DEFAULTS.markerFile) {
 // between "<bot>" and "<bot>-HHMM"; an owner prefix was added). The marker
 // itself is excluded from the walk by being written AFTER newestMtime is
 // taken, and by the exclude on copy.
-export function needsSync(callDir, markerFile = DEFAULTS.markerFile, rel = null) {
+//
+// `root`: the backend's destination root (see destinationRoot). A call synced
+// to the Drive folder has NOT been synced to the mini; without this, switching
+// backends would leave every already-synced call behind. A marker with no
+// `root` (older script) counts as a different root: one extra pass.
+export function needsSync(callDir, markerFile = DEFAULTS.markerFile, rel = null, root = null) {
   const marker = readMarker(callDir, markerFile);
   const newest = newestMtimeExcluding(callDir, markerFile);
   if (!marker || !Number.isFinite(marker.newestMtime)) return true;
   // A marker with no `rel` predates this check: one extra pass (cheap — the
   // copies skip what's there) beats guessing where it went.
   if (rel && marker.rel !== rel) return true;
+  if (root && marker.root !== root) return true;
   return newest > marker.newestMtime;
 }
 
@@ -271,7 +298,12 @@ function safeReaddir(d) { try { return fs.readdirSync(d); } catch { return []; }
 
 // Which backend, given the environment. Returns { kind: 'rsync'|'rclone', ... }
 // or { kind: 'none', reason }.
-export function pickBackend({ dest, remote, archivePath, haveRclone, rcloneRemotes, rootFolderId = null }) {
+export function pickBackend({ dest, remote, archivePath, haveRclone, rcloneRemotes, rootFolderId = null, sshDest = null }) {
+  if (sshDest) {
+    const m = /^([^:/\s]+):(\/.*)$/.exec(sshDest);
+    if (!m) return { kind: 'none', reason: `ssh destination must be host:/absolute/path, got: ${sshDest}` };
+    return { kind: 'ssh', host: m[1], dest: m[2].replace(/\/+$/, '') };
+  }
   if (dest) {
     if (!fs.existsSync(dest)) return { kind: 'none', reason: `archive dir does not exist: ${dest}` };
     return { kind: 'rsync', dest };
@@ -307,8 +339,12 @@ function parseArgs(argv) {
     archivePath: process.env.VIBECONF_RCLONE_ARCHIVE_PATH || DEFAULTS.rcloneArchivePath,
     owner: process.env.VIBECONF_SYNC_OWNER || null,
     rootFolderId: process.env.VIBECONF_RCLONE_ROOT_FOLDER_ID || null,
+    sshDest: process.env.VIBECONF_SYNC_SSH_DEST || null,
+    prune: /^(1|true|yes)$/i.test(process.env.VIBECONF_SYNC_PRUNE_AFTER_VERIFY || ''),
     profilesRoot: defaultProfilesRoot(),
   };
+  // "*" in the config file means every profile (test fleets come and go).
+  if (o.profiles.includes('*')) o.allProfiles = true;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i];
@@ -322,6 +358,8 @@ function parseArgs(argv) {
     else if (a === '--remote') o.remote = next();
     else if (a === '--owner') o.owner = next();
     else if (a === '--root-folder-id') o.rootFolderId = next();
+    else if (a === '--ssh-dest') o.sshDest = next();
+    else if (a === '--prune') o.prune = true;
     else if (a === '--profiles-root') o.profilesRoot = next();
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
     else { console.error(`unknown argument: ${a}`); printHelp(); process.exit(1); }
@@ -342,7 +380,31 @@ function rcloneRemotesOnPath() {
   }
 }
 
+// The ssh program, overridable so the tests can stand a local directory in
+// for the remote host (see tests/sync-calls-to-drive.test.mjs).
+const sshCmd = () => process.env.VIBECONF_SYNC_SSH_CMD || 'ssh';
+const SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=20'];
+const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
+
+function sshRun(host, script, verbose) {
+  if (verbose) console.log(`  $ ${sshCmd()} ${host} ${script}`);
+  const r = spawnSync(sshCmd(), [...SSH_OPTS, host, script], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
+  if (r.status !== 0) {
+    const err = (r.stderr || r.stdout || '').trim().split('\n').slice(-5).join('\n');
+    throw new Error(`${sshCmd()} ${host} exited ${r.status}${err ? `: ${err}` : ''}`);
+  }
+  return r.stdout;
+}
+
 function copyCall(backend, callDir, relDest, { dryRun, verbose }) {
+  if (backend.kind === 'ssh') {
+    const target = `${backend.dest}/${relDest}`;
+    if (!dryRun) sshRun(backend.host, `mkdir -p ${shq(target)}`, verbose);
+    // Same flags as the local rsync backend. -e: our ssh, non-interactive so
+    // a launchd run with no agent fails fast instead of hanging on a prompt.
+    const args = ['-rt', '--ignore-existing', '-e', [sshCmd(), ...SSH_OPTS].join(' '), '--exclude', '.DS_Store', '--exclude', DEFAULTS.markerFile, ...(dryRun ? ['-n'] : []), ...(verbose ? ['-v'] : []), callDir + path.sep, `${backend.host}:${target}/`];
+    return run('rsync', args, verbose);
+  }
   if (backend.kind === 'rsync') {
     const target = path.join(backend.dest, relDest);
     if (!dryRun) fs.mkdirSync(target, { recursive: true });
@@ -369,6 +431,60 @@ function run(cmd, args, verbose) {
   }
 }
 
+// Recording files under a call folder, as paths relative to it.
+export function prunableFiles(callDir) {
+  const out = [];
+  const walk = (d) => {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, ent.name);
+      if (ent.isDirectory()) walk(p);
+      else if (ent.isFile() && PRUNE_EXTENSIONS.includes(path.extname(ent.name).toLowerCase())) out.push(path.relative(callDir, p));
+    }
+  };
+  walk(callDir);
+  return out.sort();
+}
+
+function sha256Local(file) {
+  // shasum streams; reading a multi-GB video into node's heap would not.
+  return execFileSync('shasum', ['-a', '256', file], { encoding: 'utf8' }).split(/\s/)[0];
+}
+
+// Hash every recording on both sides; delete the local copy of each one that
+// matches. Returns what was deleted. Throws (after deleting the matches) if
+// any file didn't match, so the call is reported FAILED and retried next run.
+export function verifyAndPrune(backend, callDir, relDest, { verbose } = {}) {
+  const files = prunableFiles(callDir);
+  if (!files.length) return [];
+  const target = `${backend.dest}/${relDest}`;
+  // One round trip: `sync` so the hash is of what is on the platter, then a
+  // hash per file; a missing file prints MISSING instead of failing the batch.
+  const script = `cd ${shq(target)} && sync && for f in ${files.map(shq).join(' ')}; do if [ -f "$f" ]; then shasum -a 256 "$f"; else echo "MISSING  $f"; fi; done`;
+  const remote = new Map();
+  for (const line of sshRun(backend.host, script, verbose).split('\n')) {
+    const m = /^(\S+)\s+\*?(.+)$/.exec(line);
+    if (m) remote.set(m[2], m[1]);
+  }
+  const pruned = [], bad = [];
+  for (const rel of files) {
+    const p = path.join(callDir, rel);
+    const bytes = fs.statSync(p).size;
+    const local = sha256Local(p);
+    if (remote.get(rel) === local) {
+      fs.unlinkSync(p);
+      pruned.push({ file: rel, bytes, sha256: local });
+    } else {
+      bad.push(`${rel} (${remote.get(rel) === 'MISSING' || !remote.has(rel) ? 'not on remote' : 'hash differs'})`);
+    }
+  }
+  if (bad.length) {
+    const err = new Error(`kept ${bad.length} file(s) that did not verify: ${bad.join(', ')}`);
+    err.pruned = pruned;
+    throw err;
+  }
+  return pruned;
+}
+
 export function listProfiles(root, { profiles, allProfiles }) {
   const all = safeReaddir(root).filter((n) => fs.existsSync(path.join(root, n, 'agent', 'calls')));
   return allProfiles ? all : all.filter((n) => profiles.includes(n));
@@ -385,19 +501,24 @@ export function main(argv = process.argv.slice(2)) {
 
   let backend = { kind: 'status' };
   if (!o.status) {
-    const rc = o.dest ? { have: false, remotes: [] } : rcloneRemotesOnPath();
-    backend = pickBackend({ dest: o.dest, remote: o.remote, archivePath: o.archivePath, haveRclone: rc.have, rcloneRemotes: rc.remotes, rootFolderId: o.rootFolderId });
+    const rc = o.dest || o.sshDest ? { have: false, remotes: [] } : rcloneRemotesOnPath();
+    backend = pickBackend({ dest: o.dest, remote: o.remote, archivePath: o.archivePath, haveRclone: rc.have, rcloneRemotes: rc.remotes, rootFolderId: o.rootFolderId, sshDest: o.sshDest });
     if (backend.kind === 'none') {
       console.error(`[${stamp()}] cannot sync: ${backend.reason}`);
       return 2;
     }
+    if (o.prune && backend.kind !== 'ssh') {
+      console.error(`[${stamp()}] cannot prune with the ${backend.kind} backend: only an ssh copy is verified before deleting (set VIBECONF_SYNC_SSH_DEST)`);
+      return 2;
+    }
   }
-  const where = backend.kind === 'rsync' ? backend.dest
+  const where = backend.kind === 'ssh' ? `${backend.host}:${backend.dest}`
+    : backend.kind === 'rsync' ? backend.dest
     : backend.kind === 'rclone' ? `${backend.remote}:${backend.archivePath}${backend.rootFolderId ? ` (root folder ${backend.rootFolderId})` : ''}`
     : '(status only)';
-  console.log(`[${stamp()}] ${o.dryRun ? 'DRY RUN — ' : ''}profiles: ${profiles.join(', ')} → ${where}`);
+  console.log(`[${stamp()}] ${o.dryRun ? 'DRY RUN — ' : ''}profiles: ${profiles.join(', ')} → ${where}${o.prune ? ' (prune after verify)' : ''}`);
 
-  let synced = 0, skippedBusy = 0, upToDate = 0, failed = 0, ignored = 0;
+  let synced = 0, skippedBusy = 0, upToDate = 0, failed = 0, ignored = 0, prunedBytes = 0;
   for (const profile of profiles) {
     const profileDir = path.join(o.profilesRoot, profile);
     const callsDir = path.join(profileDir, 'agent', 'calls');
@@ -411,7 +532,7 @@ export function main(argv = process.argv.slice(2)) {
       if (!rel) { ignored++; if (o.verbose) console.log(`  ignore ${profile}/${callId} (not a call id)`); continue; }
       const marker = readMarker(callDir);
       if (o.status) {
-        const state = !isQuiescent(callDir, o.minAgeMin) ? 'busy' : needsSync(callDir, DEFAULTS.markerFile, rel) ? (marker ? (marker.rel && marker.rel !== rel ? `destination changed (was ${marker.rel})` : 'changed since last sync') : 'never synced') : `synced ${marker.at}`;
+        const state = !isQuiescent(callDir, o.minAgeMin) ? 'busy' : needsSync(callDir, DEFAULTS.markerFile, rel, o.status ? null : where) ? (marker ? (marker.rel && marker.rel !== rel ? `destination changed (was ${marker.rel})` : 'changed since last sync') : 'never synced') : `synced ${marker.at}`;
         console.log(`  ${profile}/${callId} → ${rel}: ${state}`);
         continue;
       }
@@ -420,17 +541,29 @@ export function main(argv = process.argv.slice(2)) {
         if (o.verbose) console.log(`  busy  ${profile}/${callId} (modified in the last ${o.minAgeMin} min)`);
         continue;
       }
-      if (!needsSync(callDir, DEFAULTS.markerFile, rel)) { upToDate++; continue; }
+      // A call that already synced here can still have recordings left to
+      // prune (pruning switched on later, or a file failed to verify).
+      const leftToPrune = o.prune && prunableFiles(callDir).length > 0;
+      if (!needsSync(callDir, DEFAULTS.markerFile, rel, where) && !leftToPrune) { upToDate++; continue; }
       const newest = newestMtimeExcluding(callDir, DEFAULTS.markerFile);
+      const writeMarker = (pruned) => {
+        const prev = readMarker(callDir) || {};
+        fs.writeFileSync(path.join(callDir, DEFAULTS.markerFile), JSON.stringify({
+          at: new Date().toISOString(), backend: backend.kind, destination: `${where}/${rel}`, root: where, rel, newestMtime: newest,
+          ...((prev.pruned || pruned.length) ? { pruned: [...(prev.pruned || []), ...pruned] } : {}),
+        }, null, 2) + '\n');
+      };
       try {
         copyCall(backend, callDir, rel, o);
-        if (!o.dryRun) {
-          fs.writeFileSync(path.join(callDir, DEFAULTS.markerFile), JSON.stringify({
-            at: new Date().toISOString(), backend: backend.kind, destination: `${where}/${rel}`, rel, newestMtime: newest,
-          }, null, 2) + '\n');
+        let pruned = [];
+        if (o.prune && !o.dryRun) {
+          try { pruned = verifyAndPrune(backend, callDir, rel, o); } catch (err) { if (err.pruned) writeMarker(err.pruned); throw err; }
         }
+        if (!o.dryRun) writeMarker(pruned);
         synced++;
-        console.log(`  ${o.dryRun ? 'would sync' : 'synced'} ${profile}/${callId} → ${rel}`);
+        const freed = pruned.reduce((n, f) => n + f.bytes, 0);
+        prunedBytes += freed;
+        console.log(`  ${o.dryRun ? 'would sync' : 'synced'} ${profile}/${callId} → ${rel}${pruned.length ? ` (pruned ${pruned.length} recording(s), ${(freed / 1e9).toFixed(2)} GB)` : ''}`);
       } catch (err) {
         failed++;
         console.error(`  FAILED ${profile}/${callId} → ${rel}: ${err.message}`);
@@ -438,7 +571,7 @@ export function main(argv = process.argv.slice(2)) {
     }
   }
   if (!o.status) {
-    console.log(`[${stamp()}] done: ${synced} synced, ${upToDate} already up to date, ${skippedBusy} still busy, ${failed} failed${ignored ? `, ${ignored} ignored` : ''}`);
+    console.log(`[${stamp()}] done: ${synced} synced, ${upToDate} already up to date, ${skippedBusy} still busy, ${failed} failed${ignored ? `, ${ignored} ignored` : ''}${prunedBytes ? `, ${(prunedBytes / 1e9).toFixed(2)} GB pruned locally` : ''}`);
   }
   return failed ? 1 : 0;
 }

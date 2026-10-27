@@ -33,6 +33,7 @@ import { resolveInstance, joinNameFromRouting } from "./instance-routing.js";
 import { formatCallClock } from './call-time.js';
 import { parseMeetRoomId } from "./meet-room.js";
 import { resolvePortBase, portLayout } from "./port-layout.js";
+import { findLocalImages, rewriteLocalImages } from "./whiteboard-images.js";
 
 // The app's local port block (port-layout.js). 7865 and friends unless
 // VIBECONF_PORT_BASE moves it, which the app does for a second macOS user on
@@ -1565,7 +1566,7 @@ server.tool(
   "load_url",
   "Load an arbitrary web page into the bot's share window in the Google Meet call — a website, localhost app, or dashboard, live (not a markdown board). Present it first with start_share if you're not already sharing; calling this while presenting swaps the live content to this URL. For markdown/Mermaid content, use update_whiteboard instead.",
   {
-    url: z.string().describe("The URL to load into the share window."),
+    url: z.string().describe("The URL to load into the share window. A local file (image, video) can be given as file:///abs/path with spaces percent-encoded (%20); if the app cannot read it you get an error saying why."),
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
   async ({ url, room_id }) => {
@@ -1581,6 +1582,12 @@ server.tool(
       })),
     });
     const data = await resp.json();
+    // A file:// URL the app cannot read is refused by the app with the reason
+    // (e.g. macOS blocking access to an external drive) instead of loading a
+    // blank window and reporting success.
+    if (data.results?.loadUrl?.ok === false) {
+      return { content: [{ type: "text", text: `Error: ${data.results.loadUrl.error}` }] };
+    }
     if (data.success) {
       return { content: [{ type: "text", text: `Share window now showing: ${url}` }] };
     } else {
@@ -1618,12 +1625,14 @@ server.tool(
     // useless for a grid: showing eight backgrounds, or one smiley per emoji
     // set, needs several images laid out in a table. Rewriting in place lets
     // the agent control the layout and use as many as it likes.
+    // Paths with spaces and file:// URLs are handled in whiteboard-images.js.
+    const imageFailures = [];
     if (content) {
-      const localImg = /!\[([^\]]*)\]\((?:file:\/\/)?(\/[^)\s]+)\)/g;
       const seen = new Map();
-      const paths = [...content.matchAll(localImg)].map((m) => m[2]);
-      for (const p of paths) {
-        if (seen.has(p)) continue;
+      const tried = new Set();
+      for (const { path: p } of findLocalImages(content)) {
+        if (tried.has(p)) continue;
+        tried.add(p);
         try {
           const r = await vfetch(`${BASE_URL}/api/whiteboard-asset`, {
             method: "POST",
@@ -1635,13 +1644,15 @@ server.tool(
           // the board then shows a broken image at that spot, which is a
           // visible, findable fault. Silently deleting it looks like the agent
           // simply chose not to show anything.
+          // The reason goes back to the agent in the tool result, so it can say
+          // why rather than describing an image nobody can see.
           if (d.success && d.url) seen.set(p, d.url);
-        } catch { /* leave it as written */ }
+          else imageFailures.push(`${p}: ${d.error || "registration failed"}`);
+        } catch (err) {
+          imageFailures.push(`${p}: could not reach the app to register it (${err.message})`);
+        }
       }
-      if (seen.size) {
-        content = content.replace(localImg, (whole, alt, p) =>
-          (seen.has(p) ? `![${alt}](${seen.get(p)})` : whole));
-      }
+      if (seen.size) content = rewriteLocalImages(content, seen);
     }
 
     if (image_path) {
@@ -1733,7 +1744,12 @@ server.tool(
       // Shipped exactly that way in 0.8.50; see the regression test.
       const fitNote = wb.fitNote || "";
 
-      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).${presenceNote}${fitNote}` }] };
+      const imageNote = imageFailures.length
+        ? ` WARNING: ${imageFailures.length} image(s) could NOT be shown (they appear as broken images): `
+          + imageFailures.join("; ")
+        : "";
+
+      return { content: [{ type: "text", text: `Whiteboard updated (version ${wb.version}).${imageNote}${presenceNote}${fitNote}` }] };
     } else {
       return { content: [{ type: "text", text: `Error: ${data.error || "Failed to update"}` }] };
     }

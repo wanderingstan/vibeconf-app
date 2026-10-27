@@ -49,6 +49,7 @@ const { classifyAgent, agentIsAbsent, AGENT_AWAY_MS } = require('./agent-livenes
 const { isFinished } = require('./call-phase.js');
 const { getRecentSessionLog, getSessionLogPath, sliceCallLines } = require('./session-log.js');
 const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
+const { probeReadable, describeReadError, checkLoadUrlTarget } = require('./local-file-access.js');
 const { makeUtterance, defaultStaleWhen, evaluateStaleness } = require('./utterance.js');
 const { TranscriptActivitySource, StreamActivitySource } = require('./agent-activity.js');
 
@@ -1101,14 +1102,15 @@ class LocalServer {
     if (!path.isAbsolute(absPath)) {
       throw new Error("image_path must be an absolute path");
     }
-    let stat;
+    // Open and read a byte, not just stat(): macOS privacy controls (TCC) let
+    // stat() through and deny open() with EPERM, so a stat-only check
+    // registered a file on a USB drive the app could not read, and the board
+    // silently showed nothing. Fail HERE, where the agent gets the reason.
     try {
-      stat = fs.statSync(absPath);
+      probeReadable(absPath);
     } catch (err) {
-      throw new Error(`image_path not found or not readable: ${absPath}`);
-    }
-    if (!stat.isFile()) {
-      throw new Error(`image_path is not a regular file: ${absPath}`);
+      console.error(ts(), '🖼️  [asset] ❌ refusing to register', absPath, '→', err.message);
+      throw new Error(`image_path ${err.message}`);
     }
     const ext = path.extname(absPath).toLowerCase();
     const mime = ASSET_MIME_TYPES[ext];
@@ -6062,18 +6064,34 @@ class LocalServer {
         res.end('asset not found');
         return;
       }
+      // Open BEFORE sending headers: an open() failure (EPERM from macOS
+      // privacy controls, a drive that was unplugged, a deleted file) used to
+      // arrive as an async stream 'error' after a 200 was already on the wire,
+      // with no listener, so the image just never appeared and nothing said why.
+      let fd;
+      let stat;
       try {
-        const stat = fs.statSync(asset.path);
-        res.writeHead(200, {
-          'Content-Type': asset.mime,
-          'Content-Length': stat.size,
-          'Cache-Control': 'no-store',
-        });
-        fs.createReadStream(asset.path).pipe(res);
+        fd = fs.openSync(asset.path, 'r');
+        stat = fs.fstatSync(fd);
       } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('asset read failed: ' + err.message);
+        if (fd !== undefined) { try { fs.closeSync(fd); } catch {} }
+        const why = describeReadError(err, asset.path);
+        console.error(ts(), '🖼️  [asset] ❌ serve failed', token, '→', why);
+        res.writeHead(err.code === 'ENOENT' ? 404 : 500, { 'Content-Type': 'text/plain' });
+        res.end('asset read failed: ' + why);
+        return;
       }
+      res.writeHead(200, {
+        'Content-Type': asset.mime,
+        'Content-Length': stat.size,
+        'Cache-Control': 'no-store',
+      });
+      const stream = fs.createReadStream(null, { fd });
+      stream.on('error', (err) => {
+        console.error(ts(), '🖼️  [asset] ❌ stream failed mid-response', token, '→', describeReadError(err, asset.path));
+        res.destroy(err);
+      });
+      stream.pipe(res);
       return;
     }
 
@@ -6963,9 +6981,19 @@ class LocalServer {
     }
 
     // Handle load-url command (load arbitrary URL in whiteboard window)
+    // A file:// URL is loaded as-is (the window can show a local image or
+    // video directly), but only after proving the app can read it: a URL the
+    // app cannot open (macOS privacy controls on /Volumes, a typo, an
+    // unencoded space) used to load a blank window and report success.
     if (data.meta?.action === 'load-url' && data.meta.url) {
-      this.onLoadUrl(data.meta.url);
-      results.loadUrl = { ok: true };
+      const check = checkLoadUrlTarget(data.meta.url);
+      if (check.ok) {
+        this.onLoadUrl(data.meta.url);
+        results.loadUrl = { ok: true };
+      } else {
+        console.error(ts(), '[local-server] ❌ load-url refused:', check.error);
+        results.loadUrl = { ok: false, error: check.error };
+      }
     }
 
     // Handle scroll-share command (scroll the shared whiteboard window)

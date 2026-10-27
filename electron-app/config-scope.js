@@ -117,6 +117,15 @@ const APP_LEVEL_KEYS = new Set([
   // preference (same reasoning as the two above), and App Settings is where
   // it needs to be reachable. New pref, nothing to migrate.
   'meetViewSize',
+  // Where this user's whole local port block sits (port-layout.js). It is about
+  // the macOS USER, not any one bot: every bot this user runs, and the app
+  // window's directory, must agree on it, or they could not find each other.
+  // Read once at the very top of main.js, straight from the base config.json
+  // (env VIBECONF_PORT_BASE wins). Deliberately not in the preferences schema:
+  // set_preference is a bot deciding things mid-call, and moving every port
+  // under a running fleet is not that. Not in MIGRATE_KEYS: new, nothing to
+  // promote.
+  'portBase',
 ]);
 
 // The subset of app-level keys the launch migration may auto-promote from a

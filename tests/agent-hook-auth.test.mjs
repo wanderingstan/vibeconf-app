@@ -61,7 +61,9 @@ test('the hook is rewritten when its content changes', () => {
   // There is no version counter, so self-repair depends on this comparison —
   // otherwise everyone keeps the old, unauthenticated hook forever and the fix
   // reaches nobody.
-  assert.match(main, /if \(existing !== AGENT_HOOK_CONTENT\) fs\.writeFileSync\(hookPath, AGENT_HOOK_CONTENT\)/);
+  // (agentHookContent is AGENT_HOOK_CONTENT itself unless the port base moved
+  // the default port; see port-layout.test.mjs.)
+  assert.match(main, /const hookContent = agentHookContent\(defaultPort\);\s*if \(existing !== hookContent\) fs\.writeFileSync\(hookPath, hookContent\)/);
 });
 
 test('the working state still depends on this feed', () => {

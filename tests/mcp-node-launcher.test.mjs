@@ -49,9 +49,15 @@ test('both write sites go through the launcher', () => {
 test('an install written by an older build gets repaired, not left broken', () => {
   // Without `command` in the comparison, everyone who already has a working-by-
   // luck 'node' entry keeps it — including the users who later lose Node.
+  // The comparison lives in claudeMcpEntryNeedsUpdate (agent-integration.js,
+  // unit-tested in port-layout.test.mjs), against an entry built FROM the
+  // launcher.
   const idx = main.indexOf('const needsUpdate =');
   assert.ok(idx > 0, 'needsUpdate check must exist');
   const check = main.slice(idx, main.indexOf(';', idx));
-  assert.match(check, /currentMcp\.command !== nodeLauncher\.command/,
+  assert.match(check, /claudeMcpEntryNeedsUpdate\(currentMcp, desiredMcp\)/);
+  assert.match(main, /const desiredMcp = buildClaudeMcpEntry\(\{\s*launcher: nodeLauncher,/);
+  const fn = main.slice(main.indexOf('function claudeMcpEntryNeedsUpdate'));
+  assert.match(fn.slice(0, fn.indexOf('\n}')), /current\.command !== desired\.command/,
     'the durable config must be rewritten when the command is stale');
 });

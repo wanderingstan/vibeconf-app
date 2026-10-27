@@ -223,7 +223,11 @@ test('APP_LEVEL_KEYS is exactly the decided set (guard against accidental promot
     // sessionBotNames: how the app window names a bot made from a Claude Code
     // session. The app window reads it, not any one bot, and it must show in
     // App Settings (which renders app-level prefs only). New pref.
-    ['agentBackend', 'agentHosting', 'automationProbed', 'calendarFeedSecretUrl', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'cropCallRecording', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'meetViewSize', 'realtimeApiKey', 'remoteLogging', 'sessionBotNames', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
+    // portBase: where this macOS USER's whole local port block sits
+    // (port-layout.js), so a second user on the same Mac neither collides with
+    // nor discovers the first one's bots. Every bot and the app window must
+    // agree on it. Kept out of the schema on purpose. New, nothing to promote.
+    ['agentBackend', 'agentHosting', 'automationProbed', 'calendarFeedSecretUrl', 'claudeIntegrationRemoved', 'codexIntegrationRemoved', 'confirmQuit', 'cropCallRecording', 'dangerousMode', 'keepCallRecordingTracks', 'linuxAgentTmux', 'meetViewSize', 'portBase', 'realtimeApiKey', 'remoteLogging', 'sessionBotNames', 'syncBaseUrl', 'ttsApiKey', 'ttsApiKeySource', 'updateChannel', 'vcSessionLoggedOutToken', 'vcSessionToken', 'websiteUrl'],
   );
 });
 

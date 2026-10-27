@@ -70,7 +70,10 @@ const botChildren = createBotChildren({
 
 const POLL_MS = 60 * 1000;
 const PROBE_TIMEOUT_MS = 350;
-const DEFAULT_PORT = 7865;
+// This user's port block (port-layout.js): 7865 and friends unless the port base
+// moved it. main.js resolved env + config into process.env before we got here.
+const PORT_LAYOUT = require('./port-layout.js').layoutFromEnv();
+const DEFAULT_PORT = PORT_LAYOUT.defaultBot;
 
 let win = null;
 let store = null;
@@ -127,8 +130,8 @@ async function probe(port) {
 // time on every refresh.
 async function scanRunning() {
   const ports = [DEFAULT_PORT];
-  for (let p = profileManager.PROFILE_PORT_BASE; p <= profileManager.PROFILE_PORT_MAX; p++) ports.push(p);
-  for (let p = 7901; p <= 7916; p++) ports.push(p);
+  for (let p = PORT_LAYOUT.profileFirst; p <= PORT_LAYOUT.profileLast; p++) ports.push(p);
+  for (let p = PORT_LAYOUT.fleetFirst; p <= PORT_LAYOUT.fleetLast; p++) ports.push(p);
   const found = (await Promise.all(ports.map(probe))).filter(Boolean);
   const byProfile = new Map();
   for (const inst of found) {

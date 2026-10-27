@@ -66,7 +66,8 @@ const ASSET_MIME_TYPES = {
   '.pdf': 'application/pdf',
 };
 
-const DEFAULT_PORT = 7865;
+// 7865 unless the port base moved this user's block (port-layout.js).
+const DEFAULT_PORT = require('./port-layout.js').layoutFromEnv().defaultBot;
 
 // How often a background-tick waiter re-checks whether enough new transcript has
 // accumulated to surface the slow model (#245). This is just the sampling

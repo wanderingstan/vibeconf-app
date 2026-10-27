@@ -13,12 +13,17 @@ function asQuoted(s) {
   return `\\"${String(s == null ? '' : s).replace(/"/g, '\\"')}\\"`;
 }
 
-// `cd "<workdir>" && [VIBECONF_LOCAL_PORT=<port> ]<innerCmd>`
+// `cd "<workdir>" && [VIBECONF_LOCAL_PORT=<port> ][VIBECONF_PORT_BASE=<base> ]<innerCmd>`
 // innerCmd is passed through verbatim (it already carries its own escaping for the
-// /join-call argument). port is optional.
-function buildTerminalCommand({ workdir, port, innerCmd }) {
+// /join-call argument). port is optional. portBase is added only when it moves
+// the block off the default (port-layout.js): a Terminal window does not inherit
+// the app's env, and the skills' curl lines and the session's own MCP server need
+// to land on this user's block. Unset or 7865 leaves the command exactly as it was.
+function buildTerminalCommand({ workdir, port, portBase, innerCmd }) {
   const env = (port === undefined || port === null || port === '') ? '' : `VIBECONF_LOCAL_PORT=${port} `;
-  return `cd ${asQuoted(workdir)} && ${env}${innerCmd || ''}`;
+  const { portBaseEnv } = require('./port-layout.js');
+  const baseEnv = portBase ? Object.entries(portBaseEnv(Number(portBase))).map(([k, v]) => `${k}=${v} `).join('') : '';
+  return `cd ${asQuoted(workdir)} && ${env}${baseEnv}${innerCmd || ''}`;
 }
 
 // Undo the AppleScript quoting layer, for a command a HUMAN will handle.

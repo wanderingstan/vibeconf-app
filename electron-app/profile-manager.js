@@ -10,12 +10,25 @@
 
 const fs = require('fs');
 const path = require('path');
+const { layoutFromEnv, portLayout } = require('./port-layout.js');
 
 // Manual-profile ports start here, above the default instance (7865) and clear
 // of the test fleet (7901+). Each profile keeps its assigned port across
 // launches via the registry so a profile is reliably reachable on one port.
-const PROFILE_PORT_BASE = 7870;
-const PROFILE_PORT_MAX = 7899; // stay below the fleet's BASE_PORT (7901)
+//
+// The range moves with VIBECONF_PORT_BASE (port-layout.js: base+5 .. base+34),
+// so read it through profilePortRange(). These two are the UNSHIFTED defaults.
+const PROFILE_PORT_BASE = portLayout().profileFirst; // 7870
+const PROFILE_PORT_MAX = portLayout().profileLast;   // 7899, below the fleet's BASE_PORT (7901)
+
+// The range new profile ports are handed out from ({ first, last }), plus the
+// wider window an already-registered port is honoured in ({ keepFirst,
+// keepLast }: the block's whole discovery scan). For the block in effect: env,
+// already folded together with the config file by main.js.
+function profilePortRange(env = process.env) {
+  const l = layoutFromEnv(env);
+  return { first: l.profileFirst, last: l.profileLast, keepFirst: l.scanFirst, keepLast: l.scanLast };
+}
 
 function safeReadJSON(file) {
   try {
@@ -111,18 +124,28 @@ function savePortRegistry(baseUserData, reg) {
 
 // Return this profile's port, assigning + persisting the next free one on first
 // use. Stable across launches. Throws if the manual-profile range is exhausted.
-function portForProfile(baseUserData, name) {
+//
+// A registered port outside this block's window (the port base was changed
+// since it was handed out) is not honoured: it would put this bot in some other
+// block, which is exactly what moving the base was for. It is reassigned once,
+// in range, and the registry remembers the new one. The window is the whole
+// discovery scan, not just the assignment range, so ports handed out before
+// the range was 7870-7899 (7866+) keep working exactly as they did.
+function portForProfile(baseUserData, name, range = profilePortRange()) {
   const reg = loadPortRegistry(baseUserData);
-  if (reg[name]) return reg[name];
-  const taken = new Set(Object.values(reg));
-  for (let p = PROFILE_PORT_BASE; p <= PROFILE_PORT_MAX; p++) {
+  const keepFirst = range.keepFirst ?? range.first;
+  const keepLast = range.keepLast ?? range.last;
+  const p0 = reg[name];
+  if (p0 && (!Number.isInteger(p0) || (p0 >= keepFirst && p0 <= keepLast))) return p0;
+  const taken = new Set(Object.entries(reg).filter(([n]) => n !== name).map(([, p]) => p));
+  for (let p = range.first; p <= range.last; p++) {
     if (!taken.has(p)) {
       reg[name] = p;
       savePortRegistry(baseUserData, reg);
       return p;
     }
   }
-  throw new Error(`No free profile port in ${PROFILE_PORT_BASE}-${PROFILE_PORT_MAX}`);
+  throw new Error(`No free profile port in ${range.first}-${range.last}`);
 }
 
 // A profile name we'll accept for creation (same charset as requestedProfileName
@@ -155,6 +178,7 @@ module.exports = {
   loadPortRegistry,
   isValidProfileName,
   resolveDefaultProfileName,
+  profilePortRange,
   PROFILE_PORT_BASE,
   PROFILE_PORT_MAX,
 };

@@ -155,9 +155,19 @@ def layers(T):
     bx, by, bw = 400, 118, 320
     rows_a = [('GET  /api/sync/{room}?wait=55', 'waits for a sentence to end; returns transcript and state'),
               ('POST /api/sync/{room}', 'speak, write the board, or run an action')]
-    caps = ['join a meeting, or answer a call', 'hear the room, one long-poll', 'speak through the bot’s microphone',
-            'read and send chat', 'show a board, an image, any URL', 'drive the shared page', 'camera, face, mode, language', 'record the call']
-    bh = 170 + len(rows_a) * 42 + 30 + len(caps) * 36 + 16
+    # Real tool names, the MCP server's, each one HTTP call to this API. The
+    # count is read from mcp-server/server.js so "and N more" stays true.
+    import re
+    src = open(os.path.join(HERE, '..', 'mcp-server', 'server.js')).read()
+    all_tools = re.findall(r'^server\.tool\(\s*\n?\s*"([a-z_]+)"', src, re.M)
+    shown = ['join_call', 'wait_for_speech', 'speak', 'leave_call', 'start_call', 'read_transcripts',
+             'read_chat', 'send_chat', 'update_whiteboard', 'read_whiteboard', 'load_url', 'start_share',
+             'share_tab', 'stop_sharing', 'click_share', 'type_share', 'get_shared_screenshot', 'play_audio',
+             'set_camera', 'set_avatar_emoji', 'set_mode', 'set_caption_language', 'set_voice', 'list_voices',
+             'start_recording', 'stop_recording', 'get_room_info', 'get_call_screenshot', 'post_understanding', 'bank_probe']
+    shown = [t for t in shown if t in all_tools]
+    more = len(all_tools) - len(shown)
+    bh = 170 + len(rows_a) * 42 + 30 + ((len(shown) + 1) // 2) * 17 + 44
     c.box(bx, by, bw, bh, stroke_w=2)
     c.logo(bx + bw / 2 - 20, by + 18)
     c.text(bx + bw / 2, by + 86, 'the local API', 20, 800, family=SYNE, spacing=-0.3, anchor='middle')
@@ -172,11 +182,15 @@ def layers(T):
         c.text(bx + 32, y + 29, sub, 9.5, fill=T['soft'])
         y += 42
     y += 18
-    c.eyebrow(bx + 22, y, 'WHAT IT DOES')
-    y += 12
-    for cap in caps:
-        c.row(bx + 22, y, bw - 44, cap, h=30)
-        y += 36
+    c.eyebrow(bx + 22, y, f'{len(all_tools)} TOOLS, ONE HTTP CALL EACH')
+    y += 10
+    half = (len(shown) + 1) // 2
+    grid_h = half * 17 + 30
+    c.o.append(f'<rect x="{bx + 22}" y="{y}" width="{bw - 44}" height="{grid_h}" rx="4" fill="{T["row_fill"]}" stroke="{T["row_stroke"]}" stroke-width="1"/>')
+    for i, t in enumerate(shown):
+        col, rowi = divmod(i, half)
+        c.text(bx + 32 + col * 138, y + 16 + rowi * 17, t, 10.5, 500, family=MONO)
+    c.text(bx + bw - 32, y + grid_h - 9, f'…and {more} more', 10.5, 500, fill=T['soft'], family=MONO, anchor='end')
     api_mid = by + bh / 2
 
     # ── Right: the platforms, two stacks ──

@@ -6289,7 +6289,9 @@ const testSpeechPath = path.join(EXT_DIR, 'test-speech.mp3');
 const noVoiceClipPath = path.join(EXT_DIR, 'no-voice.mp3');
 
 // Chrome-like user agent to avoid Google blocking
-const CHROME_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+// One browser identity for every surface (#499): slack-ua.js keeps the current
+// Chrome version. This used to pin Chrome/131 here, a second, staler copy.
+const CHROME_UA = require('./slack-ua').UA;
 
 // ONE persistent session partition per app profile — for everything this
 // profile does, Meet AND Slack (#282). Collapsed from the old three-partition
@@ -6749,6 +6751,14 @@ function configureMeetSession(sess) {
   // that generally wins over this header — that case needs detection, not a
   // header (tracked in #23).
   sess.setUserAgent(CHROME_UA, 'en-US,en');
+  // #499: the string alone is not enough. Electron's Sec-CH-UA* headers still
+  // describe Electron's Chromium, and Google refuses a sign-in whose string and
+  // client hints disagree ("This browser or app may not be secure"). Teams,
+  // Zoom and the calling-app sign-ins installed this on the same partition, but
+  // only once one of them ran, so a fresh profile signing in to Google never
+  // had it (2026-10-27, a new user on the Mac mini). The page side,
+  // navigator.userAgentData, is shimmed by preload-meet and preload-google-sign-in.
+  require('./slack-ua').installHeaderSpoof(sess);
 }
 
 // ---------------------------------------------------------------------------
@@ -7589,7 +7599,12 @@ function openBotSignInWindow() {
     // Not parented to a hosted bot's hidden window, which macOS would show
     // along with it (see calling-app-sign-in).
     parent: (!HEADLESS && mainWindow && !mainWindow.isDestroyed()) ? mainWindow : undefined,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, partition: SESSION_PARTITION },
+    // Isolation and sandbox off only so the two-line preload (it requires
+    // slack-ua.js) can make navigator.userAgentData match the spoofed Chrome
+    // before Google's scripts read it (#499). The same settings as the Meet
+    // view, which loads this same Google sign-in page when a join is parked
+    // on it. The preload exposes nothing to the page; no node integration.
+    webPreferences: { contextIsolation: false, nodeIntegration: false, sandbox: false, partition: SESSION_PARTITION, preload: path.join(__dirname, 'preload-google-sign-in.js') },
   });
   botSignInWindow = win;
   win.on('page-title-updated', (e) => { e.preventDefault(); });

@@ -1746,3 +1746,33 @@ button.hosted-edit {
   color: var(--ink-soft);
   margin: 6px 0 0;
 }
+
+/* A calling app's settings (who may call, the passcode, Twilio's keys) fold
+   under its own row instead of stacking below the list, where three of them
+   took over the section. Collapsed by default; the row's summary line says
+   what they are set to, so most of the time there is no need to open them. */
+.conn-sub {
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.conn-row button.conn-toggle {
+  border-width: 1px;
+  border-color: var(--line);
+  color: var(--ink-soft);
+  padding: 4px 9px;
+}
+.conn-toggle::after { content: ' ▾'; }
+.conn-toggle[aria-expanded="true"]::after { content: ' ▴'; }
+.field.conn-detail {
+  margin: 0;
+  padding: 8px 10px 10px 38px; /* lines up with the row's text, past its logo */
+  border-top: 1px dashed var(--line);
+  background: var(--cream);
+}
+.conn-detail label { font-size: 11.5px; }
+.conn-detail input:not([type="checkbox"]),
+.conn-detail textarea {
+  font-size: 12px;
+  padding: 5px 8px;
+}
+.conn-detail button { width: auto; padding: 5px 14px; font-size: 11.5px; }

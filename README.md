@@ -8,7 +8,7 @@
     <img width="820" alt="A Google Meet with an engineer, a product manager and their bot Melinda, who is sharing a plan for an iOS app's filters with items ticked as built and building now, while the app itself runs in an iPhone simulator beside the call" src="media/hero-bot-builds-ios-app-in-call.webp">
   </a>
 
-  <p><em>A bot, an engineer and a product manager in a Google Meet. The PM shares feedback and the bot updates the iOS app, live in the simulator.</em></p>
+  <p><em>A bot, an engineer and a product manager in a Google Meet. The PM shares feedback and the bot updates the iOS app, live in the simulator.</em></p>
 
   <p>
     <a href="https://vibeconferencing.com">Website</a>

@@ -62,9 +62,9 @@ The example below is Claude Code on a Mac joining a Google Meet. The steps are l
 ### 1. Download and install
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
 
-<img src="media/app-window.png" width="340" alt="The Vibeconferencing app window: the bot's name at the top, its emoji avatar over a desert background, and a green Call button">
+<img src="media/app-window.webp" width="560" alt="The Vibeconferencing app window: a sidebar listing bots (Alice, Bob, Jimmy, Charlie) and recent sessions, and the selected bot Alice on the right with her smiling face over a sunny meadow, a meeting link box, a green 'Call Alice now' button, and her agent and voice">
 
-*The app is your bot's window: its name, its face, and one button to bring it into a call.*
+*The app is your bots' window: each one's name and face, and one button to bring it into a call.*
 
 ### 2. Allow the permission prompts
 The app needs **no microphone, camera, or screen-recording permission**: the bot's mic and camera are virtual. One optional prompt may appear, **Browser Automation**, which lets the app notice a call already open in your browser. Skip it if you like; you can always paste a link.
@@ -75,7 +75,7 @@ Sign in from App Settings (**⌘,**). The one-click path below creates the meeti
 ### 4. Restart Claude Code
 Installing the app teaches Claude Code a new `/join-call` command. Quit and reopen Claude Code once so it shows up.
 
-### 5. Click **Call *Jimmy* now**
+### 5. Click **Call *Alice* now**
 That one button does the rest: the app creates a Google Meet, opens it in your browser, sends the bot in, and starts a Claude Code session for it in a terminal.
 
 ### 6. Talk to it
@@ -85,7 +85,7 @@ Your bot is in the call. **Just talk.** After a short pause it answers *out loud
 
 ### Other ways in
 
-- **A call that already exists:** paste its link into the app (Meet, Zoom, Teams or a WhatsApp call link; a Slack huddle once the bot is signed in to Slack) and press **Add *Jimmy* to call**. With Browser Automation allowed, a Meet open in your browser is offered automatically. The bot joins as a guest, so admit it when the meeting asks.
+- **A call that already exists:** paste its link into the app (Meet, Zoom, Teams or a WhatsApp call link; a Slack huddle once the bot is signed in to Slack) and press **Add *Alice* to call**. With Browser Automation allowed, a Meet open in your browser is offered automatically. The bot joins as a guest, so admit it when the meeting asks.
 - **From your agent:** with a call open in your browser, type `/join-call` in Claude Code. Codex and others do the same in plain language: *"join the Meet I have open"*.
 - **Calls that come to the bot:** connect Telegram, WhatsApp or a Twilio phone number in App Settings, put the callers you trust on its allowlist, and have them call. The bot picks up.
 

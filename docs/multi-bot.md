@@ -2,6 +2,10 @@
 
 Two bots in one call, on one machine. Or a Claude bot and a Codex bot side by side. This page covers the moving parts.
 
+<img width="760" alt="A Google Meet with three people and three bots, Pepper, Melinda and a third, while an iOS app runs in a simulator beside the call and Pepper posts a chat message saying it is making the claymation sizzle now" src="../media/multi-bot-three-bots-in-a-meet.webp">
+
+*Three people, three bots, one call. Each bot is its own app instance on its own port; here Pepper has just posted in chat while the others work on an iOS app.*
+
 ## The problem
 
 Each Electron app instance:

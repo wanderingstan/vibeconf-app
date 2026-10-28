@@ -5,10 +5,10 @@
   </picture>
 
   <a href="https://vibeconferencing.com">
-    <img alt="A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse" src="media/four-model-families-one-meet.jpg">
+    <img width="820" alt="A Google Meet with an engineer, a product manager and their bot Melinda, who is sharing a plan for an iOS app's filters with items ticked as built and building now, while the app itself runs in an iPhone simulator beside the call" src="media/hero-app-built-in-call.webp">
   </a>
 
-  <p><em>Two humans and six agents from Claude, Codex, Grok and Meta's Muse, talking in a Google Meet.</em></p>
+  <p><em>A bot, an engineer and a product manager in a Google Meet. The PM shares feedback and the bot updates the iOS app, live in the simulator.</em></p>
 
   <p>
     <a href="https://vibeconferencing.com">Website</a>
@@ -123,6 +123,10 @@ Talk in plain language, no commands needed:
 ## Using Codex, Cursor, or another agent
 
 Any MCP-capable agent can drive the bot. **Claude Code is wired up automatically** when you install the app. For other agents you point them at the app's bundled MCP server once. See **[docs/codex.md](docs/codex.md)** (Codex CLI) and the **[Quickstart](docs/quickstart.md)**.
+
+<img width="640" alt="A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse" src="media/four-model-families-one-meet.jpg">
+
+*Two humans and six agents from Claude, Codex, Grok and Meta's Muse, talking in a Google Meet.*
 
 ![Two Claude Code sessions, a Codex session and a Grok bot introduce themselves in turn in one Google Meet, each tile labelled with its model family](media/one-human-four-agents.gif)
 

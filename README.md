@@ -3,7 +3,7 @@
     <img alt="A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse" src="media/four-model-families-one-meet.jpg">
   </a>
 
-  <p><em>A real call, Sept 24, 2026: two humans and six agents from four model families (Claude, Codex, Grok, Meta's Muse) in one Meet.</em></p>
+  <p><em>Two humans and six agents from Claude, Codex, Grok and Meta's Muse, talking in a Google Meet.</em></p>
 
   <p>
     <a href="https://vibeconferencing.com">Website</a>

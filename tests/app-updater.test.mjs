@@ -34,6 +34,8 @@ function harness({ latest = '9.9.9', blocked = null, packaged = true } = {}) {
       shell: { openExternal: () => {} },
     }),
     log: () => {}, warn: () => {},
+    // macOS, so a Linux CI runner isn't read as a non-updatable .deb install.
+    platform: 'darwin', env: {},
   });
   return { u, fake, dialogs, answers, calls };
 }

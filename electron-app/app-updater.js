@@ -37,6 +37,8 @@ function createAppUpdater({
   getAutoUpdater = () => require('electron-updater').autoUpdater,
   getElectron = () => require('electron'),
   repo = process.env.VIBECONF_UPDATE_REPO || 'wanderingstan/vibeconf-app',
+  platform = process.platform,
+  env = process.env,
 } = {}) {
   let checkInFlight = false;
   let downloaded = null;      // the info of a build staged and waiting to install
@@ -103,7 +105,7 @@ function createAppUpdater({
       try { fs.unlinkSync(leasePath()); } catch { /* already gone */ }
     }
   }
-  const context = () => ({ platform: process.platform, packaged: app.isPackaged, env: process.env, lease: readLease(), profile });
+  const context = () => ({ platform, packaged: app.isPackaged, env, lease: readLease(), profile });
 
   // Offer the staged build. Called when a download finishes and again when a
   // call ends, since the usual sequence is "update arrives mid-call, install after".

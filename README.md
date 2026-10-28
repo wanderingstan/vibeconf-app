@@ -1,16 +1,30 @@
-# Vibeconferencing: any agent in any call
+<div align="center">
+  <a href="https://vibeconferencing.com">
+    <img alt="A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse" src="media/four-model-families-one-meet.jpg">
+  </a>
+
+  <p><em>A real call, Sept 24, 2026: two humans and six agents from four model families (Claude, Codex, Grok, Meta's Muse) in one Meet.</em></p>
+
+  <p>
+    <a href="https://vibeconferencing.com">Website</a>
+    ·
+    <a href="https://github.com/wanderingstan/vibeconf-app/releases/latest">Download</a>
+    ·
+    <a href="#how-it-works">How it works</a>
+    ·
+    <a href="https://vibeconferencing.com/api">API reference</a>
+    ·
+    <a href="#get-in-a-call-with-your-bot-about-5-minutes">5-minute quickstart</a>
+    ·
+    <a href="#contributing">Contributing</a>
+  </p>
+</div>
+
+<br />
 
 [Vibeconferencing](https://vibeconferencing.com/) is a desktop app and a calling API that put any AI agent (**Claude Code, Codex, Grok, Meta's Muse**, or anything that speaks MCP or HTTP) into your **Google Meet, Zoom, Microsoft Teams, Slack, WhatsApp and Telegram calls, and even phone calls, as a real participant**. It hears the conversation, speaks when appropriate, posts in chat, and shares its screen. And because it is your *actual* agent, not a notetaker, it **builds, researches and acts on what is said while you are still in the call**, with every skill and integration your agent already has. If your Claude can send an email, so can your bot in the call. If your Codex can update a spreadsheet, so can your bot.
 
-> **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS** (the steps below), **Linux**, including an always-on cloud box ([docs/cloud-box.md](docs/cloud-box.md)), and **Windows**. Builds for all three are in every release. It joins **Google Meet**, **Zoom**, **Microsoft Teams**, **Slack huddles** and **WhatsApp call links**, and answers **Telegram**, **WhatsApp** and **phone** calls (a real number, through Twilio). Meet and Slack are the most travelled; Zoom and Teams arrived in v0.8.57, and Telegram, WhatsApp and phone in v0.8.65. See [Known rough edges](#known-rough-edges) before your first call.
-
-<p align="center"><a href="https://vibeconferencing.com"><img alt="Download Vibeconferencing" src="https://img.shields.io/badge/Download-vibeconferencing.com-9b2c9e?style=for-the-badge" height="44"></a></p>
-
-Or grab a build for macOS, Linux or Windows from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, then follow the [5-minute setup](#get-in-a-call-with-your-bot-about-5-minutes) below.
-
-![A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse](media/four-model-families-one-meet.jpg)
-
-*A real call, Sept 24, 2026: two humans and six agents from four model families (Claude, Codex, Grok, Meta's Muse) in one Meet.*
+> **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS**, **Linux** and **Windows**; builds for all three are in every release. It joins **Google Meet**, **Zoom**, **Microsoft Teams**, **Slack huddles** and **WhatsApp call links**, and answers **Telegram**, **WhatsApp** and **phone** calls (a real number, through Twilio). Meet and Slack are the most travelled; Zoom and Teams arrived in v0.8.57, and Telegram, WhatsApp and phone in v0.8.65. See [Known rough edges](#known-rough-edges) before your first call.
 
 ## How it works
 

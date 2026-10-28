@@ -220,6 +220,14 @@ function rowActions(bot, merge) {
     const busy = inCall(bot);
     showMenu(more, [
       { label: 'Show in Finder', run: () => api.invoke('supervisor:reveal', bot.name).catch(() => {}) },
+      // Was the app's Bot menu (⇧⌘L); this is the one item there with no
+      // button on the bot's panel. It drives the bot's own browser, so only a
+      // running bot has one.
+      ...(bot.running ? [{ label: 'Navigate Webview…', title: "Open a page in this bot's browser (its own logins)",
+        run: async () => {
+          const r = await api.invoke('supervisor:navigate-webview', bot.name).catch((err) => ({ ok: false, error: err.message }));
+          if (!r?.ok) { rowErrors.set(bot.name, r?.error || 'Could not open it.'); refresh(); }
+        } }] : []),
       ...(bot.running ? [{ label: 'Stop', disabled: busy, title: busy ? 'Leave the call first' : 'Stop it now; it starts again when you select it',
         run: async () => {
           const r = await api.invoke('supervisor:stop-bot', bot.name).catch((err) => ({ ok: false, error: err.message }));

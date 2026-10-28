@@ -65,11 +65,12 @@ test('presenting is surfaced to the operator, not blocked', () => {
   // a real reason to navigate mid-presentation.
   const i = main.indexOf("label: 'Navigate Webview…'");
   assert.ok(i > 0);
-  const item = main.slice(i, i + 3500);
+  const item = main.slice(i, i + 5000);
   assert.match(item, /const sharing = !!\(localServer && localServer\.sharing\)/);
   assert.match(item, /send\('navigate-webview-prompt', \{ currentUrl, sharing \}\)/);
 
-  const j = panel.indexOf("api.on('navigate-webview-prompt'");
+  // The prompt is a named function now (the Bot accounts button calls it too).
+  const j = panel.indexOf('async function promptNavigateWebview(data)');
   assert.ok(j > 0);
   const handler = panel.slice(j, j + 1400);
   assert.match(handler, /data && data\.sharing/);
@@ -84,7 +85,7 @@ test('the prompt prefills from the share window, not the Meet view', () => {
   // window that is not the Meet view — and inviting someone to press Enter on a
   // Meet URL is how you get a second copy of the call in the shared window.
   const i = main.indexOf("label: 'Navigate Webview…'");
-  const item = main.slice(i, i + 3500);
+  const item = main.slice(i, i + 5000);
   assert.match(item, /currentUrl = whiteboardWindow\.webContents\.getURL\(\)/);
   assert.doesNotMatch(item, /currentUrl = meetView\.webContents\.getURL\(\)/);
 });

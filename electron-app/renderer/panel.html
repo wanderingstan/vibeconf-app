@@ -554,6 +554,21 @@
              #vibeconf:<name> tag in the event title or description works too,
              with no field to fill in here. Locked to the bot's Google account
              while it's connected — see lockCalendarIdentityToAccount(). -->
+        <!-- Any other site the bot needs to be signed in to so it can SHOW it
+             (GitHub, Notion, a dashboard): the Navigate Webview prompt (⇧⌘L),
+             which opens it in the bot's own browser, with the bot's logins. -->
+        <div class="conn-group-label">Other sites</div>
+        <div class="conn-list">
+          <div class="conn-row" id="otherSitesConnRow">
+            <span class="conn-logo" aria-hidden="true" style="font-size:15px;line-height:18px;text-align:center">🌐</span>
+            <div class="conn-text">
+              <div class="conn-name">GitHub, Notion, anything else</div>
+              <div class="conn-status">Sign in through the bot's own browser, so it can show those pages</div>
+            </div>
+            <button id="otherSitesOpenBtn" title="Open a page in the bot's browser (⇧⌘L)">Open…</button>
+          </div>
+        </div>
+
         <div class="conn-group-label">Calendar</div>
         <div class="conn-list">
           <div class="conn-row" id="calendarIdentityEmailField">

@@ -3368,7 +3368,7 @@ api.on('meet-mode-changed', () => {
 // Advanced: "Navigate Webview…" (⌘⇧L) → prompt for a URL and drive the bot's
 // embedded view there, so the operator can set up Slack/Google account state in
 // the bot's own partition (#282).
-api.on('navigate-webview-prompt', async (data) => {
+async function promptNavigateWebview(data) {
   // Pre-fill the CURRENT URL of the share window (passed from main) so you can
   // see where it actually landed — handy for debugging redirects/blank pages —
   // and edit from there. Falls back to https:// when there's no current URL.
@@ -3382,13 +3382,20 @@ api.on('navigate-webview-prompt', async (data) => {
       ? '⚠️ YOU ARE PRESENTING. This window is on screen to everyone in the '
         + 'call, so anything you load here is visible to them, sign-in pages '
         + 'included.\n\nNavigate the shared window to URL:'
-      : 'Navigate the bot webview to URL (advanced: Slack/Google account setup):',
+      : "Open a page in the bot's own browser, e.g. to sign it in to GitHub:",
     initial: current || 'https://', okLabel: 'Go',
   });
   if (!url) return;
   api.invoke('navigate-webview', url).then((r) => {
     if (r && r.ok === false) showError('Could not navigate: ' + (r.error || 'unknown'));
   }).catch(() => {});
+}
+api.on('navigate-webview-prompt', promptNavigateWebview);
+// Bot Settings → Bot accounts → Other sites: the same prompt, from a button,
+// for signing the bot in to whatever it needs to show (GitHub and the like).
+document.getElementById('otherSitesOpenBtn')?.addEventListener('click', async () => {
+  const ctx = await api.invoke('navigate-webview-context').catch(() => null);
+  promptNavigateWebview(ctx || {});
 });
 
 // --- Live caption feed: the "bot's-eye view" of exactly what captions the bot

@@ -218,3 +218,61 @@ test('a failed join reports the reason, not a bare error', async () => {
     assert.deepEqual(r.json, { success: false, code: 'nope', detail: 'because' });
   });
 });
+
+// "Add" for another bot's Teams call failed with bad-url (2026-10-27): the
+// route took Meet links only. Any link the bot can join goes to main now, with
+// its provider, and Meet keeps its own path.
+const TEAMS_LINK = 'https://teams.live.com/meet/9361848336150?p=MshyCb8vgXtI4p4lb7';
+const ZOOM_LINK = 'https://us05web.zoom.us/j/84753488587?pwd=abc123';
+
+test('a Teams or Zoom link goes to onJoinLink with its provider, the full link, and spawnAgent', async () => {
+  const seen = [];
+  let meetCalled = false;
+  await withBot({
+    onJoinMeet: async () => { meetCalled = true; return { ok: true }; },
+    onJoinLink: async (a) => { seen.push(a); return { ok: true, roomId: `${a.provider}-room` }; },
+  }, async (_bot, post) => {
+    const t = await post({ url: TEAMS_LINK, spawnAgent: true });
+    assert.equal(t.status, 200);
+    assert.deepEqual(t.json, { success: true, roomId: 'teams-room' });
+    const z = await post({ url: ZOOM_LINK });
+    assert.equal(z.status, 200);
+  });
+  assert.equal(meetCalled, false);
+  assert.deepEqual(seen, [
+    { provider: 'teams', url: TEAMS_LINK, spawnAgent: true },
+    { provider: 'zoom', url: ZOOM_LINK, spawnAgent: false },
+  ]);
+});
+
+test('re-adding a bot to the Teams call it is already in is a no-op too', async () => {
+  const { TEAMS } = require('../electron-app/teams-selectors.js');
+  let called = false;
+  await withBot({ onJoinLink: async () => { called = true; return { ok: true }; } }, async (bot, post) => {
+    bot.setRoom(TEAMS.roomCodeFromUrl(TEAMS_LINK));
+    bot.callStatus = 'in-call';
+    const r = await post({ url: TEAMS_LINK, spawnAgent: true });
+    assert.equal(r.status, 200);
+    assert.equal(r.json.alreadyInCall, true);
+  });
+  assert.equal(called, false);
+});
+
+test('a link that is no call at all is still bad-url, with the reason', async () => {
+  await withBot({ onJoinLink: async () => assert.fail('should not join') }, async (_bot, post) => {
+    const r = await post({ url: 'https://example.com/whatever' });
+    assert.equal(r.status, 400);
+    assert.equal(r.json.code, 'bad-url');
+    assert.match(r.json.detail, /not a call this can join/);
+  });
+});
+
+test('main wires onJoinLink to the same provider switch the panel\'s Join uses, and starts the agent', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
+  const body = src.slice(src.indexOf('onJoinLink: ('), src.indexOf('onJoinLink: (') + 900);
+  for (const fn of ['activateZoomProvider', 'activateTeamsProvider', 'activateWhatsAppCallLink', 'activateSlackProvider']) {
+    assert.ok(body.includes(fn), `onJoinLink should use ${fn}`);
+  }
+  assert.match(body, /if \(spawnAgent\) launchClaudeTerminal\(room\)/);
+});

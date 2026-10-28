@@ -2564,6 +2564,18 @@ const localServer = new globalThis.LocalServer({
   // /call → POST /api/call/start → the same path the panel button takes.
   onStartCall: (opts) => createAndJoinMeet(opts),
   onJoinMeet: ({ url, spawnAgent }) => { joinMeetUrl(url, { spawnAgent }); return { ok: true }; }, // #301: supervisor "Add"
+  // The supervisor's "Add" for a Zoom / Teams / Slack / WhatsApp link: what the
+  // panel's join-detected-* handlers do (switch provider, which joins and sets
+  // the room), then the agent, when a person asked.
+  onJoinLink: ({ provider, url, spawnAgent }) => {
+    console.log('[local-server] Add to ' + provider + ' call requested:', url);
+    const room = provider === 'slack'
+      ? (activateSlackProvider(url, { autojoin: true }), localServer.roomId || null)
+      : ({ zoom: activateZoomProvider, teams: activateTeamsProvider, whatsapp: activateWhatsAppCallLink }[provider] || (() => null))(url);
+    if (!room) return { ok: false, code: 'bad-url', detail: 'not a joinable ' + provider + ' link' };
+    if (spawnAgent) launchClaudeTerminal(room);
+    return { ok: true, roomId: room };
+  },
   onRecord: (opts) => setCallRecording(opts), // #209: start/stop call recording
 
   onFocusRequest: () => {

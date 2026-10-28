@@ -195,6 +195,7 @@ function resolveNewBotTarget({ explicit = null, instances = [], browserMeetUrls 
 module.exports = {
   resolveNewBotTarget,
   parseCallTarget,
+  providerRoomIdForUrl,
   roomIdToJoinUrl,
   instanceJoinUrl,
   isActiveCallStatus,

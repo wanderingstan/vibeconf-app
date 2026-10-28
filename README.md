@@ -36,12 +36,7 @@ Browse and try it at **[vibeconferencing.com/api](https://vibeconferencing.com/a
 
 ## Get in a call with your bot (about 5 minutes)
 
-The example below is Claude Code on a Mac joining a Google Meet. The steps are largely the same for every agent and platform: Linux and Windows builds are in the same release, Codex or any MCP agent swaps in for Claude Code ([see below](#using-codex-cursor-or-another-agent)), and the [platform notes](docs/api/platforms.md) cover Zoom, Teams, Slack, WhatsApp, Telegram and phone.
-
-**You'll need:**
-- A **Mac** for the steps below. *(On Linux or Windows, grab the AppImage, `.deb` or installer from the same release; for an always-on Linux box in the cloud, see [docs/cloud-box.md](docs/cloud-box.md).)*
-- **Claude Code** installed and working.
-- A browser. Any will do for the one-click path below; auto-detecting a call you already have open works in Chrome, Brave and Safari.
+The example below is Claude Code on a Mac joining a Google Meet. The steps are largely the same for every agent and platform: Linux and Windows builds are in the same release (and an always-on Linux box in the cloud is in [docs/cloud-box.md](docs/cloud-box.md)), Codex or any MCP agent swaps in for Claude Code ([see below](#using-codex-cursor-or-another-agent)), and the [platform notes](docs/api/platforms.md) cover Zoom, Teams, Slack, WhatsApp, Telegram and phone.
 
 ### 1. Download and install
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.

@@ -4417,281 +4417,36 @@ function focusMainWindow() {
 // update-policy.js so those rules can be tested without a desktop.
 const updatePolicy = require('./update-policy');
 
-// Where releases live. Keeps the old VIBECONF_UPDATE_REPO override so anyone
-// pointing a test build at a fork keeps working.
-const UPDATE_REPO = process.env.VIBECONF_UPDATE_REPO || 'wanderingstan/vibeconf-app';
-
-let _updateCheckInFlight = false;
-let _updateDownloaded = null;   // the info of a build staged and waiting to install
-let _updateNotifiedFor = null;  // don't re-nag about a version already declined
-let _manualCheckPending = false; // a menu-triggered check is waiting to hear back
-
-// A menu "Check for Updates…" must give feedback the MOMENT an update is found —
-// not after the whole build finishes downloading (autoDownload is on, so a plain
-// menu check would otherwise sit silent through the entire download and look
-// dead). Fired from the 'update-available' event (which lands right after the
-// check, before the download) AND, as a fallback, from checkForUpdates' found
-// branch — whichever gets there first. Idempotent via _manualCheckPending, so
-// the passive background check stays quiet.
-function announceManualUpdateDownloading(version) {
-  if (!_manualCheckPending) return;
-  _manualCheckPending = false;
-  const { dialog } = require('electron');
-  dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    message: `Update available: Vibeconferencing ${version}`,
-    detail: "It's downloading in the background now — you'll get a prompt to install "
-      + 'when it\'s ready, and you can keep working until then.',
-    buttons: ['OK'],
-  });
-}
-
-function autoUpdaterInstance() {
-  const { autoUpdater } = require('electron-updater');
-  autoUpdater.logger = {
-    info: (m) => console.log(ts(), '[updates]', m),
-    warn: (m) => console.warn(ts(), '[updates]', m),
-    error: (m) => console.error(ts(), '[updates]', m),
-    debug: () => {},
-  };
-  // We ship CLEAN SEMVER now (0.8.10, 0.8.11, …) — no `-beta` suffix. Keep this
-  // OFF: with no prerelease component in the running version, electron-updater
-  // never auto-enables allowPrerelease, and the provider just asks GitHub which
-  // release is Latest (highest semver) and installs that release's latest-*.yml
-  // in ONE hop — the newest is the one everybody gets, no stepping.
-  //
-  // Why the scheme changed: tags used to be `0.8.0-beta9` (no dot). semver reads
-  // `beta9` as a single ALPHANUMERIC identifier, so versions compared LEXICALLY,
-  // not numerically — `beta10` sorts BELOW `beta9`, so once a series crossed
-  // single digits neither GitHub's "Latest" nor electron-updater could tell
-  // which build was actually newest. The updater lagged / appeared to step
-  // through intermediate versions instead of jumping to the true latest. Dropping
-  // the prerelease identifier fixes the ordering for good. (allowPrerelease also
-  // used to be force-enabled here because the RUNNING version always had a
-  // prerelease component — with clean semver it no longer does, so this line is
-  // now a belt-and-suspenders guard rather than a workaround.)
-  // Channel switch (#release): the 'candidate' update channel (Stan + Seth) opts
-  // into GitHub PRERELEASE builds — the release-candidates tested before promotion;
-  // 'release' (default — real users) sees only promoted releases. Promoted versions
-  // are clean semver (no prerelease component), so a 'release' client is never
-  // offered an rc even after its GitHub prerelease flag is flipped. Fail safe to
-  // 'release' if the pref/store isn't readable yet.
-  try { autoUpdater.allowPrerelease = prefValue('updateChannel') === 'candidate'; }
-  catch { autoUpdater.allowPrerelease = false; }
-  // Stage the download, but never restart on our own: installing is gated on
-  // not being in a call, and the user gets the last word either way.
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-  return autoUpdater;
-}
-
-// The updater lease lives beside the app-level config and the port registry —
-// BASE_USER_DATA is the one directory every profile on this machine shares, and
-// a lease that lived in a per-profile userData dir would be invisible to exactly
-// the instances it needs to coordinate with.
-function updaterLeasePath() {
-  return path.join(BASE_USER_DATA, 'updater-lease.json');
-}
-
-function readUpdaterLease() {
-  try { return JSON.parse(fs.readFileSync(updaterLeasePath(), 'utf8')); }
-  catch { return null; }  // absent or corrupt reads as "nobody holds it"
-}
-
-function writeUpdaterLease(lease) {
-  try { fs.writeFileSync(updaterLeasePath(), JSON.stringify(lease)); }
-  catch (err) { console.warn(ts(), '[updates] could not write lease:', err.message); }
-}
-
-// Drop the lease on a clean quit so the next instance takes over immediately
-// rather than waiting out the expiry. Best-effort: the expiry is what makes an
-// unclean exit survivable, and this only saves the wait.
-function releaseUpdaterLease() {
-  const held = readUpdaterLease();
-  if (held && held.pid === process.pid) {
-    try { fs.unlinkSync(updaterLeasePath()); } catch { /* already gone */ }
-  }
-}
-
-function updateContext() {
-  return {
-    platform: process.platform,
-    packaged: app.isPackaged,
-    env: process.env,
-    lease: readUpdaterLease(),
+// Updates (app-updater.js). A bot hosted by the app window never runs this:
+// the window owns updates for the machine (#301). A bot launched on its own
+// still does, and the lease keeps that to one process at a time.
+let _appUpdater = null;
+function appUpdater() {
+  if (_appUpdater) return _appUpdater;
+  _appUpdater = require('./app-updater.js').createAppUpdater({
+    app,
+    baseUserData: BASE_USER_DATA,
     profile: appProfile,
-  };
-}
-
-// Offer the staged build. Called when a download finishes and again when a call
-// ends, since the usual sequence is "update arrives mid-call, install after".
-async function offerStagedUpdate() {
-  if (!_updateDownloaded) return;
-  const version = _updateDownloaded.version;
-  if (_updateNotifiedFor === version) return;
-
-  const installable = updatePolicy.canInstallNow({ callStatus: localServer.callStatus });
-  if (!installable.ok) {
-    console.log(ts(), `[updates] ${version} staged; waiting (${installable.reason})`);
-    return;
-  }
-  _updateNotifiedFor = version;
-
-  const { dialog } = require('electron');
-  const { response } = await dialog.showMessageBox(mainWindow, {
-    type: 'info',
-    message: `Vibeconferencing ${version} is ready to install.`,
-    detail: 'It has already downloaded. Restarting takes a few seconds, or it '
-      + 'will install by itself the next time you quit.',
-    buttons: ['Restart Now', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
+    updateChannel: () => prefValue('updateChannel'),
+    dialogParent: () => mainWindow,
+    installBlocked: async () => {
+      const r = updatePolicy.canInstallNow({ callStatus: localServer.callStatus });
+      return r.ok ? null : r.reason;
+    },
+    // On macOS quitAndInstall() closes every window before app.quit(), so the
+    // before-quit handler that normally sets this fires too late to stop the
+    // close-window "Quit?" confirmation.
+    beforeInstall: async () => { appIsQuitting = true; },
+    log: (...a) => console.log(ts(), '[updates]', ...a),
+    warn: (...a) => console.warn(ts(), '[updates]', ...a),
   });
-  if (response !== 0) return;
-
-  // Re-check: the dialog is modal to the window, not to the world, and a call
-  // can start via /join-call or browser detection while it sits open.
-  const stillSafe = updatePolicy.canInstallNow({ callStatus: localServer.callStatus });
-  if (!stillSafe.ok) {
-    console.log(ts(), '[updates] install cancelled — a call started while asking');
-    return;
-  }
-  // On macOS, autoUpdater.quitAndInstall() closes all windows before calling
-  // app.quit(), so the 'before-quit' handler that normally sets this flag
-  // fires too late to suppress the close-window quit-confirmation dialog.
-  appIsQuitting = true;
-  autoUpdaterInstance().quitAndInstall();
+  return _appUpdater;
 }
-
-async function checkForUpdates({ silentWhenCurrent = true } = {}) {
-  if (_updateCheckInFlight) return;
-
-  // A manual check from the menu should say something even when this build
-  // can't update itself — silence would just look broken.
-  const allowed = updatePolicy.shouldCheck(updateContext());
-  if (!allowed.ok) {
-    console.log(ts(), `[updates] skipped (${allowed.reason})`);
-    if (!silentWhenCurrent) {
-      const { dialog, shell } = require('electron');
-      // Another window holding the lease is temporary and not a property of the
-      // build, so it gets its own wording — "not available for this build" would
-      // read as permanent for something that resolves on its own.
-      if (allowed.reason === 'another-instance-updating') {
-        const who = allowed.lease && allowed.lease.profile;
-        await dialog.showMessageBox(mainWindow, {
-          type: 'info',
-          message: 'Another window is already handling updates.',
-          detail: `${who ? `The "${who}" window` : 'Another window'} is checking for this machine — `
-            + 'only one does at a time, so several bots never download the same build at once. '
-            + 'Close it and this window will take over.',
-          buttons: ['OK'],
-        });
-        return;
-      }
-      const DETAIL = {
-        'dev-build': 'This is a development build — there is nothing to update.',
-        'linux-not-appimage': 'This copy was installed from a .deb, which your package '
-          + 'manager owns. Download new builds from the Releases page (or use the AppImage, '
-          + 'which updates itself).',
-      };
-      const buttons = allowed.reason === 'linux-not-appimage' ? ['Open Releases Page', 'OK'] : ['OK'];
-      const { response } = await dialog.showMessageBox(mainWindow, {
-        type: 'info',
-        message: 'Automatic updates are not available for this build.',
-        detail: DETAIL[allowed.reason] || allowed.reason,
-        buttons,
-        defaultId: buttons.length - 1,
-        cancelId: buttons.length - 1,
-      });
-      if (buttons[response] === 'Open Releases Page') {
-        shell.openExternal(`https://github.com/${UPDATE_REPO}/releases`);
-      }
-    }
-    return;
-  }
-
-  // Claimed it — record that before any slow work, so a sibling checking a
-  // second later sees the lease rather than starting its own download.
-  writeUpdaterLease(allowed.lease);
-
-  // Already have one staged — re-offer instead of downloading it twice.
-  if (_updateDownloaded) { _updateNotifiedFor = null; await offerStagedUpdate(); return; }
-
-  _updateCheckInFlight = true;
-  // Only a MANUAL check wants the "found → downloading" popup; the passive check
-  // stays silent until the build is staged.
-  _manualCheckPending = !silentWhenCurrent;
-  const current = app.getVersion();
-  try {
-    const result = await autoUpdaterInstance().checkForUpdates();
-    const found = result && result.updateInfo && result.updateInfo.version !== current;
-    if (found) {
-      // Fallback in case the 'update-available' event didn't beat us here.
-      announceManualUpdateDownloading(result.updateInfo.version);
-    } else if (!silentWhenCurrent) {
-      _manualCheckPending = false;
-      const { dialog } = require('electron');
-      await dialog.showMessageBox(mainWindow, {
-        type: 'info',
-        message: `Vibeconferencing ${current} is up to date.`,
-        buttons: ['OK'],
-      });
-    }
-  } catch (err) {
-    console.warn(ts(), '[updates] check failed:', err.message);
-    _manualCheckPending = false;
-    if (!silentWhenCurrent) {
-      const { dialog, shell } = require('electron');
-      const { response } = await dialog.showMessageBox(mainWindow, {
-        type: 'error',
-        message: 'Could not check for updates.',
-        detail: `${err.message}\n\nYou can always download the latest build from the Releases page.`,
-        buttons: ['Open Releases Page', 'OK'],
-        defaultId: 1,
-        cancelId: 1,
-      });
-      if (response === 0) shell.openExternal(`https://github.com/${UPDATE_REPO}/releases`);
-    }
-  } finally {
-    _updateCheckInFlight = false;
-  }
-}
-
-// Check on a delay after launch, then every few hours. The delay is jittered so
-// a fleet starting together doesn't hit GitHub in one burst.
+function checkForUpdates(opts) { return appUpdater().check(opts); }
+function offerStagedUpdate() { return appUpdater().offerStaged(); }
 function startUpdateChecks() {
-  // Only the STATIC question here — can this build ever update itself? Whether
-  // this instance is the one that checks is a per-check question now: the lease
-  // holder can quit at any time, and answering it once at launch would leave a
-  // still-running sibling permanently silent.
-  const updatable = updatePolicy.canAutoUpdate(updateContext());
-  if (!updatable.ok) {
-    console.log(ts(), `[updates] automatic checks off (${updatable.reason})`);
-    return;
-  }
-  app.on('will-quit', releaseUpdaterLease);
-  const updater = autoUpdaterInstance();
-  // Fires right after a check finds an update — BEFORE the download. Used to give
-  // a manual "Check for Updates…" instant feedback instead of a silent wait for
-  // the full download (no-op for the passive check, which leaves the flag off).
-  updater.on('update-available', (info) => announceManualUpdateDownloading(info.version));
-  updater.on('update-downloaded', (info) => {
-    _updateDownloaded = info;
-    _updateNotifiedFor = null;
-    console.log(ts(), `[updates] ${info.version} downloaded and staged`);
-    offerStagedUpdate();
-  });
-  updater.on('error', (err) => {
-    console.warn(ts(), '[updates] updater error:', err && err.message);
-    _manualCheckPending = false; // don't leave a manual check armed after a failed download
-  });
-
-  const SIX_HOURS = 6 * 60 * 60 * 1000;
-  setTimeout(() => {
-    checkForUpdates();
-    const timer = setInterval(() => checkForUpdates(), SIX_HOURS);
-    if (timer.unref) timer.unref();
-  }, updatePolicy.firstCheckDelayMs()).unref?.();
+  if (HEADLESS) { console.log(ts(), '[updates] hosted by the app window, which handles updates'); return; }
+  appUpdater().start();
 }
 
 function openAppSettings() {

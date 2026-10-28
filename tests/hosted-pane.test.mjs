@@ -65,11 +65,22 @@ test('Show terminal: an open agent terminal is brought forward, not opened again
   assert.match(main, /let chatTerminalWindowIds = \[\];/);
 });
 
-test('the app window builds its Bot menu from the selected bot and refreshes it on every selection', () => {
-  assert.match(sup, /channel: 'bot-menu-items'/);
-  assert.match(sup, /channel: 'bot-menu-click', args: \[label\]/);
-  assert.match(sup, /\{ label: 'Bot', submenu: botMenu \}/);
-  assert.equal((sup.match(/refreshBotMenu\(\);/g) || []).length, 2, 'on select and on deselect');
+test('the app window has no Bot menu: with several bots "Bot" does not say which one', () => {
+  assert.doesNotMatch(sup, /label: 'Bot', submenu/);
+  assert.doesNotMatch(sup, /refreshBotMenu|botMenuItems/);
+  // The one Bot-menu item with no button on the bot's panel moved to its row menu.
+  assert.match(sup, /ipcMain\.handle\('supervisor:navigate-webview'/);
+  assert.match(sup, /channel: 'bot-menu-click', args: \['Navigate Webview…'\]/);
+  assert.match(sidebar, /label: 'Navigate Webview…'/);
+});
+
+test('the app window owns updates: Check for Updates… in its menu, and hosted bots do not check', () => {
+  assert.match(sup, /label: 'Check for Updates…', click: \(\) => \{ if \(appUpdater\) appUpdater\.check\(\{ silentWhenCurrent: false \}\); \}/);
+  assert.match(sup, /startAppUpdates\(\);\n\s*installMenu\(\);/);
+  assert.match(main, /if \(HEADLESS\) \{ console\.log\(ts\(\), '\[updates\] hosted by the app window, which handles updates'\); return; \}/);
+  // Installing stops the bots first, and waits for every one to be out of its call.
+  assert.match(sup, /await stopAllBots\(\);\s*\n\s*botsStopped = true;/);
+  assert.match(sup, /isBusy\(inst\.callStatus\)/);
 });
 
 test('App settings: the one gear, in the sidebar footer, and ⌘, in the app menu', () => {

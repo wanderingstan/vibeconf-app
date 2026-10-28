@@ -82,6 +82,9 @@ let paths = null;
 let directory = null;
 // Set once a quit is genuinely intended, so the close handler stops intercepting.
 let quitting = false;
+// Set once the bots have been asked to stop, by the quit itself or by an
+// update install, so before-quit lets the quit through.
+let botsStopped = false;
 
 // ── The fleet, as seen from outside ─────────────────────────────────────────
 
@@ -954,7 +957,7 @@ function deselectBot() {
   relay.port = null;
   if (panelHost) panelHost.setVisible(false);
   pushState({ selected: null });
-  refreshBotMenu();
+  installMenu();
 }
 
 // Does this bot carry the panel relay? A bot started by an older build does
@@ -1003,7 +1006,7 @@ async function selectBot(name, { startScreen = null } = {}) {
   panelHost.setVisible(true);
   layoutShell();
   pushState({ selected: name });
-  refreshBotMenu();
+  installMenu();
   // Where the app reopens next time (resumeLastBot).
   try { store.set('lastSelectedBot', name); } catch { /* best-effort */ }
   return { ok: true, port: inst.port };
@@ -1288,25 +1291,50 @@ async function requestQuit() {
 // own item that asks first. Elsewhere there is no app menu; closing the window
 // is the gesture, and the close handler covers it.
 //
-// The Bot menu is the selected bot's own Bot menu (main.js bot-menu-items):
-// listed over the relay when a bot comes on stage, and each item run in that
-// bot by label, so the two cannot drift. Its items guard themselves, so an
-// enabled state that is a moment stale only costs a click that does nothing.
-let botMenuItems = [];
-async function refreshBotMenu() {
-  botMenuItems = [];
-  if (relay.port) {
-    try {
-      const r = await relayPost('/api/panel/invoke', { channel: 'bot-menu-items', args: [] });
-      if (Array.isArray(r.result)) botMenuItems = r.result;
-    } catch { /* an older bot: no Bot menu for it */ }
+// There is no Bot menu. It ran the SELECTED bot's items, and with several bots
+// in one window "Bot" no longer says which one; everything it held is on the
+// bot's own panel (gear, 👀, brain, ⓘ) except Navigate Webview, which is in
+// the bot's … menu in the sidebar (navigateWebview below).
+
+// Navigate Webview… for one bot, from its row menu. The URL prompt is that
+// bot's panel, so the bot comes on stage first; then its own menu item runs.
+async function navigateWebview(name) {
+  if (relay.name !== name) await selectBot(name);
+  if (!relay.port) return { ok: false, error: 'that bot is not running' };
+  try {
+    await relayPost('/api/panel/invoke', { channel: 'bot-menu-click', args: ['Navigate Webview…'] });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
   }
-  installMenu();
 }
 
-function runBotMenuItem(label) {
-  relayPost('/api/panel/invoke', { channel: 'bot-menu-click', args: [label] })
-    .catch((err) => console.warn(`[supervisor] Bot > ${label} failed:`, err.message));
+// Updates belong to the installed app, so the app window owns them, once for
+// the machine; the bots it hosts don't check (#301, app-updater.js). Installing
+// waits for every bot to be out of its call, and stops them first.
+let appUpdater = null;
+function startAppUpdates() {
+  appUpdater = require('./app-updater.js').createAppUpdater({
+    app,
+    baseUserData: paths.baseUserData,
+    profile: 'app window',
+    updateChannel: () => store.get('updateChannel') || 'release',
+    dialogParent: () => win,
+    bringForward: () => { try { app.focus({ steal: true }); } catch { /* not here */ } },
+    installBlocked: async () => {
+      const busy = [...(await scanRunning()).values()].some((inst) => require('./call-phase.js').isBusy(inst.callStatus));
+      return busy ? 'in-call' : null;
+    },
+    beforeInstall: async () => {
+      appQuitCause = 'installing an update';
+      quitting = true;
+      await stopAllBots();
+      botsStopped = true;
+    },
+    log: (...a) => console.log('[supervisor] [updates]', ...a),
+    warn: (...a) => console.warn('[supervisor] [updates]', ...a),
+  });
+  appUpdater.start();
 }
 
 // App settings are machine-wide, but the window that edits them lives in the
@@ -1319,19 +1347,12 @@ function openAppSettings() {
 
 function installMenu() {
   if (process.platform !== 'darwin') return;
-  const botMenu = botMenuItems.length
-    ? botMenuItems.map((i) => (i.type === 'separator' ? { type: 'separator' } : {
-      label: i.label,
-      ...(i.accelerator ? { accelerator: i.accelerator } : {}),
-      enabled: i.enabled !== false,
-      click: () => runBotMenuItem(i.label),
-    }))
-    : [{ label: 'No bot selected', enabled: false }];
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     {
       label: app.name,
       submenu: [
         { role: 'about' },
+        { label: 'Check for Updates…', click: () => { if (appUpdater) appUpdater.check({ silentWhenCurrent: false }); } },
         { type: 'separator' },
         { label: 'Settings…', accelerator: 'Command+,', enabled: !!relay.port, click: () => openAppSettings() },
         { type: 'separator' },
@@ -1343,7 +1364,6 @@ function installMenu() {
       ],
     },
     { role: 'editMenu' },
-    { label: 'Bot', submenu: botMenu },
     { role: 'windowMenu' },
   ]));
 }
@@ -1452,7 +1472,6 @@ function start() {
   // shutdown, Dock → Quit, the updater. None of those should park the process
   // on a dialog nobody is there to answer. Same rule as the bot window
   // (appIsQuitting in main.js).
-  let botsStopped = false;
   app.on('before-quit', (event) => {
     quitting = true;
     if (botsStopped) return;
@@ -1489,6 +1508,7 @@ function start() {
     ipcMain.handle('supervisor:select', (_e, name) => selectBot(name));
     ipcMain.handle('supervisor:account', () => fetchAccount());
     ipcMain.handle('supervisor:app-settings', () => { openAppSettings(); return { ok: true }; });
+    ipcMain.handle('supervisor:navigate-webview', (_e, name) => navigateWebview(name));
     // The account line opens your page on the website. Built here from the
     // configured site, never from a URL the page hands over.
     ipcMain.handle('supervisor:open-account', () => { shell.openExternal(`${websiteBase()}/me`); return { ok: true }; });
@@ -1532,6 +1552,7 @@ function start() {
     startBrowserScan();
     installAgentIntegration();
     reapTimer = setInterval(() => { reapTick().catch((err) => console.warn('[supervisor] reaper failed:', err.message)); }, REAP_EVERY_MS);
+    startAppUpdates();
     installMenu();
     if (BACKGROUND) {
       if (app.dock) app.dock.hide();
@@ -1542,6 +1563,8 @@ function start() {
     tick().catch((err) => console.warn('[supervisor] first tick failed:', err.message));
     pollTimer = setInterval(() => {
       tick().catch((err) => console.warn('[supervisor] tick failed:', err.message));
+      // A build staged mid-call is offered once every bot is out (no-op otherwise).
+      if (appUpdater && appUpdater.staged) appUpdater.offerStaged().catch(() => {});
     }, POLL_MS);
   });
 

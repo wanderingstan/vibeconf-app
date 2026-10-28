@@ -62,12 +62,12 @@ The example below is Claude Code on a Mac joining a Google Meet. The steps are l
 ### 1. Download and install
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
 
-<img src="media/app-window-jimmy.webp" width="560" alt="The Vibeconferencing app window: a sidebar listing bots (Alice, Bob, Jimmy, Charlie) and recent sessions, and the selected bot Jimmy on the right, a red panda in a cardigan among trees, with a meeting link box, a green 'Call Jimmy now' button, his agent (Claude Code) and his ElevenLabs voice">
+<img src="media/app-window-jimmy-2.webp" width="560" alt="The Vibeconferencing app window: a sidebar listing bots (Alice, Bob, Jimmy, Charlie) and recent sessions, and the selected bot Jimmy on the right, a red panda in a cardigan among trees, with a meeting link box, a green 'Call Jimmy now' button, his agent (Claude Code) and his ElevenLabs voice">
 
 *The app is your bots' window: each one's name and face, and one button to bring it into a call.*
 
-### 2. Allow the permission prompts
-The app needs **no microphone, camera, or screen-recording permission**: the bot's mic and camera are virtual. One optional prompt may appear, **Browser Automation**, which lets the app notice a call already open in your browser. Skip it if you like; you can always paste a link.
+### 2. Optionally allow automation
+One optional prompt may appear, **Browser Automation**, which lets the app notice a call already open in your browser. Skip it if you like; you can always paste a link.
 
 ### 3. Sign in
 Sign in from App Settings (**⌘,**). The one-click path below creates the meeting through vibeconferencing.com, and signing in also gets you the shared whiteboard. (Joining a call by link needs no account.)

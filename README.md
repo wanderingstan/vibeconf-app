@@ -57,14 +57,14 @@ Installing the app teaches Claude Code a new `/join-call` command. Quit and reop
 ### 5. Click **Call *Jimmy* now**
 That one button does the rest: the app creates a Google Meet, opens it in your browser, sends the bot in, and starts a Claude Code session for it in a terminal.
 
-### 6. Let it in, then talk to it
-Click **Admit** in your Meet window when it asks. Your bot appears as a participant. Now **just talk**. After a short pause it answers *out loud*, like anyone else in the call. Say *"we're done"* (or close Claude Code) when you want it to leave.
+### 6. Talk to it
+Your bot is in the call. **Just talk.** After a short pause it answers *out loud*, like anyone else in the room. Say *"we're done"* when you want it to leave.
 
 **That's it. You're in a call with your bot. 🎉**
 
 ### Other ways in
 
-- **A call that already exists:** paste its link into the app (Meet, Zoom, Teams or a WhatsApp call link; a Slack huddle once the bot is signed in to Slack) and press **Add *Jimmy* to call**. With Browser Automation allowed, a Meet open in your browser is offered automatically.
+- **A call that already exists:** paste its link into the app (Meet, Zoom, Teams or a WhatsApp call link; a Slack huddle once the bot is signed in to Slack) and press **Add *Jimmy* to call**. With Browser Automation allowed, a Meet open in your browser is offered automatically. The bot joins as a guest, so admit it when the meeting asks.
 - **From your agent:** with a call open in your browser, type `/join-call` in Claude Code. Codex and others do the same in plain language: *"join the Meet I have open"*.
 - **Calls that come to the bot:** connect Telegram, WhatsApp or a Twilio phone number in App Settings, put the callers you trust on its allowlist, and have them call. The bot picks up.
 

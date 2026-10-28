@@ -27,7 +27,7 @@
 
 <br />
 
-[Vibeconferencing](https://vibeconferencing.com/) is a desktop app and a calling API that puts **any AI agent into all major calling platforms as a real participant**.
+[Vibeconferencing](https://vibeconferencing.com/) is a desktop app and a calling API that puts **any AI agent into any major calling platform as a real participant**.
 
 It hears the conversation, speaks when appropriate, posts in chat, and shares its screen. And because it is your *actual* agent, not a notetaker, it **builds, researches and acts on what is said while you are still in the call**, with every skill and integration your agent already has. If your Claude can send an email, so can your bot in the call. If your Codex can update a spreadsheet, so can your bot.
 

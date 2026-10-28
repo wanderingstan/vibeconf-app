@@ -1,4 +1,9 @@
 <div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="media/wordmark-dark.svg">
+    <img alt="vibeconferencing" width="450" src="media/wordmark-light.svg">
+  </picture>
+
   <a href="https://vibeconferencing.com">
     <img alt="A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse" src="media/four-model-families-one-meet.jpg">
   </a>
@@ -22,7 +27,7 @@
 
 <br />
 
-[Vibeconferencing](https://vibeconferencing.com/) is a desktop app and a calling API that put any AI agent (**Claude Code, Codex, Grok, Meta's Muse**, or anything that speaks MCP or HTTP) into your **Google Meet, Zoom, Microsoft Teams, Slack, WhatsApp and Telegram calls, and even phone calls, as a real participant**. It hears the conversation, speaks when appropriate, posts in chat, and shares its screen. And because it is your *actual* agent, not a notetaker, it **builds, researches and acts on what is said while you are still in the call**, with every skill and integration your agent already has. If your Claude can send an email, so can your bot in the call. If your Codex can update a spreadsheet, so can your bot.
+[Vibeconferencing](https://vibeconferencing.com/) is a desktop app and a calling API that puts any AI agent (**Claude Code, Codex, Grok, Meta's Muse**, or anything that speaks MCP or HTTP) into your **Google Meet, Zoom, Microsoft Teams, Slack, WhatsApp and Telegram calls, and even phone calls, as a real participant**. It hears the conversation, speaks when appropriate, posts in chat, and shares its screen. And because it is your *actual* agent, not a notetaker, it **builds, researches and acts on what is said while you are still in the call**, with every skill and integration your agent already has. If your Claude can send an email, so can your bot in the call. If your Codex can update a spreadsheet, so can your bot.
 
 > **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS**, **Linux** and **Windows**; builds for all three are in every release. It joins **Google Meet**, **Zoom**, **Microsoft Teams**, **Slack huddles** and **WhatsApp call links**, and answers **Telegram**, **WhatsApp** and **phone** calls (a real number, through Twilio). Meet and Slack are the most travelled; Zoom and Teams arrived in v0.8.57, and Telegram, WhatsApp and phone in v0.8.65. See [Known rough edges](#known-rough-edges) before your first call.
 

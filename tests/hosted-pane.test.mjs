@@ -152,3 +152,27 @@ test('the Meeting link field says when its link came from the browser, and clear
   assert.match(panel, /btn\.addEventListener\('click', \(\) => \{ dismissCallUrl\(\); meetUrlInput\.focus\(\); \}\);/);
   assert.match(panel, /if \(meetUrlClear\) meetUrlClear\.style\.display = value \? '' : 'none';/);
 });
+
+// ⇧⌘L from a hosted bot's window (2026-10-28): it pulled the bot's own hidden
+// window on screen (moveTop is not redirected), and the prompt went to both
+// copies of the panel, so Cancel in one left the other holding the window up.
+test('Navigate Webview in a hosted bot asks in the app window only, and never raises the bot\'s own window', () => {
+  const relay = read('electron-app/panel-relay.js');
+  assert.match(relay, /const emitToRelay = \(channel, args = \[\]\) => emit\(channel, args\);/);
+  const item = main.slice(main.indexOf("label: 'Navigate Webview…',"), main.indexOf("label: 'Open Terminal with Bot'"));
+  const hosted = item.slice(item.indexOf('if (HEADLESS) {'), item.indexOf('return;\n              }') + 8);
+  assert.ok(hosted.length > 50, 'a hosted branch exists');
+  assert.match(hosted, /mainWindow\.show\(\);/, 'show() is redirected to putting this bot on stage');
+  assert.match(hosted, /panelRelay\.emitToRelay\('navigate-webview-prompt'/);
+  assert.doesNotMatch(hosted, /moveTop|panelView\.webContents\.send/);
+  assert.ok(item.indexOf('if (HEADLESS) {') < item.indexOf('mainWindow.moveTop()'), 'before the raise');
+});
+
+test('Bot Settings → Bot accounts has an Other sites row that opens the same prompt', () => {
+  const html = read('electron-app/renderer/panel.html');
+  const panel = read('electron-app/renderer/panel.js');
+  assert.match(html, /<div class="conn-group-label">Other sites<\/div>[\s\S]{0,700}id="otherSitesOpenBtn"/);
+  assert.match(panel, /getElementById\('otherSitesOpenBtn'\)[\s\S]{0,200}api\.invoke\('navigate-webview-context'\)[\s\S]{0,80}promptNavigateWebview\(/);
+  assert.match(panel, /api\.on\('navigate-webview-prompt', promptNavigateWebview\);/);
+  assert.match(main, /ipcMain\.handle\('navigate-webview-context'/);
+});

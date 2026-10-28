@@ -149,7 +149,11 @@ function createPanelRelay({ ipcMain, log = console, onQuit = null }) {
     return false;
   }
 
-  return { invoke, send, attachPanel, handleRequest, subscriberCount: () => subscribers.size, handlerCount: () => handlers.size };
+  // To the app window's copy of the panel only, not the bot's own hidden one.
+  // For a prompt: shown in both, the hidden copy's would hold the bot's window
+  // open with nobody able to answer it (⇧⌘L, 2026-10-28).
+  const emitToRelay = (channel, args = []) => emit(channel, args);
+  return { invoke, send, attachPanel, handleRequest, emitToRelay, subscriberCount: () => subscribers.size, handlerCount: () => handlers.size };
 }
 
 module.exports = { createPanelRelay };

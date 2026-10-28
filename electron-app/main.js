@@ -12292,6 +12292,24 @@ function createMainWindow() {
               // site — is watched live. Worth a warning; not worth refusing,
               // since fixing a broken share is a real reason to do it.
               const sharing = !!(localServer && localServer.sharing);
+              // Hosted by the app window (#301): the panel on screen is the app
+              // window's copy. Raising this bot's own window (moveTop is not
+              // redirected the way show/focus are) pulled a hidden window on
+              // screen, and the prompt sent to both copies left one up after
+              // Cancel, holding it there. So: put this bot on stage in the app
+              // window (show() is redirected to that), wait for its panel to
+              // connect, and ask there only.
+              if (HEADLESS) {
+                mainWindow.show();
+                (async () => {
+                  for (let waited = 0; waited < 5000 && panelRelay.subscriberCount() === 0; waited += 100) {
+                    await new Promise((r) => setTimeout(r, 100));
+                  }
+                  if (panelRelay.subscriberCount() === 0) { console.warn('[electron] Navigate Webview: the app window never showed this bot'); return; }
+                  panelRelay.emitToRelay('navigate-webview-prompt', [{ currentUrl, sharing }]);
+                })();
+                return;
+              }
               // Raise the app window so the URL prompt is actually on screen —
               // it may be behind an already-open pop-out, or minimised.
               try {
@@ -14578,6 +14596,13 @@ function setupIPC() {
   // the bot's credentials (see createWhiteboardWindow). One cookie jar: a login
   // completed here is live in the Meet view, which is the whole point of the
   // command. Nothing about the call is touched.
+  // What the Navigate Webview prompt pre-fills and warns about, for the Bot
+  // accounts button (the menu item works this out itself).
+  ipcMain.handle('navigate-webview-context', () => {
+    let currentUrl = '';
+    try { if (whiteboardWindow && !whiteboardWindow.isDestroyed()) currentUrl = whiteboardWindow.webContents.getURL(); } catch { /* none */ }
+    return { currentUrl, sharing: !!(localServer && localServer.sharing) };
+  });
   ipcMain.handle('navigate-webview', (_event, rawUrl) => {
     // Prepend https:// when the user typed a bare host (a different explicit
     // scheme is still refused). See nav-url.js.

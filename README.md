@@ -6,7 +6,7 @@
 
 <p align="center"><a href="https://vibeconferencing.com"><img alt="Download Vibeconferencing" src="https://img.shields.io/badge/Download-vibeconferencing.com-9b2c9e?style=for-the-badge" height="44"></a></p>
 
-Or grab a build for macOS, Linux or Windows from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, then follow the [5-minute setup](#get-in-a-call-with-your-bot--about-5-minutes) below.
+Or grab a build for macOS, Linux or Windows from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, then follow the [5-minute setup](#get-in-a-call-with-your-bot-about-5-minutes) below.
 
 ![A Google Meet call with two humans and six AI agents, each bot tile labelled with the model family behind it: Claude, Grok, Codex and Meta's Muse](media/four-model-families-one-meet.jpg)
 
@@ -32,27 +32,16 @@ The app is a **calling API** first, and a desktop app that uses it. One HTTP API
 
 Browse and try it at **[vibeconferencing.com/api](https://vibeconferencing.com/api)**, read the **[API guide](docs/api/README.md)**, or import **[`openapi.yaml`](docs/api/openapi.yaml)** into your client. The bundled MCP server is a thin client of this API; [docs/api/mcp.md](docs/api/mcp.md) maps the tools onto the endpoints.
 
-## Not notes. The thing.
-
-Most bots send a summary after everyone leaves. This one works **in the call**. Because the bot **is** your Claude Code / Codex / Cursor session, it can do anything your agent can do in a normal session, live in the room: research a question, send the email, update the website, analyze the data, or build the thing you're discussing. It shares its screen to show the work as it evolves, and you take the result with you the moment you hang up.
-
-> **Everyone else:** a transcript, later.
-> **Yours:** the first version, now.
-
-![Asked for something visually compelling, one bot puts a clay "Better Call Jimmy" on the shared board while the other bot is still thinking; Seth reacts](media/made-it-while-the-other-bot-was-thinking.gif)
-
-*A real call, Aug 11, 2026: asked for something visually compelling, one bot put a clay "Better Call Jimmy" on the board while the other was still thinking.*
-
-You drive it from your agent (just say *"join my call"*); the app is the "body" that gets it into the meeting.
-
 ---
 
-## Get in a call with your bot — about 5 minutes
+## Get in a call with your bot (about 5 minutes)
+
+The example below is Claude Code on a Mac joining a Google Meet. The steps are largely the same for every agent and platform: Linux and Windows builds are in the same release, Codex or any MCP agent swaps in for Claude Code ([see below](#using-codex-cursor-or-another-agent)), and the [platform notes](docs/api/platforms.md) cover Zoom, Teams, Slack, WhatsApp, Telegram and phone.
 
 **You'll need:**
 - A **Mac** for the steps below. *(On Linux or Windows, grab the AppImage, `.deb` or installer from the same release; for an always-on Linux box in the cloud, see [docs/cloud-box.md](docs/cloud-box.md).)*
-- **Claude Code** installed and working. *(Codex, Cursor, or any MCP agent works too; [see below](#using-codex-cursor-or-another-agent).)*
-- A browser (whatever you already use — auto-detecting your open Meet works in Chrome, Brave, and Safari; in Firefox or anything else, paste the Meet link into the app)
+- **Claude Code** installed and working.
+- A browser. Any will do for the one-click path below; auto-detecting a call you already have open works in Chrome, Brave and Safari.
 
 ### 1. Download and install
 Download the **`.dmg`** from the **[latest release](https://github.com/wanderingstan/vibeconf-app/releases/latest)**, open it, and drag **Vibeconferencing** into your Applications folder. Open it once.
@@ -62,30 +51,27 @@ Download the **`.dmg`** from the **[latest release](https://github.com/wandering
 *The app is your bot's window: its name, its face, and one button to bring it into a call.*
 
 ### 2. Allow the permission prompts
-The app needs **no microphone, camera, or screen-recording permission**: the bot's mic and camera are virtual. One optional prompt may appear, **Browser Automation**, which lets the app find your open Meet by itself. Skip it and just paste the Meet link into the app.
+The app needs **no microphone, camera, or screen-recording permission**: the bot's mic and camera are virtual. One optional prompt may appear, **Browser Automation**, which lets the app notice a call already open in your browser. Skip it if you like; you can always paste a link.
 
-### 3. Sign in *(optional)*
-Signing in gets you access to the shared whiteboard. It's optional and not automatic; sign in anytime from App Settings (**⌘,**).
+### 3. Sign in
+Sign in from App Settings (**⌘,**). The one-click path below creates the meeting through vibeconferencing.com, and signing in also gets you the shared whiteboard. (Joining a call by link needs no account.)
 
 ### 4. Restart Claude Code
 Installing the app teaches Claude Code a new `/join-call` command. Quit and reopen Claude Code once so it shows up.
 
-### 5. Start a Google Meet
-Open any Google Meet in your browser: a new meeting, a calendar event, whatever.
+### 5. Click **Call *Jimmy* now**
+That one button does the rest: the app creates a Google Meet, opens it in your browser, sends the bot in, and starts a Claude Code session for it in a terminal.
 
-### 6. Tell your agent to join
-In Claude Code, type:
-```
-/join-call
-```
-The bot finds your open Meet, joins it, and asks to be let in. (No need to copy any link; it detects the meeting automatically.)
-
-Prefer a click? Press **Join call** in the app instead. It opens a terminal with a fresh Claude Code session that joins the call for you.
-
-### 7. Let it in, then talk to it
+### 6. Let it in, then talk to it
 Click **Admit** in your Meet window when it asks. Your bot appears as a participant. Now **just talk**. After a short pause it answers *out loud*, like anyone else in the call. Say *"we're done"* (or close Claude Code) when you want it to leave.
 
 **That's it. You're in a call with your bot. 🎉**
+
+### Other ways in
+
+- **A call that already exists:** paste its link into the app (Meet, Zoom, Teams or a WhatsApp call link; a Slack huddle once the bot is signed in to Slack) and press **Add *Jimmy* to call**. With Browser Automation allowed, a Meet open in your browser is offered automatically.
+- **From your agent:** with a call open in your browser, type `/join-call` in Claude Code. Codex and others do the same in plain language: *"join the Meet I have open"*.
+- **Calls that come to the bot:** connect Telegram, WhatsApp or a Twilio phone number in App Settings, put the callers you trust on its allowlist, and have them call. The bot picks up.
 
 ## Make it better *(optional)*
 
@@ -185,7 +171,7 @@ pnpm dev      # run from source
 pnpm dist     # signed/notarized .dmg (Apple Developer creds needed; dist:fast skips notarization)
 ```
 
-`pnpm dist` reads its Apple credentials from the environment — all three are
+`pnpm dist` reads its Apple credentials from the environment. All three are
 required, and electron-builder fails the build naming the one that's missing:
 
 ```bash
@@ -195,7 +181,7 @@ export APPLE_TEAM_ID=PNPVJ6J7X2
 ```
 
 With none of them set, notarization is skipped with a warning rather than
-failing — you get a signed but un-notarized app. Use `dist:fast` when that's
+failing: you get a signed but un-notarized app. Use `dist:fast` when that's
 what you actually want.
 
 The build bundles `../mcp-server` and `../extension`, so keep the repo layout intact.

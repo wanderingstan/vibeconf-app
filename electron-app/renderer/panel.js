@@ -3604,15 +3604,44 @@ function applyCallingAppStatus(status) {
   for (const row of document.querySelectorAll('[data-calling-app-row]')) {
     row.classList.toggle('unusable', !status?.[row.dataset.callingAppRow]);
   }
-  for (const app of CALLING_APPS) {
-    const block = document.getElementById(app + 'CallsBlock');
-    if (block) block.style.display = status?.[app] ? '' : 'none';
-  }
+  for (const app of CALLING_APPS) applyCallsFold(app);
   // Twilio connects through a form, not a sign-in window.
   for (const btn of document.querySelectorAll('button[data-calling-app-form]')) {
     btn.style.display = status?.[btn.dataset.callingAppForm] ? 'none' : '';
   }
   if (status?.twilio) { const f = document.getElementById('twilioConnectForm'); if (f) f.style.display = 'none'; }
+}
+
+// Each connected calling app's call settings fold under its row ("Calls ▾"),
+// with a one-line summary in the row, so three apps' allowlists and Twilio's
+// passcode don't take over Bot accounts. Collapsed by default, except when
+// answering is on with nobody allowed: that is the one state worth seeing.
+const callsOpen = {};
+function callsSummary(app) {
+  const answer = document.getElementById(app + 'AnswerCalls');
+  const allowed = document.getElementById(app + 'AllowedCallers');
+  if (!answer?.checked) return 'Not answering calls';
+  const n = (allowed?.value || '').split(/\n/).map((l) => l.trim()).filter(Boolean).length;
+  return n ? `Answers calls · ${n} allowed caller${n === 1 ? '' : 's'}` : 'Answers calls · no one allowed yet';
+}
+function applyCallsFold(app) {
+  const connected = !!callingAccountsForLinks?.[app];
+  const answer = document.getElementById(app + 'AnswerCalls');
+  if (connected && answer?.checked && callsSummary(app).endsWith('no one allowed yet') && callsOpen[app] === undefined) callsOpen[app] = true;
+  const open = connected && !!callsOpen[app];
+  const block = document.getElementById(app + 'CallsBlock');
+  if (block) block.style.display = open ? '' : 'none';
+  const toggle = document.querySelector(`[data-calls-toggle="${app}"]`);
+  if (toggle) { toggle.style.display = connected ? '' : 'none'; toggle.setAttribute('aria-expanded', String(open)); }
+  const sub = document.querySelector(`[data-calls-summary="${app}"]`);
+  if (sub) sub.textContent = connected ? callsSummary(app) : '';
+}
+for (const toggle of document.querySelectorAll('[data-calls-toggle]')) {
+  toggle.addEventListener('click', () => {
+    const app = toggle.dataset.callsToggle;
+    callsOpen[app] = !callsOpen[app];
+    applyCallsFold(app);
+  });
 }
 
 // Calling-app calls (#843): each app's switch and allowlist. Written through
@@ -3623,6 +3652,7 @@ for (const app of CALLING_APPS) {
   api.invoke('get-config', [app + 'AnswerCalls', app + 'AllowedCallers']).then((cfg) => {
     if (answer) answer.checked = !!cfg?.[app + 'AnswerCalls'];
     if (allowed) allowed.value = cfg?.[app + 'AllowedCallers'] || '';
+    applyCallsFold(app);
   }).catch(() => {});
   answer?.addEventListener('change', () => {
     // One app answers at a time: checking this one clears the others
@@ -3634,8 +3664,10 @@ for (const app of CALLING_APPS) {
       }
     }
     setConfig(app + 'AnswerCalls', answer.checked).then(refreshAnswersForLinks);
+    for (const a of CALLING_APPS) applyCallsFold(a);
   });
   allowed?.addEventListener('change', () => setConfig(app + 'AllowedCallers', allowed.value));
+  allowed?.addEventListener('input', () => applyCallsFold(app));
 }
 api.invoke('calling-app-status').then(applyCallingAppStatus).catch(() => {});
 api.on('calling-app-status', applyCallingAppStatus);

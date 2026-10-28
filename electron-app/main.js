@@ -8029,7 +8029,7 @@ function promptInstallClaude() {
       dialog.showMessageBox(parent, { type: 'info', title: 'Copied', message: 'Install command copied', detail: `Paste it into a terminal and run it:\n\n${cmd}\n\nThen click Join again.`, buttons: ['OK'], noLink: true });
     } else if (choice === 'Install Claude Code') {
       // Reuse the Terminal `do script` path so the user WATCHES the official installer run.
-      const script = `tell application "Terminal"\n  activate\n  do script "${cmd.replace(/"/g, '\\"')}"\nend tell`;
+      const script = `tell application "Terminal"\n  activate\n  do script "${cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\nend tell`;
       execFile('osascript', ['-e', script], (err) => {
         if (err) { console.error('[electron] install launch failed:', err.message); clipboard.writeText(cmd); }
       });
@@ -8264,7 +8264,9 @@ async function launchClaudeTerminal(meetCode, { onboardingCall = false, calendar
   const slashCmd = onboardingCall ? 'onboarding-call' : 'join-call';
   const { joinSlashCommand } = require('./agent-spawn.js');
   const slashLine = joinSlashCommand({ slashCmd, meetCode, botName: botName.replace(/"/g, ''), summoned });
-  const claudeCmd = `claude${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"${slashLine}\\"`;
+  // #915: by path, not by name. detectClaude found it; the Terminal's PATH may not.
+  const claudeWord = claudeBin === 'claude' ? 'claude' : require('./claude-install.js').shellQuote(claudeBin);
+  const claudeCmd = `${claudeWord}${resumeFlag}${nameFlag}${dangerousFlag}${modelFlag}${mcpFlags} \\"${slashLine}\\"`;
 
   // #242: run the agent as our own child instead, when asked to. Everything
   // above (detection, auth nag, workdir, MCP config, bot name) is shared — the
@@ -13677,7 +13679,8 @@ function setupIPC() {
   ipcMain.handle('onboarding:install-claude', () => {
     // Open Terminal running the official installer (visible — the wizard is the consent).
     const cmd = require('./claude-install.js').installCommandFor();
-    const script = `tell application "Terminal"\n  activate\n  do script "${cmd}"\nend tell`;
+    // Escaped for the AppleScript string: the command carries quotes now (#915).
+    const script = `tell application "Terminal"\n  activate\n  do script "${cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"\nend tell`;
     require('child_process').execFile('osascript', ['-e', script], () => {});
     return { ok: true };
   });
@@ -13793,7 +13796,7 @@ function setupIPC() {
     // hook), so signing in + starting a session flips readiness. Same Terminal path as a call.
     const claudeDir = store.get('claudeWorkDir') || ensureAgentWorkdir();
     ensureClaudeReadyHook(claudeDir, localServer.port);
-    const cmd = require('./launch-command.js').buildTerminalCommand({ workdir: claudeDir, innerCmd: 'claude' });
+    const cmd = require('./launch-command.js').buildTerminalCommand({ workdir: claudeDir, innerCmd: require('./claude-install.js').claudeShellWord() });
     const script = `tell application "Terminal"\n  activate\n  do script "${cmd}"\nend tell`;
     require('child_process').execFile('osascript', ['-e', script], () => {});
     return { ok: true };
@@ -13824,7 +13827,7 @@ function setupIPC() {
     const shell = process.env.SHELL || '/bin/zsh';
     try {
       require('child_process').execFile(
-        shell, ['-lc', 'claude -p "ok" < /dev/null'],
+        shell, ['-lc', `${require('./claude-install.js').claudeShellWord()} -p "ok" < /dev/null`],
         { cwd: probeDir, timeout: 30000, maxBuffer: 1 << 20 },
         (err, stdout) => {
           try { if (probeDir !== os.tmpdir()) fs.rmSync(probeDir, { recursive: true, force: true }); } catch { /* noop */ }

@@ -40,7 +40,37 @@ function installCommandFor(platform = process.platform) {
       + '([Environment]::GetEnvironmentVariable(\'Path\',\'User\').TrimEnd(\';\') + \';\' + $b), \'User\'); '
       + '$env:PATH += \';\' + $b }';
   }
-  return 'curl -fsSL https://claude.ai/install.sh | bash';                       // macOS / Linux
+  // macOS / Linux: the same fix (#915). The native installer drops `claude` in
+  // ~/.local/bin and only PRINTS a note asking you to add that to PATH. A new
+  // macOS user has no ~/.zshrc that does, so `claude` was "command not found"
+  // right after "successfully installed" (the Mac mini, 2026-10-27), and the
+  // wizard said installed (it checks the path directly) while the agent Terminal,
+  // which runs it by name, could not start it.
+  //
+  // Appends the line to the rc file the user's shell reads, unless something
+  // already mentions .local/bin (re-running is a no-op, and so is an installer
+  // that one day does this itself), and exports it for the current window.
+  // No backslashes and no double quotes inside single quotes: the command goes
+  // through AppleScript `do script "…"` as well as being pasted by hand.
+  const rc = platform === 'darwin' ? '.bash_profile' : '.bashrc';
+  return 'curl -fsSL https://claude.ai/install.sh | bash'
+    + ' && { f="$HOME/.zshrc"; [ "${SHELL##*/}" = bash ] && f="$HOME/' + rc + '";'
+    + ' grep -qs ".local/bin" "$f" || echo \'export PATH="$HOME/.local/bin:$PATH"\' >> "$f";'
+    + ' export PATH="$HOME/.local/bin:$PATH"; }';
+}
+
+// A value as one single-quoted shell word.
+function shellQuote(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
+// The CLI as a shell word for commands the app runs itself (#915): its absolute
+// path when it is somewhere we know, so a PATH without ~/.local/bin cannot break
+// the agent Terminal, the sign-in Terminal or the auth checks. Bare `claude`
+// otherwise (a Homebrew or nvm install found only through the user's PATH).
+function claudeShellWord({ paths = knownClaudePaths(), exists = fs.existsSync } = {}) {
+  const p = paths.find((x) => { try { return exists(x); } catch { return false; } });
+  return p ? shellQuote(p) : 'claude';
 }
 
 // Where the native installer / package managers commonly drop the binary — checked
@@ -113,7 +143,7 @@ function detectClaudeAuth({ timeoutMs = 6000 } = {}) {
     const done = (authed, method = null) => resolve({ authed, method });
     if (process.platform === 'win32') return done(null); // no login-shell equivalent yet — see #468
     const shell = process.env.SHELL || '/bin/zsh';
-    execFile(shell, ['-lc', 'claude auth status'], { timeout: timeoutMs }, (err, stdout) => {
+    execFile(shell, ['-lc', `${claudeShellWord()} auth status`], { timeout: timeoutMs }, (err, stdout) => {
       const raw = String(stdout || '').trim();
       if (!raw) return done(null);
       // Be forgiving about anything a login shell prints before the JSON (motd, nvm chatter).
@@ -131,4 +161,4 @@ function detectClaudeAuth({ timeoutMs = 6000 } = {}) {
   });
 }
 
-module.exports = { installCommandFor, knownClaudePaths, detectClaude, detectClaudeAuth };
+module.exports = { installCommandFor, knownClaudePaths, detectClaude, detectClaudeAuth, claudeShellWord, shellQuote };

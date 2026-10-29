@@ -140,7 +140,7 @@ let _platformCaptions = null;
 let _audioTranscription = null;
 // The live call platform, by the short names the panel uses.
 function activeProviderName() {
-  return slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : teamsProviderMode ? 'teams' : callingAppMode || 'meet';
+  return activePlatform;
 }
 
 function captionSource() {
@@ -291,20 +291,29 @@ function ts() {
 // DOM commands (mic/camera/chat/share/captions) target the huddle POPUP where
 // SlackProvider runs, while audio-out (play-tts/play-speech-test/play-join-chime)
 // targets the MAIN app.slack.com window (the VirtualMic that Chime captures).
-// Set in createMainWindow when --provider=slack.
-let slackProviderMode = false;
+//
+// Which platform's view is loaded in meetView: 'meet' | 'slack' | 'zoom' |
+// 'teams' | 'telegram' | 'whatsapp' | 'twilio'. One value, set by each provider
+// switch, so two platforms can never both look live. (It replaced four flags;
+// _openMeetInFreshView cleared three of them and left slackProviderMode set,
+// which sent a later Meet call's popup commands to a stale Slack surface.)
+//
+// It says which kind of VIEW is up, not whether a call is: it stays put when a
+// call ends and the view shows the idle page. callStatus says the rest.
+//
+// Zoom (#318) and Teams are one surface like Meet: meetView is the web-client
+// view and its preload handles every command. Calling apps (#843: Telegram,
+// WhatsApp, Twilio) are one surface too, with no link to join: the view sits in
+// the bot's own account waiting for calls ("standby"), and an allowed caller
+// turns it into a call. Slack is the one with two surfaces: slackSurface holds
+// the huddle popup, set in createMainWindow when --provider=slack.
+let activePlatform = 'meet';
 let slackSurface = null;
-// Zoom (#318) is one surface like Meet, so it needs no routing here: meetView is
-// the Zoom web-client view and preload-zoom.js handles every command. The flag
-// only tells provider switches and the join path which view is live.
-let zoomProviderMode = false;
-// Microsoft Teams: single surface like Zoom (preload-teams.js on meetView).
-let teamsProviderMode = false;
-// Calling apps (#843): Telegram or WhatsApp, a single surface too (its preload
-// on meetView), but with no link to join. While set, the view sits in the
-// bot's own account waiting for calls ("standby"); an allowed caller turns it
-// into a call. Holds the app's id ('telegram' | 'whatsapp'), null otherwise.
-let callingAppMode = null;
+const CALLING_APP_PLATFORMS = new Set(['telegram', 'whatsapp', 'twilio']);
+// The calling app whose standby or call holds the view, or null.
+function callingApp() {
+  return CALLING_APP_PLATFORMS.has(activePlatform) ? activePlatform : null;
+}
 // In Slack mode, ONLY these commands target the huddle POPUP (huddle-UI / DOM
 // ops handled by SlackProvider). Everything else — TTS/play-* (VirtualMic),
 // avatar/engagement (VirtualCamera), etc. — is a page-inject op on the MAIN
@@ -319,7 +328,7 @@ const SLACK_POPUP_CMDS = new Set([
 
 // The webContents a call command should target, given its action/channel name.
 function callCmdWC(name) {
-  if (slackProviderMode && slackSurface && SLACK_POPUP_CMDS.has(name)) {
+  if (activePlatform === 'slack' && slackSurface && SLACK_POPUP_CMDS.has(name)) {
     // These commands (chat, mic, camera, captions, share) are handled ONLY by
     // the huddle popup. If it isn't up yet (e.g. a chat fired before auto-join
     // completed), return null — do NOT fall back to meetView (the main
@@ -631,7 +640,7 @@ function cropCallRecordingEnabled() {
 // <video> elements, which on Zoom/Teams can be a fraction of the picture
 // (#814). Everywhere else, record the whole view.
 function recordingCropApplies() {
-  return cropCallRecordingEnabled() && !slackProviderMode && !zoomProviderMode && !teamsProviderMode && !callingAppMode;
+  return cropCallRecordingEnabled() && activePlatform === 'meet';
 }
 
 // force=true is the explicit request (start_recording MCP tool): record
@@ -2169,7 +2178,7 @@ const localServer = new globalThis.LocalServer({
     // to navigate to — synthesizing meet.google.com/<slack-code> would load a
     // broken page into the Slack surface. So skip navigation; /join-call becomes
     // "confirm in-call + start the loop". For Meet, navigate as before.
-    if (slackProviderMode || /^slack-/.test(meetCode || '')) {
+    if (activePlatform === 'slack' || /^slack-/.test(meetCode || '')) {
       console.log('[local-server] Slack join — bot already in huddle, skipping Meet navigation');
     } else if (/^whatsapp-link-/.test(meetCode || '')) {
       // A WhatsApp call link: activateWhatsAppCallLink (onJoinWhatsApp) loaded it.
@@ -2177,7 +2186,7 @@ const localServer = new globalThis.LocalServer({
     } else if (/^teams-/.test(meetCode || '')) {
       // Teams: activateTeamsProvider (via onJoinTeams) already loaded the meeting.
       console.log('[local-server] Teams join — meeting view already loading, skipping Meet navigation');
-    } else if (zoomProviderMode || /^zoom-/.test(meetCode || '')) {
+    } else if (activePlatform === 'zoom' || /^zoom-/.test(meetCode || '')) {
       // Zoom: activateZoomProvider (via onJoinZoom) already loaded the meeting.
       console.log('[local-server] Zoom join — meeting view already loading, skipping Meet navigation');
     } else {
@@ -10374,7 +10383,7 @@ app.whenReady().then(async () => {
   // Telegram chat box), for when the page's editing commands lack focus.
   // Only from the call view itself, and only into it.
   ipcMain.handle('calling-app-insert-text', async (event, { text } = {}) => {
-    if (!callingAppMode || !meetView || event.sender !== meetView.webContents) return { ok: false };
+    if (!callingApp() || !meetView || event.sender !== meetView.webContents) return { ok: false };
     try { await meetView.webContents.insertText(String(text || '').slice(0, 4000)); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
   });
   ipcMain.handle('calling-app-incoming-call', (_event, { app, caller = {} } = {}) => {
@@ -11313,10 +11322,7 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
   });
   meetView = surface.view;
   pushInitialAvatarStateOnLoad(meetView); // #828
-  slackProviderMode = true;
-  zoomProviderMode = false;
-  teamsProviderMode = false;
-  callingAppMode = null;
+  activePlatform = 'slack';
   slackSurface = surface;
   mainWindow.addBrowserView(meetView);
   layoutViews();
@@ -11330,15 +11336,12 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
 // whether a call is about to take the view: both only matter when this tears
 // down a calling-app standby (noteCallingAppStandbyTeardown).
 function activateMeetProvider({ via = 'activateMeetProvider', forCall = false } = {}) {
-  if (!slackProviderMode && !zoomProviderMode && !teamsProviderMode && !callingAppMode && meetView && !meetView.webContents.isDestroyed()) return;
+  if (activePlatform === 'meet' && meetView && !meetView.webContents.isDestroyed()) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ', zoom=' + zoomProviderMode + ', teams=' + teamsProviderMode + ', calling app=' + callingAppMode + ') via ' + via);
+  console.log('[electron] Activating Meet provider (was ' + activePlatform + ') via ' + via);
   noteCallingAppStandbyTeardown(via, { forCall });
   destroyProviderView();
-  slackProviderMode = false;
-  zoomProviderMode = false;
-  teamsProviderMode = false;
-  callingAppMode = null;
+  activePlatform = 'meet';
   slackSurface = null;
   // #347: follows the active partition, so a provider switch mid-fallback
   // doesn't silently drop the bot back onto the blocked account.
@@ -11404,11 +11407,8 @@ function activateTeamsProvider(teamsUrl) {
   console.log('[electron] Activating Teams provider:', teamsUrl);
   noteCallingAppStandbyTeardown('Teams join', { forCall: true });
   destroyProviderView();
-  slackProviderMode = false;
+  activePlatform = 'teams';
   slackSurface = null;
-  zoomProviderMode = false;
-  callingAppMode = null;
-  teamsProviderMode = true;
   ensureMeetSessionConfigured(SESSION_PARTITION);
   meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-teams.js' });
   pushInitialAvatarStateOnLoad(meetView); // #828
@@ -11547,11 +11547,12 @@ let callingAppStandbyLastViewUrl = null;
 let callingAppStandbyLastViewActivityAt = null;
 let callingAppStandbyTimer = null;
 
-// Called by every provider switch BEFORE it clears callingAppMode. Silent when
+// Called by every provider switch BEFORE it moves activePlatform off a calling app. Silent when
 // no standby was up or it is not wanted (deliberately switched off). A call
 // taking the view is routine; anything else is loud, in the log and the panel,
 // because from here until standby returns the bot answers no calls.
 function noteCallingAppStandbyTeardown(via, { forCall = false } = {}) {
+  const callingAppMode = callingApp();
   if (!callingAppMode) return;
   const { standbyTeardownSeverity } = require('./calling-app-standby');
   const standbyWanted = callingAppStandbyWanted();
@@ -11590,12 +11591,12 @@ function checkCallingAppStandby() {
     callingAppStandbyLastViewUrl = url;
     callingAppStandbyLastViewActivityAt = now;
   }
-  if (standbyWanted && callingAppMode !== standbyWanted && !callingAppStandbyInterruption && !callingAppStandbyLostSeenAt) {
+  if (standbyWanted && callingApp() !== standbyWanted && !callingAppStandbyInterruption && !callingAppStandbyLostSeenAt) {
     callingAppStandbyLostSeenAt = now;
   }
   const verdict = standbyRecovery({
     standbyWanted,
-    callingAppMode,
+    callingAppMode: callingApp(),
     callStatus: localServer?.callStatus,
     interruption: callingAppStandbyInterruption,
     firstSeenAt: callingAppStandbyLostSeenAt,
@@ -11633,11 +11634,8 @@ function activateCallingAppStandby(app, reason, { startUrl = null } = {}) {
   callingAppStandbyLostSeenAt = null;
   clearBroadcastError(CALLING_APP_STANDBY_ERROR_KEY);
   destroyProviderView();
-  slackProviderMode = false;
+  activePlatform = app;
   slackSurface = null;
-  zoomProviderMode = false;
-  teamsProviderMode = false;
-  callingAppMode = app;
   ensureMeetSessionConfigured(SESSION_PARTITION);
   meetView = createMeetView(SESSION_PARTITION, { preload: spec.preload });
   pushInitialAvatarStateOnLoad(meetView); // #828
@@ -11676,6 +11674,7 @@ function activateWhatsAppCallLink(url) {
 // Leave standby (the owner switched calls off, or signed out). Only while
 // idle: a live call is never cut by a settings change.
 function deactivateCallingAppStandby(reason) {
+  const callingAppMode = callingApp();
   if (!callingAppMode) return;
   const status = localServer?.callStatus;
   if (status && status !== 'idle' && status !== 'call-complete') return;
@@ -11689,7 +11688,7 @@ function refreshCallingAppStandby(reason) {
   const status = localServer?.callStatus;
   if (status && status !== 'idle' && status !== 'call-complete') return;
   const want = callingAppStandbyWanted();
-  if (want && want !== callingAppMode) activateCallingAppStandby(want, reason);
+  if (want && want !== callingApp()) activateCallingAppStandby(want, reason);
   else if (!want) deactivateCallingAppStandby(reason);
 }
 
@@ -11700,7 +11699,7 @@ function decideCallingAppCall(app, caller) {
   const spec = CALLING_APP_CALLS[app];
   if (!spec) return { answer: false, reason: 'unknown calling app: ' + app };
   const mod = require(spec.module);
-  if (callingAppMode !== app) return { answer: false, reason: 'not in ' + spec.label + ' standby' };
+  if (callingApp() !== app) return { answer: false, reason: 'not in ' + spec.label + ' standby' };
   if (!store || !store.get(app + 'AnswerCalls')) return { answer: false, reason: 'answering ' + spec.label + ' calls is off' };
   const status = localServer?.callStatus;
   // After-call work does not make the bot busy: a phone that won't pick up for
@@ -11748,11 +11747,8 @@ function activateZoomProvider(zoomUrl) {
   console.log('[electron] Activating Zoom provider:', webUrl);
   noteCallingAppStandbyTeardown(isMeeting ? 'Zoom join' : 'Zoom sign-in', { forCall: isMeeting });
   destroyProviderView();
-  slackProviderMode = false;
+  activePlatform = 'zoom';
   slackSurface = null;
-  teamsProviderMode = false;
-  callingAppMode = null;
-  zoomProviderMode = true;
   ensureMeetSessionConfigured(SESSION_PARTITION);
   meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-zoom.js' });
   pushInitialAvatarStateOnLoad(meetView); // #828
@@ -12458,7 +12454,7 @@ function createMainWindow() {
     });
     meetView = surface.view;
     // Enable provider-aware command routing: DOM commands → the huddle popup.
-    slackProviderMode = true;
+    activePlatform = 'slack';
     slackSurface = surface;
     // Room code → local server + vibeconferencing.com sync + ensureRoom. The
     // code is deterministic from the URL (team+channel), the Slack analogue of a
@@ -12719,7 +12715,7 @@ function createMainWindow() {
   // loaded app.slack.com (or the channel deep-link) in createSlackSurface; in
   // Zoom mode activateZoomProvider already loaded the meeting.
   // A bot answering Telegram calls waits in Telegram instead (#843).
-  if (!slackMode && !zoomProviderMode && !teamsProviderMode) {
+  if (!slackMode && activePlatform !== 'zoom' && activePlatform !== 'teams') {
     const standby = callingAppStandbyWanted();
     if (standby) activateCallingAppStandby(standby, 'app start');
     else loadIdlePage('main-window created');
@@ -12918,9 +12914,8 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
 
   noteCallingAppStandbyTeardown('Meet join', { forCall: true });
   meetView = createMeetView(activeMeetPartition);
-  zoomProviderMode = false; // a Meet view replaces any Zoom one (#318)
-  teamsProviderMode = false; // ... or Teams one
-  callingAppMode = null; // ... or a calling app's standby
+  activePlatform = 'meet'; // a Meet view replaces any other platform's (#318), Slack's included
+  slackSurface = null;
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 
@@ -14532,7 +14527,7 @@ function setupIPC() {
     // there lets the account chip on Meet home report the email.
     const { googleSignInRoute } = require('./calling-app-standby');
     const route = googleSignInRoute({
-      callStatus: localServer.callStatus, callingAppMode, standbyWanted: callingAppStandbyWanted(),
+      callStatus: localServer.callStatus, callingAppMode: callingApp(), standbyWanted: callingAppStandbyWanted(),
     });
     if (route === 'window') {
       openBotSignInWindow();
@@ -14663,11 +14658,11 @@ function setupIPC() {
     // standby it would stop the bot answering calls, so there just tell the
     // panel to re-read the (cookie-derived) mode.
     const { signOutMayNavigateView } = require('./calling-app-standby');
-    if (signOutMayNavigateView({ callStatus: localServer.callStatus, callingAppMode, standbyWanted: callingAppStandbyWanted() })) {
+    if (signOutMayNavigateView({ callStatus: localServer.callStatus, callingAppMode: callingApp(), standbyWanted: callingAppStandbyWanted() })) {
       navigateMeetView(MEET_HOME_URL, 'Google sign-out');
     } else {
       console.log('[electron] Google sign-out: leaving the bot view where it is (callStatus=' + localServer.callStatus
-        + ', calling app=' + callingAppMode + ')');
+        + ', calling app=' + callingApp() + ')');
       broadcastToRenderers('meet-mode-changed', { partition: SESSION_PARTITION });
       broadcastAuthChanged();
     }
@@ -14829,7 +14824,7 @@ function setupIPC() {
       for (const k of ['twilioAccountSid', 'twilioApiKeySid', 'twilioApiKeySecret']) store.delete(k);
       store.set('twilioAnswerCalls', false);
       setCallingAppAccount('twilio', null);
-      if (callingAppMode === 'twilio') refreshCallingAppStandby('Twilio disconnected');
+      if (callingApp() === 'twilio') refreshCallingAppStandby('Twilio disconnected');
       return { ok: true };
     }
     const target = CALLING_APP_SIGN_IN[which];
@@ -14846,7 +14841,7 @@ function setupIPC() {
       return { ok: false, error: err.message };
     }
     setCallingAppAccount(which, null);
-    if (callingAppMode === which) refreshCallingAppStandby('signed out of ' + which);
+    if (callingApp() === which) refreshCallingAppStandby('signed out of ' + which);
     return { ok: true };
   });
 

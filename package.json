@@ -16,6 +16,8 @@
     "test:zoom:ci": "[ -n \"$VIBECONF_ZOOM_URL\" ] || { echo \"set VIBECONF_ZOOM_URL to the zoom test meeting link\"; exit 2; }; VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 --zoom && node scripts/provider-test.mjs --platform zoom --bots Alice:7901,Bob:7902; code=$?; scripts/spawn-test-fleet.sh 2 --zoom --kill; exit $code",
     "test:teams": "node scripts/provider-test.mjs --platform teams",
     "test:teams:ci": "[ -n \"$VIBECONF_TEAMS_URL\" ] || { echo \"set VIBECONF_TEAMS_URL to the teams test meeting link\"; exit 2; }; VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 --teams && node scripts/provider-test.mjs --platform teams --bots Alice:7901,Bob:7902; code=$?; scripts/spawn-test-fleet.sh 2 --teams --kill; exit $code",
+    "test:twilio": "node scripts/twilio-test.mjs",
+    "test:twilio:ci": "[ -n \"$VIBECONF_TWILIO_CALLER\" ] || { echo \"set VIBECONF_TWILIO_CALLER to a number on the same Twilio account (caller ID only)\"; exit 2; }; VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 --twilio && node scripts/twilio-test.mjs --bots Alice:7901; code=$?; scripts/spawn-test-fleet.sh 1 --twilio --kill; exit $code",
     "test:meet:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/meet-test.mjs --bots Alice:7901,Bob:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
     "test:meet:rec": "scripts/record-run.sh --label meet -- pnpm test:meet:ci",
     "test:codex:ci": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 1 && node scripts/smoke-codex-mcp.mjs --base-url=http://127.0.0.1:7901; code=$?; scripts/spawn-test-fleet.sh 1 --kill; exit $code",

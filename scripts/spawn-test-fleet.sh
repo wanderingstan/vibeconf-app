@@ -85,6 +85,7 @@ SLACK_URL=""
 GOOGLE=0
 ZOOM=0                   # --zoom:  test-zoom-N profiles (sign test-zoom-1 in to Zoom once)
 TEAMS=0                  # --teams: test-teams-N profiles (guests)
+TWILIO=0                 # --twilio: test-twilio-N profiles (Twilio connected once, own test number)
 DEVTOOLS=0
 RECORD_CALLS=0           # --record-calls: force call audio+video recording on for every spawned bot
 WITH_AGENTS=0            # --with-agents: attach a real Claude agent per bot (#267 item 5)
@@ -100,13 +101,14 @@ for a in "$@"; do
     --google)      GOOGLE=1 ;;
     --zoom)        ZOOM=1 ;;
     --teams)       TEAMS=1 ;;
+    --twilio)      TWILIO=1 ;;
     --devtools)    DEVTOOLS=1 ;;
     --record-calls) RECORD_CALLS=1 ;;
     --with-agents) WITH_AGENTS=1 ;;
     --room=*)      FUZZ_ROOM="${a#--room=}" ;;
     --mission=*)   FUZZ_MISSION="${a#--mission=}" ;;
     <->)           N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--zoom] [--teams] [--devtools] [--record-calls] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--zoom] [--teams] [--twilio] [--devtools] [--record-calls] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
@@ -123,6 +125,8 @@ if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
 #                                                    bot skips the guest reCAPTCHA. The others
 #                                                    join as guests.)
 #   Teams                   = test-teams-1..        (--teams; anonymous guests)
+#   Twilio phone            = test-twilio-1..       (--twilio; answers its own TEST number, never the
+#                                                    production bot's: provisioning rewrites the flow)
 # Zoom and Teams bots launch idle; provider-test.mjs joins them over HTTP.
 # Keeping the guest class login-free means we KEEP testing the non-Google guest
 # path even after adding signed-in profiles for the Workspace/history-on target.
@@ -130,6 +134,7 @@ if   (( SLACK ));  then PROFILE_BASE="test-slack"
 elif (( GOOGLE )); then PROFILE_BASE="test-meet-google"
 elif (( ZOOM ));   then PROFILE_BASE="test-zoom"
 elif (( TEAMS ));  then PROFILE_BASE="test-teams"
+elif (( TWILIO )); then PROFILE_BASE="test-twilio"
 else                   PROFILE_BASE="test-meet-guest"
 fi
 
@@ -468,6 +473,8 @@ echo ""
 echo "✓ Fleet up. Drive it with:"
 if (( SLACK )); then
   echo "    node scripts/slack-test.mjs --bots $BOTS_ARG --slack-url=$SLACK_URL"
+elif (( TWILIO )); then
+  echo "    node scripts/twilio-test.mjs --bots $BOTS_ARG --caller <a number on the same Twilio account>"
 elif (( ZOOM || TEAMS )); then
   echo "    node scripts/provider-test.mjs --platform $( (( ZOOM )) && echo zoom || echo teams ) --url <meeting link> --bots $BOTS_ARG"
 else

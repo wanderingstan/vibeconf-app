@@ -12,12 +12,12 @@
 //   • CallProvider  — the abstract base class: the semantic method + event
 //                     contract a concrete provider (GoogleMeetProvider) implements
 //
-// IMPORTANT (current status): this is the DESIGN artifact. The channel-name
-// constants are byte-identical to the strings hardcoded in preload-meet.js /
-// main.js today, so wiring them in (step 3) is behavior-preserving. Nothing
-// imports this yet — creating it changes no behavior. GoogleMeetProvider (the
-// concrete wrapper that owns the DOM automation now living in preload-meet.js)
-// lands in step 3, validated by scripts/meet-test.mjs.
+// Current status: both sides implement it. In each call preload a concrete
+// provider (GoogleMeetProvider, ZoomProvider, TeamsProvider, SlackProvider)
+// does the DOM work; in main.js a CallClient (call-client.js) implements the
+// same contract over IPC, and is the only thing main.js drives the call
+// through. WhatsApp, Telegram and Twilio preloads speak the same channel
+// names but have no provider class yet (Phase 1 of the library extraction).
 //
 // Pure module: no electron/DOM requires, safe to load in main OR preload.
 
@@ -39,6 +39,12 @@ const CALL_COMMANDS = {
     cameraOff: 'camera-off',
     playSpeechTest: 'play-speech-test',
     setShareAudio: 'set-share-audio',
+    // Handled by page-inject's VirtualMic / STT tap on the media surface
+    // (meetView; Slack's main window), not by the provider's DOM code.
+    stopTts: 'stop-tts',
+    resumeTts: 'resume-tts',
+    startSttTap: 'start-stt-tap',
+    stopSttTap: 'stop-stt-tap',
   },
   triggerScreenShare: 'trigger-screen-share',
   triggerStopSharing: 'trigger-stop-sharing',

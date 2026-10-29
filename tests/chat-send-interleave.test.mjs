@@ -25,6 +25,7 @@ import { dirname, join } from 'node:path';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const provider = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
+const callClient = readFileSync(join(root, 'electron-app/call-client.js'), 'utf8');
 
 // --- 1. sends are serialized ------------------------------------------------
 
@@ -63,10 +64,12 @@ test('sendChatFlow aborts instead of sending when the input does not match', () 
 
 // --- 3. a timeout is not a failure to retry ----------------------------------
 
-test('chatRequest exposes its timeout error as a named constant callers can test', () => {
-  assert.match(main, /const CHAT_TIMEOUT_ERROR = 'Chat operation timed out'/);
-  assert.match(main, /error: CHAT_TIMEOUT_ERROR/,
+test('the chat round-trip exposes its timeout error as a named constant callers can test', () => {
+  assert.match(callClient, /const CHAT_TIMEOUT_ERROR = 'Chat operation timed out'/);
+  assert.match(callClient, /timeoutError: CHAT_TIMEOUT_ERROR/,
     'the timeout path must resolve with the shared constant, not a string literal');
+  assert.match(main, /const \{ CallClient, CHAT_TIMEOUT_ERROR \} = require\('\.\/call-client\.js'\)/,
+    'main must test against the same constant the client resolves with');
 });
 
 test('#189 whiteboard-link loop stops (no retry) when the send timed out', () => {
@@ -82,6 +85,6 @@ test('#189 whiteboard-link loop stops (no retry) when the send timed out', () =>
 test('#189 gives the send a generous timeout so "timed out" is trustworthy', () => {
   const start = main.indexOf('#189: drop the board-only URL');
   const loop = main.slice(start, start + 3000);
-  assert.ok(loop.includes('}, 45000)') && loop.includes('chatRequest(CALL_COMMANDS.sendChat'),
+  assert.ok(loop.includes('`, 45000)') && loop.includes('callClient.sendChat('),
     'the whiteboard-link send must pass an explicit long timeout');
 });

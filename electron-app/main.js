@@ -121,6 +121,9 @@ const {
 // sides of the IPC wire (provider impl in google-meet-provider.js). Values are
 // byte-identical to the prior literals — same wire.
 const { CALL_EVENTS, CALL_COMMANDS, providerCapabilities } = require('./call-provider.js');
+// The one object main.js drives the call through (Phase 0 of the calling-
+// library extraction). Built below, once callCmdWC exists to route it.
+const { CallClient, CHAT_TIMEOUT_ERROR } = require('./call-client.js');
 const {
   PlatformCaptions, AudioTranscription, CaptionRouter, SOURCE_EVENTS, resolveListenSource, oneToOneSpeaker,
 } = require('./caption-source.js');
@@ -161,8 +164,8 @@ function audioTranscription() {
   _audioTranscription = new AudioTranscription({
     ipcMain,
     engine,
-    startTap: () => sendExtMsg({ action: 'start-stt-tap' }),
-    stopTap: () => sendExtMsg({ action: 'stop-stt-tap' }),
+    startTap: () => callClient.startAudioTap(),
+    stopTap: () => callClient.stopAudioTap(),
     // 1:1 only for now (#839): the one other human in the roster.
     attribute: () => oneToOneSpeaker(localServer.participants, { selfName: getActiveBotName() }),
     // The bot's own name decides whether it notices being addressed, and names
@@ -329,21 +332,18 @@ function callCmdWC(name) {
 }
 // Send a dedicated call-command channel (trigger-screen-share, set-studio-sound,
 // recover-captions, …) to the right surface.
+// Every CALL command (mic, camera, speech, share, chat, captions) goes through
+// callClient, which implements CallProvider over this IPC. The two helpers
+// below stay as plain functions for the modules that take them injected
+// (PlatformCaptions, AudioTranscription) and for app-side page-inject messages
+// (realtime-*, avatar), which are not call commands.
+const callClient = new CallClient({ resolveTarget: callCmdWC, ipc: ipcMain });
 function sendCallCmd(channel, payload) {
-  const wc = callCmdWC(channel);
-  if (!wc) {
-    // Previously a silent return — which hid #269: the whiteboard Present-now
-    // trigger was dropped whenever meetView was momentarily null/destroyed, with
-    // no trace. Make every dropped command visible.
-    console.warn('[electron] sendCallCmd: no target webContents for "' + channel + '" — command DROPPED (call view null/destroyed?)');
-    return;
-  }
-  if (payload === undefined) wc.send(channel); else wc.send(channel, payload);
+  callClient.sendCommand(channel, payload);
 }
 // Send an extension-message {action, …} to the right surface (routed by action).
 function sendExtMsg(message) {
-  const wc = callCmdWC(message && message.action);
-  if (wc) wc.send(CALL_COMMANDS.extensionMessage, message);
+  callClient.sendAction(message);
 }
 
 // The bot's name on the ACTIVE platform, for addressivity (recognizing when the
@@ -355,10 +355,6 @@ function getActiveBotName() {
   return store?.get('botName') || '';
 }
 
-// Round-trip request to the call preload (read/send chat). Sends on `channel`
-// with a unique requestId and resolves with the matching 'chat-result' reply,
-// or a timeout error. Handled by preload-meet.js (Meet) / preload-slack-huddle.js
-// (Slack), routed to the right surface via callCmdWC.
 // Once-per-call guard so a Chat-space warning doesn't spam the error list /
 // overlay every time the agent retries chat. Reset on each new join (loadMeetURL).
 let chatSpaceWarned = false;
@@ -1694,55 +1690,12 @@ function applyCaptionLanguagePref() {
 }
 
 function callViewRequest(channel, payload, resultEvent, timeoutMs = 15000) {
-  return new Promise((resolve) => {
-    const wc = callCmdWC(channel);
-    if (!wc) {
-      resolve({ ok: false, error: 'No active call view' });
-      return;
-    }
-    const requestId = `${channel}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const timer = setTimeout(() => {
-      ipcMain.removeListener(resultEvent, handler);
-      resolve({ ok: false, error: `${channel} timed out` });
-    }, timeoutMs);
-    const handler = (_event, data) => {
-      if (data?.requestId !== requestId) return;
-      clearTimeout(timer);
-      ipcMain.removeListener(resultEvent, handler);
-      resolve(data);
-    };
-    ipcMain.on(resultEvent, handler);
-    wc.send(channel, { requestId, ...payload });
-  });
+  return callClient.request(channel, payload, resultEvent, timeoutMs);
 }
 
-// NOTE: a timeout here does NOT mean the renderer flow stopped — it keeps
-// running and may still send. Callers must treat CHAT_TIMEOUT_ERROR as
-// "unknown, possibly still in flight" and never retry on it (a retry queues
-// a duplicate send behind the one that may yet succeed).
-const CHAT_TIMEOUT_ERROR = 'Chat operation timed out';
-function chatRequest(channel, payload, timeoutMs = 15000) {
-  return new Promise((resolve) => {
-    const wc = callCmdWC(channel);
-    if (!wc) {
-      resolve({ ok: false, error: 'No active call view' });
-      return;
-    }
-    const requestId = `chat-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    const timer = setTimeout(() => {
-      ipcMain.removeListener('chat-result', handler);
-      resolve({ ok: false, error: CHAT_TIMEOUT_ERROR });
-    }, timeoutMs);
-    const handler = (_event, data) => {
-      if (data?.requestId !== requestId) return;
-      clearTimeout(timer);
-      ipcMain.removeListener('chat-result', handler);
-      resolve(data);
-    };
-    ipcMain.on(CALL_EVENTS.chatResult, handler);
-    wc.send(channel, { requestId, ...payload });
-  });
-}
+// Chat round-trips are callClient.readChat / sendChat. A timeout resolves with
+// CHAT_TIMEOUT_ERROR (call-client.js), which means "unknown, possibly still in
+// flight": callers must never retry on it.
 
 // ---------------------------------------------------------------------------
 // Load extension modules (they export on globalThis)
@@ -2057,24 +2010,14 @@ const localServer = new globalThis.LocalServer({
     // synthesized must NOT be sent after the barge-in stopped its siblings
     // (it would speak a stale mid-utterance tail over the interrupter).
     ttsStopGeneration++;
-    if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send('extension-message', {
-        action: 'stop-tts',
-        payload: { reason: reason || 'back-off' },
-      });
-    }
+    callClient.stopSpeaking(reason);
   },
   // #350: resume an utterance that a barge-in cut off mid-playback. Fired by
   // local-server on the next silence edge (gated by age + content-delta); the
   // renderer resumes the retained buffer near the interruption point.
   onResumeTts: () => {
     console.log('[local-server] resume-tts (#350)');
-    if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send('extension-message', {
-        action: 'resume-tts',
-        payload: {},
-      });
-    }
+    callClient.resumeSpeaking();
   },
   // Returns delivery status so the caller can tell the bot the truth (#221).
   // Was fire-and-forget with a bare .catch(), which caught NETWORK errors only —
@@ -2426,7 +2369,7 @@ const localServer = new globalThis.LocalServer({
             }
             if (meetView && !meetView.webContents.isDestroyed()) {
               console.log('[electron] Whiteboard share: Present-now trigger attempt ' + attempt);
-              sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
+              callClient.startShare('window');
             } else {
               console.warn('[electron] Whiteboard share: meetView unavailable on Present trigger attempt ' + attempt + ' (#269)');
             }
@@ -2482,7 +2425,7 @@ const localServer = new globalThis.LocalServer({
               // 45s: a send flow can legitimately take a long time right after a
               // share (chat pane contention with speaker tracking). The generous
               // timeout is what makes "timed out" trustworthy enough to act on.
-              const result = await chatRequest(CALL_COMMANDS.sendChat, { text: `Whiteboard (live): ${url}` }, 45000);
+              const result = await callClient.sendChat(`Whiteboard (live): ${url}`, 45000);
               if (result?.ok) {
                 posted = true;
                 console.log('[main] #189 posted whiteboard link to chat:', url);
@@ -2522,7 +2465,7 @@ const localServer = new globalThis.LocalServer({
     const myShareGen = shareGeneration; // see the generation check below, before this IIFE closes the window
     // Click Meet's "Stop presenting" button — works for both whiteboard and full-screen shares
     if (meetView && !meetView.webContents.isDestroyed()) {
-      sendCallCmd(CALL_COMMANDS.triggerStopSharing);
+      callClient.stopShare();
     }
     // Extension: stop the whiteboard-share side capture BEFORE closing
     // whiteboardWindow — its source frame is about to go away, so the capture
@@ -2646,7 +2589,7 @@ const localServer = new globalThis.LocalServer({
     if (!whiteboardWindow || whiteboardWindow.isDestroyed()) {
       return { ok: false, error: 'Nothing is being shared' };
     }
-    sendExtMsg({ action: CALL_COMMANDS.ACTIONS.setShareAudio, payload: { muted: want } });
+    callClient.setShareAudioMuted(want);
     shareAudioMuted = want;
     console.log('[local-server] Share audio', want ? 'muted' : 'unmuted');
     return { ok: true, muted: want };
@@ -3095,9 +3038,7 @@ const localServer = new globalThis.LocalServer({
       });
       // Keep Meet's mute UI in sync with mode so the user always sees one
       // canonical indicator. Active = unmuted, passive/silent = muted.
-      meetView.webContents.send('extension-message', {
-        action: mode === 'active' ? 'unmute-mic' : 'mute-mic',
-      });
+      callClient.setMicMuted(mode !== 'active');
     }
   },
 
@@ -3195,7 +3136,7 @@ const localServer = new globalThis.LocalServer({
       setTimeout(() => {
         if (meetView && !meetView.webContents.isDestroyed()) {
           console.log('[electron] Disabling Meet Studio sound (studioSound pref = false)');
-          sendCallCmd(CALL_COMMANDS.setStudioSound, { enabled: false });
+          callClient.setStudioSound(false);
         }
       }, 2500);
     }
@@ -3428,11 +3369,7 @@ const localServer = new globalThis.LocalServer({
 
   onSetCamera: (on) => {
     console.log('[local-server] Set camera:', on ? 'on' : 'off');
-    if (meetView && !meetView.webContents.isDestroyed()) {
-      meetView.webContents.send('extension-message', {
-        action: on ? 'camera-on' : 'camera-off',
-      });
-    }
+    callClient.setCameraOn(on);
   },
 
   // cropRect (CSS pixels, from presentation-rect.js) narrows the capture to the
@@ -3623,8 +3560,8 @@ const localServer = new globalThis.LocalServer({
     }
   },
 
-  onReadChat: async () => noteChatResult(await chatRequest(CALL_COMMANDS.readChat, {})),
-  onSendChat: async (text) => noteChatResult(await chatRequest(CALL_COMMANDS.sendChat, { text })),
+  onReadChat: async () => noteChatResult(await callClient.readChat()),
+  onSendChat: async (text) => noteChatResult(await callClient.sendChat(text)),
   getWebsiteUrl: () => getWebsiteUrl(),
 
   // Preference plumbing for the agent-visible whitelist (preferences-schema.js).
@@ -3723,7 +3660,7 @@ const localServer = new globalThis.LocalServer({
       // Toggle Meet's voice filter live (no rejoin needed) when in-call.
       if (localServer.callStatus === 'in-call' && meetView && !meetView.webContents.isDestroyed()) {
         console.log('[electron] studioSound pref changed →', value, '— applying live');
-        sendCallCmd(CALL_COMMANDS.setStudioSound, { enabled: value !== false });
+        callClient.setStudioSound(value !== false);
       }
     } else if (key === 'remoteLogging') {
       setRemoteLoggingEnabled(value === true);
@@ -4782,7 +4719,7 @@ async function startExternalTabShare({ url, appName } = {}) {
   console.log('[electron] share-external-tab →', resolved.source.id, `"${resolved.title}"`);
 
   if (meetView && meetView.webContents) {
-    sendCallCmd(CALL_COMMANDS.triggerScreenShare, { shareType: 'window' });
+    callClient.startShare('window');
   }
   // Now that the page is captured, bring the user's Meet window back to the
   // front so they're looking at the call, not the shared page (capture is
@@ -6862,13 +6799,13 @@ function sendPlayTts(base64Audio, emoji, { unmutedAt, expectMore, utt, volume } 
     if (unmutedAt) {
       settleMs = Math.max(0, 300 - (Date.now() - unmutedAt));
     } else {
-      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
+      callClient.setMicMuted(false);
     }
     setTimeout(() => {
       // expectMore (#372 sentence-chunked TTS): tells the renderer another
       // chunk of the SAME utterance is coming, so it must not emit tts-ended
       // (and drop the speaking state) if the queue momentarily drains.
-      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio, emoji, expectMore: !!expectMore, utt, volume } });
+      callClient.speak({ audioData: base64Audio, emoji, expectMore: !!expectMore, utt, volume });
       console.log('[electron] Sent play-tts to Meet view', emoji ? `(emoji: ${emoji})` : '');
       resolve();
     }, settleMs);
@@ -7000,7 +6937,7 @@ function speakText(text, voice, emoji, { volume, ack } = {}) {
     // unmuted-with-no-audio is just silence, so opening it early is safe).
     let unmutedAt = null;
     if (meetView && !meetView.webContents.isDestroyed()) {
-      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
+      callClient.setMicMuted(false);
       unmutedAt = Date.now();
     }
     // #372: sentence-chunked synthesis — play the first sentence while the
@@ -14966,9 +14903,9 @@ function setupIPC() {
     if (!meetView || meetView.webContents.isDestroyed()) return;
     const audioBuffer = fs.readFileSync(testSpeechPath);
     const base64Audio = Buffer.from(audioBuffer).toString('base64');
-    sendExtMsg({ action: CALL_COMMANDS.ACTIONS.unmuteMic });
+    callClient.setMicMuted(false);
     setTimeout(() => {
-      sendExtMsg({ action: CALL_COMMANDS.ACTIONS.playTts, payload: { audioData: base64Audio } });
+      callClient.speak({ audioData: base64Audio });
     }, 300);
   });
 
@@ -14997,7 +14934,7 @@ function setupIPC() {
   // The chime gives a clear "bot is in the room" signal and lets the human
   // start the conversation. The first real speak() flips hasEngaged so the
   // avatar transitions naturally.
-  ipcMain.on(CALL_EVENTS.botJoinedCall, (_event, { meetCode, botName }) => {
+  callClient.on(CALL_EVENTS.botJoinedCall, (_event, { meetCode, botName }) => {
     console.log('[electron] Bot joined call, playing join chime');
     if (meetView && !meetView.webContents.isDestroyed()) {
       meetView.webContents.send('extension-message', { action: 'play-join-chime' });
@@ -15052,7 +14989,7 @@ function setupIPC() {
       if (name === 'send_chat') {
         const text = String((args && args.text) || '').trim();
         if (!text) return reply('Nothing to send.');
-        const r = await chatRequest(CALL_COMMANDS.sendChat, { text }, 15000);
+        const r = await callClient.sendChat(text, 15000);
         return reply(r && r.success === false
           ? 'The chat message did not send: ' + String(r.error || 'unknown')
           : 'Sent to the call chat.');
@@ -15201,7 +15138,7 @@ function setupIPC() {
   });
 
   // --- Meet status updates (logged, DOM updated by preload) ---
-  ipcMain.on(CALL_EVENTS.statusUpdate, (_event, status) => handleMeetStatusUpdate(status));
+  callClient.on(CALL_EVENTS.statusUpdate, (_event, status) => handleMeetStatusUpdate(status));
 
   // Named (not inline) so main-process code paths can raise a call-flow status
   // the same way the renderer does — #346's join-landed-somewhere-else needs
@@ -15285,14 +15222,14 @@ function setupIPC() {
   });
 
   // --- Screen share status ---
-  ipcMain.on(CALL_EVENTS.screenShareError, (_event, errorMessage) => {
+  callClient.on(CALL_EVENTS.screenShareError, (_event, errorMessage) => {
     console.error('[electron] Screen share error:', errorMessage);
     localServer.setSharing(false);
     localServer.addError('Screen share: ' + errorMessage);
     broadcastError('Screen share: ' + errorMessage);
   });
 
-  ipcMain.on(CALL_EVENTS.screenShareStopped, () => {
+  callClient.on(CALL_EVENTS.screenShareStopped, () => {
     console.log('[electron] Screen share stopped');
     localServer.setSharing(false);
     broadcastShareWindowState();
@@ -15362,7 +15299,7 @@ function setupIPC() {
     }
   });
 
-  ipcMain.on(CALL_EVENTS.ttsEnded, () => {
+  callClient.on(CALL_EVENTS.ttsEnded, () => {
     // #368: tts-ended = the audio queue fully drained, i.e. the bot is no longer
     // speaking aloud. This is the authoritative release for the speaking-aloud
     // latch — clear it FIRST, before any early-return below, so botState can
@@ -15387,9 +15324,7 @@ function setupIPC() {
     // want the mic muted (matches user's mute toggle); active wants it open.
     if (meetView && !meetView.webContents.isDestroyed()) {
       const shouldMute = localServer.mode === 'passive' || localServer.mode === 'silent';
-      meetView.webContents.send('extension-message', {
-        action: shouldMute ? 'mute-mic' : 'unmute-mic',
-      });
+      callClient.setMicMuted(shouldMute);
     }
     // TTS playback finished. Three cases:
     //   - waiter active (agent already called wait_for_speech) → 'listening'.
@@ -15414,7 +15349,7 @@ function setupIPC() {
   // Muted = passive (only respond when name mentioned).
   // Unmuted = active (respond on every pause).
   // The MCP set_mode tool can still set 'silent' separately.
-  ipcMain.on(CALL_EVENTS.micMuteChanged, (_event, { muted }) => {
+  callClient.on(CALL_EVENTS.micMuteChanged, (_event, { muted }) => {
     const newMode = muted ? 'passive' : 'active';
     if (localServer.mode === newMode) return;
     // Don't downgrade silent → passive on a mute click; user is already silenced.
@@ -15647,7 +15582,7 @@ function setupIPC() {
   });
 
   // --- Speaking state ---
-  ipcMain.on(CALL_EVENTS.speakingChanged, (_event, { name, speaking }) => {
+  callClient.on(CALL_EVENTS.speakingChanged, (_event, { name, speaking }) => {
     if (name && sync.roomId) {
       updateSpeakingState(name, speaking);
     }
@@ -15669,19 +15604,19 @@ function setupIPC() {
     localServer.setAudioFloor(!!speaking, at);
   });
 
-  ipcMain.on(CALL_EVENTS.participantsUpdated, (_event, participants) => {
+  callClient.on(CALL_EVENTS.participantsUpdated, (_event, participants) => {
     localServer.setParticipants(participants || []);
   });
 
-  ipcMain.on(CALL_EVENTS.screenSharesUpdated, (_event, shares) => {
+  callClient.on(CALL_EVENTS.screenSharesUpdated, (_event, shares) => {
     localServer.setScreenShares(shares || []);
   });
 
-  ipcMain.on(CALL_EVENTS.chatUnread, (_event, { unread }) => {
+  callClient.on(CALL_EVENTS.chatUnread, (_event, { unread }) => {
     localServer.setChatUnread(!!unread);
   });
 
-  ipcMain.on(CALL_EVENTS.paneState, (_event, state) => {
+  callClient.on(CALL_EVENTS.paneState, (_event, state) => {
     localServer.setPaneState(state || {});
   });
 
@@ -15695,7 +15630,7 @@ function setupIPC() {
     return localServer.injectSimulatedTurn({ text, speaker });
   });
 
-  ipcMain.on(CALL_EVENTS.someonePresenting, (_event, { presenting, presenterName }) => {
+  callClient.on(CALL_EVENTS.someonePresenting, (_event, { presenting, presenterName }) => {
     const was = localServer.someoneElsePresenting;
     localServer.setSomeoneElsePresenting(presenting, presenterName);
     // #673: the share starting or stopping is exactly when the settle watcher
@@ -15705,7 +15640,7 @@ function setupIPC() {
   });
 
   // Track our own presenting state from Meet UI (Stop presenting button visible)
-  ipcMain.on(CALL_EVENTS.selfPresenting, (_event, { presenting, reconcile }) => {
+  callClient.on(CALL_EVENTS.selfPresenting, (_event, { presenting, reconcile }) => {
     const wasSharing = localServer.sharing;
 
     // #68: a reconcile tick carries no news — it re-states what is on screen so a
@@ -15971,7 +15906,7 @@ function setupIPC() {
 
     // Trigger screen share in Meet
     if (meetView && meetView.webContents) {
-      sendCallCmd(CALL_COMMANDS.triggerScreenShare);
+      callClient.startShare();
     }
 
     return { success: true, url: roomUrl };

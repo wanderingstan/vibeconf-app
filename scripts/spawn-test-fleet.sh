@@ -83,6 +83,8 @@ BUILT=0
 SLACK=0
 SLACK_URL=""
 GOOGLE=0
+ZOOM=0                   # --zoom:  test-zoom-N profiles (sign test-zoom-1 in to Zoom once)
+TEAMS=0                  # --teams: test-teams-N profiles (guests)
 DEVTOOLS=0
 RECORD_CALLS=0           # --record-calls: force call audio+video recording on for every spawned bot
 WITH_AGENTS=0            # --with-agents: attach a real Claude agent per bot (#267 item 5)
@@ -96,13 +98,15 @@ for a in "$@"; do
     --slack)       SLACK=1 ;;
     --slack-url=*) SLACK_URL="${a#--slack-url=}" ;;
     --google)      GOOGLE=1 ;;
+    --zoom)        ZOOM=1 ;;
+    --teams)       TEAMS=1 ;;
     --devtools)    DEVTOOLS=1 ;;
     --record-calls) RECORD_CALLS=1 ;;
     --with-agents) WITH_AGENTS=1 ;;
     --room=*)      FUZZ_ROOM="${a#--room=}" ;;
     --mission=*)   FUZZ_MISSION="${a#--mission=}" ;;
     <->)           N="$a" ;;   # zsh: <-> matches an integer
-    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--devtools] [--record-calls] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
+    *) echo "usage: $0 [count] [--dmg|--built] [--slack --slack-url=URL] [--google] [--zoom] [--teams] [--devtools] [--record-calls] [--with-agents --room=CODE --mission=KEY] [--kill]"; exit 1 ;;
   esac
 done
 if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
@@ -115,10 +119,17 @@ if (( N < 1 || N > 4 )); then echo "count must be 1–4"; exit 1; fi
 #                                                    ONCE via Settings → "Sign in as bot";
 #                                                    needed for invite-only / Workspace meets)
 #   Slack                   = test-slack-1..        (--slack; signed into a Slack account once)
+#   Zoom                    = test-zoom-1..         (--zoom; sign -1 in to Zoom once: a signed-in
+#                                                    bot skips the guest reCAPTCHA. The others
+#                                                    join as guests.)
+#   Teams                   = test-teams-1..        (--teams; anonymous guests)
+# Zoom and Teams bots launch idle; provider-test.mjs joins them over HTTP.
 # Keeping the guest class login-free means we KEEP testing the non-Google guest
 # path even after adding signed-in profiles for the Workspace/history-on target.
 if   (( SLACK ));  then PROFILE_BASE="test-slack"
 elif (( GOOGLE )); then PROFILE_BASE="test-meet-google"
+elif (( ZOOM ));   then PROFILE_BASE="test-zoom"
+elif (( TEAMS ));  then PROFILE_BASE="test-teams"
 else                   PROFILE_BASE="test-meet-guest"
 fi
 
@@ -457,6 +468,8 @@ echo ""
 echo "✓ Fleet up. Drive it with:"
 if (( SLACK )); then
   echo "    node scripts/slack-test.mjs --bots $BOTS_ARG --slack-url=$SLACK_URL"
+elif (( ZOOM || TEAMS )); then
+  echo "    node scripts/provider-test.mjs --platform $( (( ZOOM )) && echo zoom || echo teams ) --url <meeting link> --bots $BOTS_ARG"
 else
   echo "    node scripts/meet-test.mjs --bots $BOTS_ARG"
 fi

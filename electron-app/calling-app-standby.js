@@ -12,7 +12,7 @@
 // These are the decisions, pure so they can be pinned without a desktop. main.js
 // owns the side effects (which view, which window, the panel error).
 
-const { isInCall, isFinished } = require('./call-phase');
+const { isInCall, isFinished } = require('@vibeconferencing/calls/core/call-phase');
 
 // A non-call use of the view (Slack or Zoom sign-in, say) gets at least this
 // long before standby is put back, so the view is not yanked mid-transition.

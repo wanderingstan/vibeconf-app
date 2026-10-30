@@ -1,0 +1,25 @@
+{
+  "name": "@vibeconferencing/calls",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Join, speak, hear, chat and screen share in Meet, Zoom, Teams, Slack huddles, WhatsApp, Telegram and phone calls, as a participant",
+  "license": "MIT",
+  "author": "Stan James <stan@wanderingstan.com>",
+  "homepage": "https://github.com/wanderingstan/vibeconf-app",
+  "files": [
+    "core/",
+    "providers/",
+    "inject/",
+    "hearing/",
+    "recording/",
+    "hosts/"
+  ],
+  "peerDependencies": {
+    "electron": ">=33",
+    "ffmpeg-static": "^5.2.0"
+  },
+  "peerDependenciesMeta": {
+    "electron": { "optional": true },
+    "ffmpeg-static": { "optional": true }
+  }
+}

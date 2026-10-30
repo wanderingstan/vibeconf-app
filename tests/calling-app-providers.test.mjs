@@ -12,11 +12,11 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { CallProvider, CALL_COMMANDS, CALL_EVENTS, providerCapabilities } = require('../electron-app/call-provider.js');
-const { CallingAppProvider, bindToIpc } = require('../electron-app/calling-app-provider.js');
-const { WhatsAppProvider } = require('../electron-app/whatsapp-provider.js');
-const { TelegramProvider } = require('../electron-app/telegram-provider.js');
-const { TwilioProvider } = require('../electron-app/twilio-provider.js');
+const { CallProvider, CALL_COMMANDS, CALL_EVENTS, providerCapabilities } = require('../packages/calls/core/call-provider.js');
+const { CallingAppProvider, bindToIpc } = require('../packages/calls/core/calling-app-provider.js');
+const { WhatsAppProvider } = require('../packages/calls/providers/whatsapp-provider.js');
+const { TelegramProvider } = require('../packages/calls/providers/telegram-provider.js');
+const { TwilioProvider } = require('../packages/calls/providers/twilio-provider.js');
 
 const PROVIDERS = { whatsapp: WhatsAppProvider, telegram: TelegramProvider, twilio: TwilioProvider };
 

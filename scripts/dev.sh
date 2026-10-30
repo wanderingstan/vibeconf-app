@@ -75,7 +75,7 @@ BUSY_FALLBACK="navigating joining waiting-to-be-admitted in-call after-call-work
 is_busy() {
   local st="$1" out
   out="$(node -e 'console.log(require(process.argv[1]).isBusy(process.argv[2]) ? "busy" : "free")' \
-        "$ROOT/electron-app/call-phase.js" "$st" 2>/dev/null || true)"
+        "$ROOT/packages/calls/core/call-phase.js" "$st" 2>/dev/null || true)"
   [ "$out" = busy ] && return 0
   [ "$out" = free ] && return 1
   # No node, or the module moved: fall back to a copy of the same list rather

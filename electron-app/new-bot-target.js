@@ -20,7 +20,7 @@
 // inputs and acts on the verdict. Kept CommonJS like the rest of electron-app.
 // Reading a link (which platform, which room) lives in call-target.js.
 
-const { platformFromUrl: parseCallTarget, roomIdToJoinUrl, providerRoomIdForUrl } = require('./call-target');
+const { platformFromUrl: parseCallTarget, roomIdToJoinUrl, providerRoomIdForUrl } = require('@vibeconferencing/calls/core/call-target');
 
 // The call statuses that mean "this instance is in, or on its way into, a call".
 // Same set local-server.js treats as active.

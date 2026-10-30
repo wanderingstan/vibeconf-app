@@ -63,6 +63,21 @@ Mac: add the same three exports to that machine's shell profile with a
 currently-valid app-specific password; `APPLE_TEAM_ID` copies over as-is; no
 `notarytool store-credentials` step is used by this project.
 
+### The calls library is a linked package
+
+The calling layer lives in `packages/calls` (`@vibeconferencing/calls`);
+`electron-app/node_modules/@vibeconferencing/calls` is a **symlink** to it, so
+edits there show up in the app with no reinstall. Two consequences:
+
+- A worktree whose `electron-app/node_modules` is itself a symlink to another
+  checkout's resolves the package to **that** checkout's `packages/calls`, not
+  this one's. Give a worktree its own install (`pnpm install`, fast from the
+  store) before testing library changes in it.
+- electron-builder 25 refuses to pack anything whose real path is outside
+  `electron-app/`. `before-pack.js` swaps the link for a copy during the pack and
+  `after-pack.js` (or process exit) restores it. If a build was killed hard and
+  the link is a plain folder, `pnpm install` puts it back.
+
 See `README.md` → *Build from source* for the generic build steps, and
 `.github/workflows/release.yml` for the tag-triggered release flow and
 clean-semver versioning convention.

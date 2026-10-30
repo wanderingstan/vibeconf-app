@@ -22,7 +22,7 @@ import { createRequire } from 'module';
 import { Bot, sleep } from '../../scripts/meet-test-lib.mjs';
 
 const require = createRequire(import.meta.url);
-const { SLACK } = require('../../electron-app/slack-selectors.js');
+const { SLACK } = require('../../packages/calls/providers/slack-selectors.js');
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SPAWN = join(REPO, 'scripts', 'spawn-test-fleet.sh');
 

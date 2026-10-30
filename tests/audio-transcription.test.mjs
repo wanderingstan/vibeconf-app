@@ -9,8 +9,8 @@ import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { AudioTranscription, SOURCE_EVENTS, STT_AUDIO_CHANNEL } = require('../electron-app/caption-source.js');
-const { RATE } = require('../electron-app/speech-gate.js');
+const { AudioTranscription, SOURCE_EVENTS, STT_AUDIO_CHANNEL } = require('../packages/calls/hearing/caption-source.js');
+const { RATE } = require('../packages/calls/hearing/speech-gate.js');
 
 const tone = (ms, a = 0.3) => Float32Array.from({ length: Math.round(ms * RATE / 1000) }, (_, i) => a * Math.sin(2 * Math.PI * 220 * i / RATE));
 const silence = (ms) => new Float32Array(Math.round(ms * RATE / 1000));
@@ -164,7 +164,7 @@ test('each stream has its own gate; a detached stream closes its open segment', 
 });
 
 test('the router re-emits the active source and switches cleanly per call', async () => {
-  const { CaptionRouter } = require('../electron-app/caption-source.js');
+  const { CaptionRouter } = require('../packages/calls/hearing/caption-source.js');
   const mk = () => {
     const e = new EventEmitter();
     e.started = 0; e.stopped = 0;
@@ -193,7 +193,7 @@ test('the router re-emits the active source and switches cleanly per call', asyn
 });
 
 test('1:1 attribution: the one other human, else a neutral label (never a guess)', () => {
-  const { oneToOneSpeaker, UNATTRIBUTED_SPEAKER } = require('../electron-app/caption-source.js');
+  const { oneToOneSpeaker, UNATTRIBUTED_SPEAKER } = require('../packages/calls/hearing/caption-source.js');
   const me = { name: 'Melinda', isSelf: true };
   assert.equal(oneToOneSpeaker([me, { name: 'Stan James' }], { selfName: 'Melinda' }), 'Stan James');
   assert.equal(oneToOneSpeaker([{ name: 'Melinda' }, { name: 'Stan James' }], { selfName: 'Melinda' }), 'Stan James');

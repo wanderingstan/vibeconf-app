@@ -13,7 +13,7 @@ import {
   buildCloseWindowScript,
   buildRaiseMeetScript,
   pickWindowSource,
-} from '../electron-app/share-external-tab.js';
+} from '../packages/calls/hosts/electron/share-external-tab.js';
 
 test('appleScriptStringLiteral escapes quotes and backslashes', () => {
   assert.equal(appleScriptStringLiteral('https://x.com'), '"https://x.com"');

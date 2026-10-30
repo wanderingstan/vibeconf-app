@@ -23,7 +23,7 @@
 // Pure-ish: requires only the contract + selectors. Browser globals (document,
 // window, KeyboardEvent) resolve at run time in the popup (contextIsolation:false).
 
-const { CallProvider } = require('./call-provider');
+const { CallProvider } = require('../core/call-provider');
 const { SLACK } = require('./slack-selectors');
 
 // ---------------------------------------------------------------------------

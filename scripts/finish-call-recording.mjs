@@ -17,7 +17,7 @@
 //
 // Removes RECOVERY.md on full success. Needs ffmpeg on PATH.
 //
-// This deliberately reuses electron-app/call-media-merge.js rather than shelling
+// This deliberately reuses packages/calls/recording/call-media-merge.js rather than shelling
 // out to ffmpeg itself: the share-track padding and the video/audio track
 // selection are subtle enough that a second implementation would drift from what
 // the app does, and "recovered by hand" must mean the same file, not a similar
@@ -30,7 +30,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const { mergeCallMedia, ffmpegAvailable } = require(path.join(root, 'electron-app/call-media-merge.js'));
+const { mergeCallMedia, ffmpegAvailable } = require(path.join(root, 'packages/calls/recording/call-media-merge.js'));
 
 const dir = process.argv[2];
 if (!dir) {

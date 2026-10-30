@@ -11,7 +11,7 @@
 
 const { BrowserView, session, globalShortcut, shell } = require('electron');
 const path = require('path');
-const { SLACK } = require('./slack-selectors');
+const { SLACK } = require('../../providers/slack-selectors');
 const slackUa = require('./slack-ua');
 
 // Slack sniffs the browser and rejects Electron (and older Chrome) — "your browser
@@ -69,7 +69,9 @@ function clickButtonByTextRepeating(webContents, text, label, { tries = 240, int
 //   opts.devtools  — open DevTools on the popup (handy for live driving)
 // Returns { view, getPopups }.
 function createSlackSurface(mainWindow, opts = {}) {
-  const { partition, url, devtools, userAgent = SLACK_UA, autojoin = false } = opts;
+  // mainPreload / huddlePreload: the host app's preloads for Slack's main view
+  // and its huddle popup (they carry the app's IPC, so they live in the app).
+  const { partition, url, devtools, userAgent = SLACK_UA, autojoin = false, mainPreload, huddlePreload } = opts;
 
   // Spoof Chrome at the SESSION level so EVERY window in this partition — main,
   // workspace ("Redirecting…"), huddle popup — inherits it and stays in the one
@@ -86,7 +88,7 @@ function createSlackSurface(mainWindow, opts = {}) {
 
   const view = new BrowserView({
     webPreferences: {
-      preload: path.join(__dirname, 'preload-slack-main.js'),
+      preload: mainPreload,
       contextIsolation: false,
       sandbox: false,
       partition,
@@ -140,7 +142,7 @@ function createSlackSurface(mainWindow, opts = {}) {
           // the DOM at all. Force a width that keeps the side-panel mounted.
           width: 1280,
           height: 860,
-          webPreferences: { preload: path.join(__dirname, 'preload-slack-huddle.js'), contextIsolation: false, sandbox: false, partition, backgroundThrottling: false },
+          webPreferences: { preload: huddlePreload, contextIsolation: false, sandbox: false, partition, backgroundThrottling: false },
         },
       };
     }

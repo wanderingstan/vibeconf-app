@@ -8,10 +8,10 @@ const path = require('path');
 const vm = require('vm');
 // Present as current Chrome in navigator.userAgentData too, matching the
 // string and headers main sets (#499: Google sign-in checks all three).
-require('./slack-ua').installClientHintsShim();
+require('@vibeconferencing/calls/hosts/electron/slack-ua').installClientHintsShim();
 // Research (dom-probe.js): --dom-probe=1 watches every participant tile. Off by
 // default. Tagged [bots-in-calls] so the Meet view's console forwarder keeps it.
-require('./dom-probe').installDomProbe({ tag: '[bots-in-calls]', defaultSelector: '[data-participant-id]' });
+require('@vibeconferencing/calls/core/dom-probe').installDomProbe({ tag: '[bots-in-calls]', defaultSelector: '[data-participant-id]' });
 
 // meetView runs with contextIsolation:false, so the preload and page share one
 // window. Expose a tiny helper the idle screen uses to open a URL in the user's
@@ -103,4 +103,8 @@ window.__vibeconf_startWhiteboardShare = function (meetCode) {
 // and the screen-share helpers — none of it Meet-specific beyond loading the
 // provider. Swap this require to load a different CallProvider backend.
 // ---------------------------------------------------------------------------
-require('./google-meet-provider');
+// The provider reaches main through the library's host channel, and shows the
+// bot's own face (the Fluent 3D 🙂 the app and site use) in its status bar.
+require('@vibeconferencing/calls/core/host-ipc').setHostIpc(ipcRenderer);
+try { window.__vibeconfStatusIconUri = require('./emoji-assets.js').dataUriForRelPath('fluent3d/1f642.png'); } catch { /* the plain glyph */ }
+require('@vibeconferencing/calls/providers/google-meet-provider');

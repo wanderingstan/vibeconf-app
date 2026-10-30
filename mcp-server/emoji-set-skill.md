@@ -41,11 +41,11 @@ Don't hardcode a list — the bot's states can change. Get the live one:
 
 ```
 grep -oP "'[\x{1F000}-\x{1FFFF}\x{2600}-\x{27BF}][\x{FE0F}\x{200D}\x{1F000}-\x{1FFFF}]*'" \
-  electron-app/page-inject.js electron-app/renderer/panel.js | sort -u
+  electron-app/page-avatar.js electron-app/renderer/panel.js | sort -u
 ```
 
 If that comes up empty (grep's PCRE unicode support varies by platform), fall back to
-reading `electron-app/page-inject.js` (the `VirtualCamera` class, mode/activity/call-status
+reading `electron-app/page-avatar.js` (the `AvatarFace` class, mode/activity/call-status
 emoji) and `electron-app/renderer/panel.js` (idle-fidget faces) directly. As of this
 skill's writing that's 21 glyphs:
 

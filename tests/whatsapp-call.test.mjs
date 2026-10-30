@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const wa = require('../electron-app/whatsapp-call.js');
+const wa = require('../packages/calls/providers/whatsapp-call.js');
 
 test('allowlist: phone numbers in any formatting, compared digit for digit', () => {
   const a = wa.parseAllowlist('+1 (917) 575-2435  # Stan\n4915112345678, 123\nnot a number');
@@ -61,7 +61,7 @@ test('the preload taps only WhatsApp\'s playback worklet, and keeps the RTC hook
   assert.match(preload, /__vibeconfWorkletName === whatsappCall\.PLAYBACK_WORKLET/);
   assert.match(preload, /destination instanceof AudioDestinationNode/);
   assert.equal(wa.PLAYBACK_WORKLET, 'voip-shared-buffer-playback-processor');
-  const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+  const inject = readFileSync(join(root, 'packages/calls/inject/page-inject.js'), 'utf8');
   assert.match(inject, /function outputTapTracks\(\)/);
   assert.equal((inject.match(/outputTapTracks\(\)\)/g) || []).length, 2, 'both the STT tap and the recorder read the output taps');
 });

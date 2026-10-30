@@ -30,7 +30,7 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { extractSpeakerTracks } = require('../electron-app/speaker-extract.js');
-const { resolveFfmpegPath } = require('../electron-app/call-media-merge.js');
+const { resolveFfmpegPath } = require('../packages/calls/recording/call-media-merge.js');
 
 const arg = (k, d) => {
   const i = process.argv.indexOf(`--${k}`);

@@ -3,7 +3,7 @@
 // Shape (no public server needed):
 //   caller → the bot's Twilio number → a Studio Flow (the GATE, run by Twilio)
 //          → <Dial><Client>identity</Client> → the bot's call view, where
-//            renderer/twilio-phone.html runs Twilio's Voice SDK as that client.
+//            twilio-phone.html (next to this file) runs Twilio's Voice SDK as that client.
 //
 // The gate is deterministic and lives on Twilio's side, so nothing reaches
 // the bot (no audio, no transcript, no agent) until it passes:
@@ -22,7 +22,7 @@ const path = require('path');
 const { pathToFileURL } = require('url');
 const { phoneDigits, parseAllowlist, isCallerAllowed } = require('./whatsapp-call');
 
-const WEB_URL = pathToFileURL(path.join(__dirname, 'renderer', 'twilio-phone.html')).href;
+const WEB_URL = pathToFileURL(path.join(__dirname, 'twilio-phone.html')).href;
 const TOKEN_TTL_SECONDS = 3600;
 // Silence before the passcode prompt, and the one voice every prompt uses.
 const PROMPT_PAUSE_SECONDS = 2;

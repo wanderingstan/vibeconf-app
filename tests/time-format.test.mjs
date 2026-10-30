@@ -62,7 +62,7 @@ test('nothing hardcodes a locale any more', () => {
   // cycle — it is wrong for every user outside one country, not just Stan.
   for (const f of [
     'electron-app/renderer/panel.js',
-    'electron-app/page-inject.js',
+    'packages/calls/inject/page-inject.js',
     'electron-app/time-format.js',
     'mcp-server/call-time.js',
   ]) {

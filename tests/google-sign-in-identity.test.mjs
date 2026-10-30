@@ -14,13 +14,13 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = (f) => readFileSync(join(root, 'electron-app', f), 'utf8');
-const ua = require('../electron-app/slack-ua.js');
+const ua = require('../packages/calls/hosts/electron/slack-ua.js');
 
 test('main.js takes the Meet UA from slack-ua.js, at the engine\'s version, not its own pinned copy', () => {
   const main = src('main.js');
   // ENGINE_UA, not UA: Meet's bot check turns a guest away when the claimed
   // Chrome runs far ahead of the engine (Chrome/150 on Chromium 130, 2026-10-29).
-  assert.match(main, /const CHROME_UA = require\('\.\/slack-ua'\)\.ENGINE_UA;/);
+  assert.match(main, /const CHROME_UA = require\('@vibeconferencing\/calls\/hosts\/electron\/slack-ua'\)\.ENGINE_UA;/);
   assert.doesNotMatch(main, /Chrome\/131\.0\.0\.0/);
 });
 
@@ -28,7 +28,7 @@ test('configureMeetSession installs the Sec-CH-UA* header spoof itself, not only
   const main = src('main.js');
   const body = main.slice(main.indexOf('function configureMeetSession(sess)'));
   const end = body.indexOf('\n}\n');
-  assert.match(body.slice(0, end), /require\('\.\/slack-ua'\)\.installHeaderSpoof\(sess\)/);
+  assert.match(body.slice(0, end), /require\('@vibeconferencing\/calls\/hosts\/electron\/slack-ua'\)\.installHeaderSpoof\(sess\)/);
 });
 
 test('the header spoof sends Chrome brands that match the string', () => {
@@ -54,8 +54,8 @@ test('the Meet identity is Chrome at the engine\'s own version', () => {
 });
 
 test('navigator.userAgentData is shimmed in the Meet view and in the bot\'s Google sign-in window', () => {
-  assert.match(src('preload-meet.js'), /require\('\.\/slack-ua'\)\.installClientHintsShim\(\)/);
-  assert.match(src('preload-google-sign-in.js'), /require\('\.\/slack-ua'\)\.installClientHintsShim\(\)/);
+  assert.match(src('preload-meet.js'), /require\('@vibeconferencing\/calls\/hosts\/electron\/slack-ua'\)\.installClientHintsShim\(\)/);
+  assert.match(src('preload-google-sign-in.js'), /require\('@vibeconferencing\/calls\/hosts\/electron\/slack-ua'\)\.installClientHintsShim\(\)/);
   const main = src('main.js');
   const win = main.slice(main.indexOf('function openBotSignInWindow()'), main.indexOf('win.loadURL(MEET_SIGN_IN_URL)'));
   assert.match(win, /preload: path\.join\(__dirname, 'preload-google-sign-in\.js'\)/);

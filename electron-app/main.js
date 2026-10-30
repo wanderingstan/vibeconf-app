@@ -71,7 +71,7 @@ const panelRelay = require('./panel-relay.js').createPanelRelay({ ipcMain, onQui
 const parentLink = require('./bot-parent-link.js').connectToParent({
   onQuit: (cause) => { noteQuitCause(cause); app.quit(); },
   // localServer is declared further down; before it exists there is no call.
-  isInCall: () => { try { return require('./call-phase.js').isBusy(localServer.callStatus); } catch { return false; } },
+  isInCall: () => { try { return require('@vibeconferencing/calls/core/call-phase.js').isBusy(localServer.callStatus); } catch { return false; } },
 });
 
 const path = require('path');
@@ -82,14 +82,14 @@ const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-s
 const profileManager = require('./profile-manager.js');
 const { profileLaunchCommand, spawnArgsForProfile } = require('./profile-launch.js');
 const { stallExplainedByOwnSpeech } = require('./caption-stall-excuse.js');
-const { MEET } = require('./meet-selectors.js'); // pure data — safe in the main process
+const { MEET } = require('@vibeconferencing/calls/providers/meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
 // One source of truth for the unconfigured bot name — see preferences-schema.
 const { DEFAULT_BOT_NAME, PREFERENCES } = require('./preferences-schema');
 const { resolveRealtimeConfig, mintEphemeralSession, buildInstructions, buildResponsePolicy, realtimeBudget } = require('./realtime-session');
 const { resolveBotName, botNameForAppUI } = require('./bot-name.js');
 const { resolveVoice } = require('./voice-status.js');
-const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
+const { isInCall, isFinished, isCallComplete } = require('@vibeconferencing/calls/core/call-phase.js');
 
 // Assigned once the app is ready (the implementation needs nextBotProfileName /
 // seedNewBotName / launchOrFocusProfile, which live in the app-ready block).
@@ -97,13 +97,14 @@ const { isInCall, isFinished, isCallComplete } = require('./call-phase.js');
 // that block runs — can reach it. Null until then; the route says so rather
 // than throwing.
 let adoptSessionAsBot = null;
-const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('./share-surface.js');
+const { SHARE_SIZE, resolveShareSize, shareWindowPosition, keyEventsFor, clickEventsFor } = require('@vibeconferencing/calls/core/share-surface.js');
 const { installShareKeepalive } = require('./share-keepalive.js');
 const { readFitScriptFor: boardFitReaderFor, FIT_VERSION_SCRIPT: BOARD_FIT_VERSION_SCRIPT } = require('./board-fit.js');
-const { CallRecordingSession } = require('./call-recorder.js');
-const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('./call-recording-window.js');
+const { CallRecordingSession } = require('@vibeconferencing/calls/recording/call-recorder.js');
+const { createCallRecordingWindow, createShareCaptureWindow, stopFrameCaptureWindow, sendFrameCaptureCrop } = require('@vibeconferencing/calls/hosts/electron/call-recording-window.js');
 const recordRegion = require('./record-region.js');
-const { mergeCallMedia } = require('./call-media-merge.js');
+const { mergeCallMedia, useHostRequire: mergeUseHostRequire } = require('@vibeconferencing/calls/recording/call-media-merge.js');
+mergeUseHostRequire(require); // ffmpeg-static is the app's dependency
 const { evictStaleEventIds, selectEventToJoin, selectUpcomingMatches, matchesCalendarEvent, ownerHasConfirmed, isEventUpcoming, msUntilStart, eventDedupeKey, resolveEventCallLink, shouldSkipCalendarJoin } = require('./calendar-auto-join.js');
 const { loadIcsEvents, mergeCalendarSources } = require('./ics-feed.js');
 const { createMergeProgressWindow, closeMergeProgressWindow } = require('./call-recording-merge-window.js');
@@ -120,13 +121,13 @@ const {
 // constant rather than raw channel string, so the contract is shared on both
 // sides of the IPC wire (provider impl in google-meet-provider.js). Values are
 // byte-identical to the prior literals — same wire.
-const { CALL_EVENTS, CALL_COMMANDS, providerCapabilities } = require('./call-provider.js');
+const { CALL_EVENTS, CALL_COMMANDS, providerCapabilities } = require('@vibeconferencing/calls/core/call-provider.js');
 // The one object main.js drives the call through (Phase 0 of the calling-
 // library extraction). Built below, once callCmdWC exists to route it.
-const { CallClient, CHAT_TIMEOUT_ERROR } = require('./call-client.js');
+const { CallClient, CHAT_TIMEOUT_ERROR } = require('@vibeconferencing/calls/core/call-client.js');
 const {
   PlatformCaptions, AudioTranscription, CaptionRouter, SOURCE_EVENTS, resolveListenSource, oneToOneSpeaker,
-} = require('./caption-source.js');
+} = require('@vibeconferencing/calls/hearing/caption-source.js');
 
 // Where the bot hears the call from (#850). The handlers below listen to ONE
 // source, a router, which wraps whichever real source this call uses: the
@@ -988,7 +989,7 @@ async function runPostRecordingMerges({ callDir, tracksDir, manifest, outputSuff
     if (keepTracksPref) {
       try {
         const { extractSpeakerTracks } = require('./speaker-extract.js');
-        const { resolveFfmpegPath } = require('./call-media-merge.js');
+        const { resolveFfmpegPath } = require('@vibeconferencing/calls/recording/call-media-merge.js');
         const res = await extractSpeakerTracks({
           tracksDir: dir,
           eventsFile: path.join(callDir, 'speaking-events.jsonl'),
@@ -2465,7 +2466,7 @@ const localServer = new globalThis.LocalServer({
     const stoppedTabUrl = externalShareRequest && externalShareRequest.url;
     externalShareRequest = null;
     if (stoppedTabUrl) {
-      require('./share-external-tab.js').closeShareWindowByUrl(stoppedTabUrl)
+      require('@vibeconferencing/calls/hosts/electron/share-external-tab.js').closeShareWindowByUrl(stoppedTabUrl)
         .then((r) => console.log('[electron] closed external-tab share window:', r.ok))
         .catch(() => { /* best-effort tidy-up */ });
     }
@@ -4708,7 +4709,7 @@ let externalShareRequest = null; // { source, title, url } | null
 // TODO for productionization: reuse the whiteboard-share Present-now retry loop
 // (generation token) instead of a single trigger; see docs/share-agent-tab-poc.md.
 async function startExternalTabShare({ url, appName } = {}) {
-  const { resolveTabShareSource } = require('./share-external-tab.js');
+  const { resolveTabShareSource } = require('@vibeconferencing/calls/hosts/electron/share-external-tab.js');
   const excludeIds = [
     mainWindow && !mainWindow.isDestroyed() ? mainWindow.getMediaSourceId() : null,
     whiteboardWindow && !whiteboardWindow.isDestroyed() ? whiteboardWindow.getMediaSourceId() : null,
@@ -4732,7 +4733,7 @@ async function startExternalTabShare({ url, appName } = {}) {
   // occlusion-proof, so the browsing window can sit behind). Best-effort; no-op
   // if the call isn't in this browser. Small delay lets the share engage first.
   setTimeout(() => {
-    require('./share-external-tab.js').raiseMeetWindow()
+    require('@vibeconferencing/calls/hosts/electron/share-external-tab.js').raiseMeetWindow()
       .then((r) => console.log('[electron] raised Meet window after share:', r.ok))
       .catch(() => { /* best-effort */ });
   }, 800);
@@ -5520,7 +5521,7 @@ function scanBrowserMeetUrls({ timeoutMs = 8000 } = {}) {
 // never joined as something else. Meet goes through joinMeetUrl (options passed
 // on); the rest switch provider, which joins and registers the room.
 function joinUrl(url, { platform = null, ...meetOpts } = {}) {
-  const { platformFromUrl } = require('./call-target');
+  const { platformFromUrl } = require('@vibeconferencing/calls/core/call-target');
   const t = platformFromUrl(url);
   if (!t.ok || (platform && t.provider !== platform)) return null;
   switch (t.provider) {
@@ -5542,7 +5543,7 @@ function joinUrl(url, { platform = null, ...meetOpts } = {}) {
 function joinSummonedCall({ url = null, summoned = false } = {}) {
   try {
     if (!url) return;
-    const { platformFromUrl } = require('./call-target');
+    const { platformFromUrl } = require('@vibeconferencing/calls/core/call-target');
     const t = platformFromUrl(url);
     if (!t.ok) { console.warn('[call-new-bot]', t.error); return; }
     console.log(`[call-new-bot] joining ${t.provider} call${summoned ? ' already in progress' : ''}`);
@@ -6015,8 +6016,6 @@ function openGoogleLogin(opts = {}) {
   });
 }
 
-// Read page-inject.js source once at startup
-const pageInjectCode = fs.readFileSync(path.join(EXT_DIR, 'page-inject.js'), 'utf-8');
 const testSpeechPath = path.join(EXT_DIR, 'test-speech.mp3');
 // The "I have no voice" notice, pre-recorded because the bot cannot synthesise
 // that sentence for exactly the reason it needs to say it. Ships alongside
@@ -6033,7 +6032,7 @@ const noVoiceClipPath = path.join(EXT_DIR, 'no-voice.mp3');
 // version in one place. Meet gets Chrome at the engine's real version, not the
 // current Chrome the Slack/Teams/Zoom surfaces claim: Meet's bot check turns a
 // signed-out guest away when the claimed version runs far ahead of the engine.
-const CHROME_UA = require('./slack-ua').ENGINE_UA;
+const CHROME_UA = require('@vibeconferencing/calls/hosts/electron/slack-ua').ENGINE_UA;
 
 // ONE persistent session partition per app profile — for everything this
 // profile does, Meet AND Slack (#282). Collapsed from the old three-partition
@@ -6502,7 +6501,7 @@ function configureMeetSession(sess) {
   // navigator.userAgentData, is shimmed by preload-meet and preload-google-sign-in.
   // Both read the version from the UA string itself, so they follow CHROME_UA
   // here and the current-Chrome UA a Teams or Zoom view sets on this partition.
-  require('./slack-ua').installHeaderSpoof(sess);
+  require('@vibeconferencing/calls/hosts/electron/slack-ua').installHeaderSpoof(sess);
 }
 
 // ---------------------------------------------------------------------------
@@ -11303,7 +11302,7 @@ function navigateMeetView(url, via = 'navigateMeetView') {
 // Derive + register the Slack room (code → local server + vibeconferencing.com
 // sync + ensureRoom). Shared by the launch-time slack block and activateSlackProvider.
 function setupSlackRoom(slackUrl) {
-  const { SLACK } = require('./slack-selectors');
+  const { SLACK } = require('@vibeconferencing/calls/providers/slack-selectors');
   const slackRoom = SLACK.roomCodeFromUrl(slackUrl);
   if (!slackRoom) {
     console.warn('[electron] Slack: no team/channel in URL; room code not set —', slackUrl);
@@ -11362,7 +11361,7 @@ function registerProviderRoom(label, room, url) {
 }
 
 async function clearTeamsPlatformCookies(sess) {
-  const { TEAMS } = require('./teams-selectors');
+  const { TEAMS } = require('@vibeconferencing/calls/providers/teams-selectors');
   let removed = 0;
   try {
     for (const c of await sess.cookies.get({})) {
@@ -11391,7 +11390,7 @@ function activateTeamsProvider(teamsUrl) {
 // redirect even after the platform cookies were cleared). On landing there,
 // wipe the Teams origins' storage once and retry the invite.
 function teamsEoaSelfHeal(view, teamsUrl) {
-  const { TEAMS } = require('./teams-selectors');
+  const { TEAMS } = require('@vibeconferencing/calls/providers/teams-selectors');
   let eoaRetried = false;
   view.webContents.on('did-navigate', (_e, url) => {
     if (eoaRetried || !/\/error\/eoa\b/.test(url)) return;
@@ -11414,13 +11413,18 @@ function teamsEoaSelfHeal(view, teamsUrl) {
 // set-config; a profile saved with both on waits in the first of
 // CALLING_APP_ORDER.
 const CALLING_APP_CALLS = {
-  telegram: { label: 'Telegram', preload: 'preload-telegram.js', module: './telegram-call', callerKey: (c) => c && c.id },
-  whatsapp: { label: 'WhatsApp', preload: 'preload-whatsapp.js', module: './whatsapp-call', callerKey: (c) => c && c.phone },
+  telegram: { label: 'Telegram', preload: 'preload-telegram.js', module: '@vibeconferencing/calls/providers/telegram-call', callerKey: (c) => c && c.id },
+  whatsapp: { label: 'WhatsApp', preload: 'preload-whatsapp.js', module: '@vibeconferencing/calls/providers/whatsapp-call', callerKey: (c) => c && c.phone },
   // A real phone number through Twilio (#882): the gate runs on Twilio's side
   // (twilio-call.js), the bot's phone is a local page running the Voice SDK.
-  twilio: { label: 'Phone', preload: 'preload-twilio.js', module: './twilio-call', callerKey: (c) => c && c.phone },
+  twilio: { label: 'Phone', preload: 'preload-twilio.js', module: '@vibeconferencing/calls/providers/twilio-call', callerKey: (c) => c && c.phone },
 };
 const CALLING_APP_ORDER = ['telegram', 'whatsapp', 'twilio'];
+// The app's own preloads for Slack's two surfaces (createSlackSurface).
+const SLACK_PRELOADS = {
+  mainPreload: path.join(__dirname, 'preload-slack-main.js'),
+  huddlePreload: path.join(__dirname, 'preload-slack-huddle.js'),
+};
 
 // --- Platforms (Phase 1 step 3 of the calls library) ------------------------
 // What differs between the platforms the call view can hold, as data;
@@ -11452,12 +11456,12 @@ const PLATFORMS = {
     label: 'Slack',
     partition: () => SESSION_PARTITION,
     identity: 'ua', // set by slack-surface itself
-    roomId: (u) => require('./slack-selectors').SLACK.roomCodeFromUrl(u),
+    roomId: (u) => require('@vibeconferencing/calls/providers/slack-selectors').SLACK.roomCodeFromUrl(u),
     startUrl: (u) => u,
     createView: (url, { autojoin }) => {
-      const { createSlackSurface } = require('./slack-surface');
+      const { createSlackSurface } = require('@vibeconferencing/calls/hosts/electron/slack-surface');
       const surface = createSlackSurface(mainWindow, {
-        partition: SESSION_PARTITION, url, devtools: !!(cliArgs && cliArgs['devtools']), autojoin,
+        partition: SESSION_PARTITION, url, devtools: !!(cliArgs && cliArgs['devtools']), autojoin, ...SLACK_PRELOADS,
       });
       return { view: surface.view, surface };
     },
@@ -11476,14 +11480,14 @@ const PLATFORMS = {
     // signed in to in this profile: a signed-in bot skips the guest join page
     // and its reCAPTCHA.
     startUrl: (u) => {
-      const { ZOOM } = require('./zoom-selectors');
+      const { ZOOM } = require('@vibeconferencing/calls/providers/zoom-selectors');
       const web = ZOOM.webClientJoinUrl(u);
       if (web) return web;
       let host = '';
       try { host = new URL(u).hostname.toLowerCase(); } catch { /* not a URL */ }
       return host === 'zoom.us' || host.endsWith('.zoom.us') ? u : null;
     },
-    roomId: (u) => (require('./zoom-selectors').ZOOM.webClientJoinUrl(u) ? require('./zoom-selectors').ZOOM.roomCodeFromUrl(u) : null),
+    roomId: (u) => (require('@vibeconferencing/calls/providers/zoom-selectors').ZOOM.webClientJoinUrl(u) ? require('@vibeconferencing/calls/providers/zoom-selectors').ZOOM.roomCodeFromUrl(u) : null),
   },
   teams: {
     label: 'Teams',
@@ -11498,10 +11502,10 @@ const PLATFORMS = {
     // v2 app, which detects Electron and bounces to /error/eoa; the light client
     // never did. Links without a /meet/ code still go through the launcher.
     startUrl: (u) => {
-      const { TEAMS } = require('./teams-selectors');
+      const { TEAMS } = require('@vibeconferencing/calls/providers/teams-selectors');
       return TEAMS.isTeamsUrl(u) ? (TEAMS.lightMeetingUrl(u) || u) : null;
     },
-    roomId: (u) => require('./teams-selectors').TEAMS.roomCodeFromUrl(u),
+    roomId: (u) => require('@vibeconferencing/calls/providers/teams-selectors').TEAMS.roomCodeFromUrl(u),
     onView: teamsEoaSelfHeal,
     // Teams pins its client classification in a platformId cookie, and the
     // launcher redirects on it with no page script involved. One bad visit (e.g.
@@ -11554,7 +11558,7 @@ function activatePlatform(id, { url = null, via = null, forCall = true, load = t
   slackSurface = built.surface;
   if (p.avatarOnLoad !== false) pushInitialAvatarStateOnLoad(meetView); // #828
   if (p.identity && !p.createView) {
-    const browserId = require('./slack-ua');
+    const browserId = require('@vibeconferencing/calls/hosts/electron/slack-ua');
     meetView.webContents.setUserAgent(browserId.UA);
     if (p.identity === 'ua+hints') {
       try { browserId.installHeaderSpoof(session.fromPartition(partition)); } catch { /* best effort */ }
@@ -11596,7 +11600,7 @@ function provisionTwilioGate(reason) {
     const creds = twilioCreds();
     const phone = store && store.get('twilioPhoneNumber');
     if (!creds || !phone) return { ok: false, error: 'Twilio is not connected' };
-    const tw = require('./twilio-call');
+    const tw = require('@vibeconferencing/calls/providers/twilio-call');
     const answering = !!store.get('twilioAnswerCalls');
     try {
       const r = await tw.provisionGate({
@@ -11742,7 +11746,7 @@ function activateCallingAppStandby(app, reason, { startUrl = null } = {}) {
 // A link call is a group call the bot was SENT to, like a Meet link, so no
 // allowlist applies. Needs the bot signed in to WhatsApp. Returns the room.
 function activateWhatsAppCallLink(url) {
-  const wa = require('./whatsapp-call');
+  const wa = require('@vibeconferencing/calls/providers/whatsapp-call');
   const link = wa.parseCallLink(url);
   if (!link) { console.warn('[electron] WhatsApp: not a call link —', url); return null; }
   if (!(store && (store.get('callingAppAccounts') || {}).whatsapp)) {
@@ -11814,7 +11818,7 @@ function decideCallingAppCall(app, caller) {
 // renders the meeting top-level where preload-zoom.js can reach it. preload-zoom
 // handles pre-join, computer audio and in-call reporting itself.
 function activateZoomProvider(zoomUrl) {
-  const { ZOOM } = require('./zoom-selectors');
+  const { ZOOM } = require('@vibeconferencing/calls/providers/zoom-selectors');
   const isMeeting = !!ZOOM.webClientJoinUrl(zoomUrl);
   const r = activatePlatform('zoom', { url: zoomUrl, via: isMeeting ? 'Zoom join' : 'Zoom sign-in', forCall: isMeeting });
   return r ? r.room : null;
@@ -12493,7 +12497,7 @@ function createMainWindow() {
   // Optional --slack-url=<deep-link> picks the channel to auto-join at launch.
   const slackMode = cliArgs['provider'] === 'slack';
   if (slackMode) {
-    const { createSlackSurface } = require('./slack-surface');
+    const { createSlackSurface } = require('@vibeconferencing/calls/hosts/electron/slack-surface');
     const slackUrl = cliArgs['slack-url'] || 'https://app.slack.com/';
     console.log('[electron] Provider: SLACK — loading', slackUrl);
     ensureMeetSessionConfigured(SESSION_PARTITION);
@@ -12504,6 +12508,7 @@ function createMainWindow() {
       // Auto-join the channel's huddle (header button → lobby confirm). Default
       // on in the Slack scaffold; --slack-autojoin=false to just load the channel.
       autojoin: cliArgs['slack-autojoin'] !== 'false',
+      ...SLACK_PRELOADS,
     });
     meetView = surface.view;
     // Enable provider-aware command routing: DOM commands → the huddle popup.
@@ -14835,7 +14840,7 @@ function setupIPC() {
     if (!target) return { ok: false, error: `unknown calling app: ${which}` };
     const open = callingAppSignInWindows[which];
     if (open && !open.isDestroyed()) { open.show(); open.focus(); presentHeadlessWindow(open); return { ok: true }; }
-    const browserId = require('./slack-ua');
+    const browserId = require('@vibeconferencing/calls/hosts/electron/slack-ua');
     const sess = session.fromPartition(SESSION_PARTITION);
     try { browserId.installHeaderSpoof(sess); } catch { /* best effort */ }
     const win = new BrowserWindow({
@@ -14902,7 +14907,7 @@ function setupIPC() {
   // Connect: check the credentials and the number against Twilio, store them,
   // and write the gate. The secret never goes back to the panel.
   ipcMain.handle('twilio-connect', async (_event, { accountSid, apiKeySid, apiKeySecret, phoneNumber } = {}) => {
-    const tw = require('./twilio-call');
+    const tw = require('@vibeconferencing/calls/providers/twilio-call');
     const creds = {
       accountSid: String(accountSid || '').trim(),
       apiKeySid: String(apiKeySid || '').trim(),
@@ -14932,7 +14937,7 @@ function setupIPC() {
   ipcMain.handle('twilio-token', () => {
     const creds = twilioCreds();
     if (!creds) return { token: null };
-    const tw = require('./twilio-call');
+    const tw = require('@vibeconferencing/calls/providers/twilio-call');
     return { token: tw.mintAccessToken({ ...creds, identity: tw.clientIdentity(appProfile) }) };
   });
   ipcMain.handle('twilio-number', () => {

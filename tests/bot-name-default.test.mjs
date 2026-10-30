@@ -55,7 +55,7 @@ test('no shipping fallback hardcodes a personal name', () => {
   for (const rel of [
     'electron-app/main.js',
     'electron-app/local-server.js',
-    'electron-app/google-meet-provider.js',
+    'packages/calls/providers/google-meet-provider.js',
     'electron-app/renderer/panel.js',
     'mcp-server/server.js',
   ]) {

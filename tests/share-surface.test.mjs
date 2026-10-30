@@ -17,7 +17,7 @@ const require = createRequire(import.meta.url);
 const {
   SHARE_SIZE, SHARE_GAP, resolveShareSize, shareWindowPosition,
   normalizeModifiers, keyEventsFor, clickEventsFor,
-} = require('../electron-app/share-surface.js');
+} = require('../packages/calls/core/share-surface.js');
 
 // A 1512x945 work area with the menu bar taken off the top — a MacBook default.
 const AREA = { x: 0, y: 25, width: 1512, height: 920 };

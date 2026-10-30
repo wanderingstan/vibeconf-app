@@ -146,7 +146,7 @@ function createFrameCaptureWindow(targetWebContents, { trackName, partition, vis
     },
   });
   win.setMenuBarVisibility(false);
-  win.loadFile(path.join(__dirname, 'renderer', 'call-recording-window.html'), {
+  win.loadFile(path.join(__dirname, 'call-recording-window.html'), {
     search: `track=${encodeURIComponent(trackName)}&controls=${visible ? '1' : '0'}`
       + (crop ? `&crop=${[crop.x, crop.y, crop.w, crop.h].map((n) => Number(n).toFixed(4)).join(',')}` : '')
       // Meet's fixed chrome in CSS px, so the renderer can size its canvas from

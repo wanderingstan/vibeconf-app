@@ -636,7 +636,7 @@ function botLabel(name) {
 async function stopBotNow(name) {
   const inst = (await scanRunning()).get(name);
   if (!inst && !botChildren.has(name)) return { ok: true, already: true };
-  if (inst && require('./call-phase.js').isBusy(inst.callStatus)) return { ok: false, error: `${botLabel(name)} is in a call. Leave it first.` };
+  if (inst && require('@vibeconferencing/calls/core/call-phase.js').isBusy(inst.callStatus)) return { ok: false, error: `${botLabel(name)} is in a call. Leave it first.` };
   if (relay.name === name) deselectBot();
   const ok = await stopBot(inst ? inst.port : null, 4000, 'stopped from its menu', name);
   return { ok: !!ok };
@@ -653,7 +653,7 @@ async function restartOutdatedBot(name) {
   const label = botLabel(name);
   const inst = (await scanRunning()).get(name);
   if (inst) {
-    if (require('./call-phase.js').isBusy(inst.callStatus)) return { ok: false, error: `${label} is in a call. Restart it after the call.` };
+    if (require('@vibeconferencing/calls/core/call-phase.js').isBusy(inst.callStatus)) return { ok: false, error: `${label} is in a call. Restart it after the call.` };
     let pid = null;
     try {
       const out = require('child_process').execFileSync('lsof', ['-nP', `-iTCP:${inst.port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8', timeout: 4000 });
@@ -679,7 +679,7 @@ async function deleteBot(name) {
   const label = botLabel(name);
   if (name === paths.defaultProfile) return { ok: false, error: `${label} is the default bot, which can't be deleted.` };
   const inst = (await scanRunning()).get(name);
-  if (inst && require('./call-phase.js').isBusy(inst.callStatus)) return { ok: false, error: `${label} is in a call. Leave it first.` };
+  if (inst && require('@vibeconferencing/calls/core/call-phase.js').isBusy(inst.callStatus)) return { ok: false, error: `${label} is in a call. Leave it first.` };
   const { response } = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
     type: 'warning',
     buttons: ['Move to Trash', 'Cancel'],
@@ -1322,7 +1322,7 @@ function startAppUpdates() {
     dialogParent: () => win,
     bringForward: () => { try { app.focus({ steal: true }); } catch { /* not here */ } },
     installBlocked: async () => {
-      const busy = [...(await scanRunning()).values()].some((inst) => require('./call-phase.js').isBusy(inst.callStatus));
+      const busy = [...(await scanRunning()).values()].some((inst) => require('@vibeconferencing/calls/core/call-phase.js').isBusy(inst.callStatus));
       return busy ? 'in-call' : null;
     },
     beforeInstall: async () => {

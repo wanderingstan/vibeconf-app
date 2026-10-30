@@ -435,7 +435,7 @@ test('the fuse is defused on any in-call phase, not just "in-call" itself', () =
   // isInCall covers navigating/joining/waiting-to-be-admitted too. Waiting for
   // the terminal 'in-call' would leave the fuse burning through the join, which
   // is exactly the window a re-join lands in.
-  const { isInCall } = require('../electron-app/call-phase.js');
+  const { isInCall } = require('../packages/calls/core/call-phase.js');
   for (const phase of ['navigating', 'joining', 'waiting-to-be-admitted', 'in-call']) {
     assert.equal(isInCall(phase), true, `${phase} must count as live`);
   }

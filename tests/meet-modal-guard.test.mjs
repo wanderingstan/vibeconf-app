@@ -27,9 +27,9 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { MEET } = require('../electron-app/meet-selectors.js');
+const { MEET } = require('../packages/calls/providers/meet-selectors.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const provider = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
+const provider = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
 
 // Evaluate a selector list of the two attribute forms we actually use —
 // [aria-label="X" i] (exact) and [aria-label$=" X" i] (suffix) — against a label.

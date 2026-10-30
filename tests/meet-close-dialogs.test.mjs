@@ -19,9 +19,9 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const provider = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
-const selectorsSrc = readFileSync(join(root, 'electron-app/meet-selectors.js'), 'utf8');
-const sel = require('../electron-app/meet-selectors.js');
+const provider = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
+const selectorsSrc = readFileSync(join(root, 'packages/calls/providers/meet-selectors.js'), 'utf8');
+const sel = require('../packages/calls/providers/meet-selectors.js');
 const MODALS = (sel.MEET || sel).modals;
 
 test('the toast is matched by its words, never by a generated attribute', () => {

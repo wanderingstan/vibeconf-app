@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const phase = require('../electron-app/call-phase.js');
+const phase = require('../packages/calls/core/call-phase.js');
 const { PREFERENCES, validate } = require('../electron-app/preferences-schema.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 // The machine-wide agent setup (skills, hook, MCP registration) moved from main.js to

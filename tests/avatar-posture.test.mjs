@@ -183,7 +183,7 @@ test('wiring: preload exposes the module, page-inject composes it, main pushes t
   // Every call preload loads the page scripts through page-scripts.js, which
   // exposes it before page-inject is eval'd (Phase 2; it was Meet-only before).
   assert.match(preload, /globalThis\.__vibeAvatarPosture = require\('\.\/avatar-posture\.js'\)/);
-  assert.ok(preload.indexOf('__vibeAvatarPosture') < preload.indexOf('evalFile(dir, CORE)'),
+  assert.ok(preload.indexOf('__vibeAvatarPosture') < preload.indexOf('injectMediaCore()'),
     'exposed before page-inject is eval\'d');
   // Added to the translate and multiplied into the scale, alongside (not
   // replacing) the existing tilts.

@@ -29,10 +29,10 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const provider = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
-const selectors = readFileSync(join(root, 'electron-app/meet-selectors.js'), 'utf8');
+const provider = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
+const selectors = readFileSync(join(root, 'packages/calls/providers/meet-selectors.js'), 'utf8');
 const mcp = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
-const { MEET } = require('../electron-app/meet-selectors.js');
+const { MEET } = require('../packages/calls/providers/meet-selectors.js');
 
 test('participants are keyed by device id, not display name', () => {
   // aria-label was never unique: a share carries the sharer's name, and two

@@ -29,7 +29,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const src = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
+const src = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
 const { PREFERENCES } = require('../electron-app/preferences-schema.js');
 
 // The tracker lives in a renderer script that requires electron, so lift the

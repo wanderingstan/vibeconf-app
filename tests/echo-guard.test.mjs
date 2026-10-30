@@ -18,7 +18,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const inject = readFileSync(join(root, 'packages/calls/inject/page-inject.js'), 'utf8');
 
 test('far-end audio only counts while our own output is quiet', () => {
   const block = inject.slice(inject.indexOf('let farEnd = db > FLOOR_SPEECH_DB'));

@@ -24,7 +24,7 @@ import { Bot, sleep, report, record } from './meet-test-lib.mjs';
 // keyed at launch (slack-<team>-<channel>). Otherwise a placeholder path would
 // write transcripts to a phantom vibeconferencing room that the app never uses.
 const require = createRequire(import.meta.url);
-const { SLACK } = require('../electron-app/slack-selectors.js');
+const { SLACK } = require('../packages/calls/providers/slack-selectors.js');
 
 const arg = (name, def) => { const i = process.argv.indexOf('--' + name); return i !== -1 && process.argv[i + 1] ? process.argv[i + 1] : def; };
 // Room = the per-huddle code derived from --slack-url (the channel the fleet

@@ -46,7 +46,7 @@ function createMergeProgressWindow() {
     show: false,
     backgroundColor: '#202124',
     webPreferences: {
-      preload: path.join(__dirname, 'preload-call-recording.js'),
+      preload: require.resolve('@vibeconferencing/calls/hosts/electron/preload-call-recording.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },

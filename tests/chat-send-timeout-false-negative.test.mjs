@@ -44,8 +44,8 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const src = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
-const { MEET } = require('../electron-app/meet-selectors.js');
+const src = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
+const { MEET } = require('../packages/calls/providers/meet-selectors.js');
 
 const start = src.indexOf('// Chat sends must be SERIAL.');
 const end = src.indexOf("ipcRenderer.on('read-chat'");

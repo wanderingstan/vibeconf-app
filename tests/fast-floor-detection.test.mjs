@@ -60,7 +60,7 @@ test('the experiment ships OFF now that it has been measured', () => {
   assert.equal(PREFERENCES.fastFloorDetection.default, true);
   // The floor threshold must stay well clear of the STT gate — conflating the
   // two is what made it fire on keystrokes.
-  const inject = readFileSync(new URL('../electron-app/page-inject.js', import.meta.url), 'utf8');
+  const inject = readFileSync(new URL('../packages/calls/inject/page-inject.js', import.meta.url), 'utf8');
   const m = inject.match(/const FLOOR_SPEECH_DB = (-?\d+)/);
   assert.ok(m, 'the floor needs its own threshold constant');
   assert.ok(Number(m[1]) >= -45, `${m[1]}dB is not "genuinely loud" — a keystroke clears it`);

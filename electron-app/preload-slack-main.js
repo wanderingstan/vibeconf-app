@@ -15,12 +15,12 @@ const fs = require('fs');
 const path = require('path');
 // Research (dom-probe.js): no default target for Slack yet, so it needs a
 // selector: --dom-probe='<css selector>'. Off by default.
-require('./dom-probe').installDomProbe({ tag: '[slack]', defaultSelector: null });
+require('@vibeconferencing/calls/core/dom-probe').installDomProbe({ tag: '[slack]', defaultSelector: null });
 
 // Shim navigator.userAgentData (UA Client Hints) to match the spoofed Chrome UA
 // BEFORE Slack's scripts run, so its sign-in browser gate doesn't see the real
 // Chromium version (Electron leaks it via Client Hints even with setUserAgent).
-require('./slack-ua').installClientHintsShim();
+require('@vibeconferencing/calls/hosts/electron/slack-ua').installClientHintsShim();
 
 // Timestamp console lines so [slack-main] / page-inject logs interleave cleanly
 // in the main-process stdout (same wrapper preload-meet.js uses).
@@ -60,9 +60,9 @@ window.__vibeconf_getScreenShareSource = async function () {
 // Call recording: start/stop the page recorder and carry its tracks to main
 // (#814). This window is the one main sends 'trigger-record' to (meetView),
 // and it owns the media; without this a Slack recording was silent video.
-require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[slack-main]' });
+require('@vibeconferencing/calls/recording/preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[slack-main]' });
 // Speech-to-text tap → main, for hearing calls by transcribing their audio (#850).
-require('./preload-stt-bridge').installSttBridge(ipcRenderer);
+require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
 // Bridge main → page-inject (same generic forward as google-meet-provider's
 // inbound handler). The VirtualMic AND the virtual-camera avatar both live HERE

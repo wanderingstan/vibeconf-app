@@ -18,11 +18,11 @@ import { dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { CallRecordingSession } = require('../electron-app/call-recorder.js');
+const { CallRecordingSession } = require('../packages/calls/recording/call-recorder.js');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = fs.readFileSync(join(root, 'electron-app/main.js'), 'utf8');
-const rendererJs = fs.readFileSync(join(root, 'electron-app/renderer/call-recording-window.js'), 'utf8');
+const rendererJs = fs.readFileSync(join(root, 'packages/calls/hosts/electron/call-recording-window-renderer.js'), 'utf8');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'rec-size-'));

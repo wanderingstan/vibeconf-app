@@ -244,7 +244,7 @@ async function main() {
     // 2. THE #26 PROTECTION — a duplicate must still be a no-op.
     //
     // …but ONLY while the app is genuinely in a guard-protected state for ROOM_A.
-    // The guard (electron-app/rejoin-guard.js) fires on
+    // The guard (packages/calls/core/rejoin-guard.js) fires on
     //   currentRoom === requestedRoom && callStatus ∈ {navigating,joining,in-call}.
     // ROOM_A is a synthetic room that Google never truly admits, so once the first
     // join resolves to "couldn't join", the app runs clearRoom() → roomId=null and

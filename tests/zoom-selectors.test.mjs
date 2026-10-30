@@ -9,7 +9,7 @@ import { readFileSync } from 'fs';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const { ZOOM } = require('../electron-app/zoom-selectors.js');
+const { ZOOM } = require('../packages/calls/providers/zoom-selectors.js');
 
 test('meetingNumberFromUrl: invite links and both web-client path forms', () => {
   assert.equal(ZOOM.meetingNumberFromUrl('https://us05web.zoom.us/j/81234567890?pwd=abc'), '81234567890');

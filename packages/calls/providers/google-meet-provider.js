@@ -11,9 +11,10 @@
 // A second backend (e.g. slack-provider.js) is a sibling that implements the
 // same CallProvider contract; main.js drives whichever over the same IPC wire.
 
-const { ipcRenderer } = require('electron');
+// The host's channel (ipcRenderer under Electron), set by the host's preload.
+const ipcRenderer = require('../core/host-ipc').hostIpc();
 const { MEET } = require('./meet-selectors');
-const { CallProvider, CALL_COMMANDS, CALL_EVENTS } = require('./call-provider');
+const { CallProvider, CALL_COMMANDS, CALL_EVENTS } = require('../core/call-provider');
 
 // ---------------------------------------------------------------------------
 // Listen for messages from main process and forward to page context
@@ -1721,13 +1722,11 @@ function ensureStatusBar() {
   const bar = document.createElement('div');
   bar.id = 'vibeconf-status-bar';
   bar.innerHTML = '<span class="icon"></span><span class="label">Bot\'s view —</span><span class="status" id="vibeconf-status">Initializing...</span>';
-  // The bot's own face, the Fluent 3D 🙂 the app and site use for it, rather
-  // than the OS 🤖. Read from the bundled set as a data URI (this is the Meet
-  // page's origin, so it can't fetch app files by URL); the plain glyph is the
-  // fallback if the asset can't be read.
+  // The bot's own face, as an image data URI the host app may set (this is
+  // the Meet page's origin, so it can't fetch app files by URL); the plain
+  // glyph otherwise.
   const iconEl = bar.querySelector('.icon');
-  let faceUri = null;
-  try { faceUri = require('./emoji-assets.js').dataUriForRelPath('fluent3d/1f642.png'); } catch { /* fall back */ }
+  const faceUri = window.__vibeconfStatusIconUri || null;
   if (faceUri) {
     const img = document.createElement('img');
     img.src = faceUri; img.alt = '';
@@ -4283,7 +4282,7 @@ ipcRenderer.on('trigger-leave-call', () => {
 // session; the page just captures tracks and streams chunks back.
 // Speech-to-text tap → main, for hearing a call by transcribing its audio (#850).
 // On Meet this runs alongside the captions, which makes it the test bed (#836).
-require('./preload-stt-bridge').installSttBridge(ipcRenderer);
+require('../hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
 ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt, botName } = {}) => {
   setRecordingBannerClamp(!!recording);

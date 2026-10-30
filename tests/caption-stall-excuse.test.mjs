@@ -48,7 +48,7 @@ test('a bot that never spoke never gets the excuse', () => {
 });
 
 test('the grace window matches the provider stall threshold', () => {
-  const provider = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
+  const provider = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
   const m = /const STALL_MS = (\d+);/.exec(provider);
   assert.ok(m, 'STALL_MS not found in the provider');
   assert.equal(OWN_SPEECH_GRACE_MS, Number(m[1]),

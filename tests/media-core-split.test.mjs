@@ -13,7 +13,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const read = (f) => readFileSync(new URL('../electron-app/' + f, import.meta.url), 'utf8');
-const core = read('page-inject.js');
+const core = readFileSync(new URL('../packages/calls/inject/page-inject.js', import.meta.url), 'utf8');
 const avatar = read('page-avatar.js');
 const realtime = read('page-realtime-voice.js');
 
@@ -83,6 +83,6 @@ test('the loader evals the core before the plugins, and a plugin failing never s
   assert.deepEqual(PLUGINS, ['page-avatar.js', 'page-realtime-voice.js']);
   const loader = read('page-scripts.js');
   const body = loader.slice(loader.indexOf('function injectPageScripts('));
-  assert.ok(body.indexOf('evalFile(dir, CORE)') < body.indexOf('for (const file of PLUGINS)'));
+  assert.ok(body.indexOf('injectMediaCore()') < body.indexOf('for (const file of PLUGINS)'));
   assert.match(body, /for \(const file of PLUGINS\) \{\n\s*try \{\n\s*evalFile\(dir, file\);\n\s*\} catch/);
 });

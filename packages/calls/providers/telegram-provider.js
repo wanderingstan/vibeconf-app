@@ -5,7 +5,7 @@
 // can't add video (#889). The incoming side stays in preload-telegram.js; see
 // calling-app-provider.js.
 
-const { CallingAppProvider } = require('./calling-app-provider');
+const { CallingAppProvider } = require('../core/calling-app-provider');
 const telegramCall = require('./telegram-call');
 
 class TelegramProvider extends CallingAppProvider {

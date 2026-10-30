@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const { ZoomCaptionTracker, continues } = require('../electron-app/zoom-captions.js');
+const { ZoomCaptionTracker, continues } = require('../packages/calls/hearing/zoom-captions.js');
 
 const STAN = 'https://us04images.zoom.us/p/stan.png';
 const ANA = 'https://us04images.zoom.us/p/ana.png';

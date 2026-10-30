@@ -18,8 +18,8 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { PlatformCaptions, SOURCE_EVENTS, LISTEN_SOURCES, resolveListenSource } = require('../electron-app/caption-source.js');
-const { CALL_EVENTS, CALL_COMMANDS, providerCapabilities, CallProvider } = require('../electron-app/call-provider.js');
+const { PlatformCaptions, SOURCE_EVENTS, LISTEN_SOURCES, resolveListenSource } = require('../packages/calls/hearing/caption-source.js');
+const { CALL_EVENTS, CALL_COMMANDS, providerCapabilities, CallProvider } = require('../packages/calls/core/call-provider.js');
 const { PREFERENCES } = require('../electron-app/preferences-schema.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 

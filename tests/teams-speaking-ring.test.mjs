@@ -28,7 +28,7 @@ function fakeStage(tiles) {
   };
 }
 
-const { TeamsProvider } = require('../electron-app/teams-provider.js');
+const { TeamsProvider } = require('../packages/calls/providers/teams-provider.js');
 
 test('a lit ring (::before opacity 1) is speaking; an unlit one (0) is not', () => {
   fakeStage([{ name: 'Stan James', ring: 1 }, { name: 'Anya', ring: 0 }]);

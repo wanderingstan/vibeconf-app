@@ -6,15 +6,18 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const app = join(root, 'electron-app');
-const read = (f) => readFileSync(join(app, f), 'utf8');
-const { PAGE_TO_MAIN } = createRequire(import.meta.url)(join(app, 'preload-recording-bridge.js'));
+// The app's files, or the calls library's (packages/calls) by the same name.
+const LIB = ['core', 'providers', 'inject', 'hearing', 'recording'].map((d) => join(root, 'packages', 'calls', d));
+const at = (f) => [app, ...LIB].map((d) => join(d, f)).find((p) => existsSync(p)) || join(app, f);
+const read = (f) => readFileSync(at(f), 'utf8');
+const { PAGE_TO_MAIN } = createRequire(import.meta.url)(at('preload-recording-bridge.js'));
 
 test('every preload that loads page-inject is wired for recording', () => {
   // page-inject holds the recorder; a preload that runs it on the call view must

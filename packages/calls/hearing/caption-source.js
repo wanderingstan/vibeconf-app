@@ -23,7 +23,7 @@
 // needs as arguments, so it can be exercised in a plain node test.
 
 const { EventEmitter } = require('node:events');
-const { CALL_EVENTS, CALL_COMMANDS, providerCapabilities } = require('./call-provider.js');
+const { CALL_EVENTS, CALL_COMMANDS, providerCapabilities } = require('../core/call-provider.js');
 
 // What a source tells the app. Payloads match the provider events they replace,
 // so the handlers in main.js moved over with their bodies untouched.

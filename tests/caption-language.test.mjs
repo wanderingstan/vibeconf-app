@@ -19,10 +19,10 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { MEET } = require('../electron-app/meet-selectors.js');
-const { CALL_COMMANDS, CALL_EVENTS } = require('../electron-app/call-provider.js');
+const { MEET } = require('../packages/calls/providers/meet-selectors.js');
+const { CALL_COMMANDS, CALL_EVENTS } = require('../packages/calls/core/call-provider.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const provider = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
+const provider = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 const server = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
 const mcp = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
@@ -129,7 +129,7 @@ test('it refuses out of a call, where the setting does not exist', () => {
 test('Slack reports caption language as unsupported rather than pretending', () => {
   // A huddle has no caption region to read, so there is nothing to set. Returning
   // a cheerful true would be a lie the agent cannot detect.
-  const slack = readFileSync(join(root, 'electron-app/slack-provider.js'), 'utf8');
+  const slack = readFileSync(join(root, 'packages/calls/providers/slack-provider.js'), 'utf8');
   const fn = slack.slice(slack.indexOf('async setCaptionLanguage'));
   assert.match(fn, /ok: false/);
 });

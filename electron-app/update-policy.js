@@ -95,7 +95,7 @@ function canInstallNow({ callStatus = 'idle' } = {}) {
   // Includes after-call-work: quitting to install would kill the agent
   // mid-wrap-up, which is the same failure as dropping it mid-sentence — just
   // less visible, because nobody is watching the call any more.
-  const live = require('./call-phase.js').isBusy(callStatus);
+  const live = require('@vibeconferencing/calls/core/call-phase.js').isBusy(callStatus);
   return live ? { ok: false, reason: 'in-call' } : { ok: true, reason: null };
 }
 

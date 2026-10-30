@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { SpeechGate, RATE, MAX_SEGMENT_MS } = require('../electron-app/speech-gate.js');
+const { SpeechGate, RATE, MAX_SEGMENT_MS } = require('../packages/calls/hearing/speech-gate.js');
 
 // Synthetic audio: "speech" = a 220 Hz tone at amplitude a; silence = zeros
 // (call slots are digitally silent between talkers); noise = tiny random.

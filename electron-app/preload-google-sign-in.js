@@ -4,4 +4,4 @@
 // sets on the session (string + Sec-CH-UA* headers), before Google's scripts
 // read it. Google refuses a sign-in from what looks like an embedded browser
 // ("This browser or app may not be secure", #499). Exposes nothing to the page.
-require('./slack-ua').installClientHintsShim();
+require('@vibeconferencing/calls/hosts/electron/slack-ua').installClientHintsShim();

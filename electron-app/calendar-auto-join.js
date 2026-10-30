@@ -44,7 +44,7 @@ const MEET_CODE_RE = /meet\.google\.com\/([a-z]+-[a-z]+-[a-z]+)/;
 // wiped the whiteboard. Both entry points now funnel through one rule.
 // rejoin-guard.js is pure too, so this file stays plain-Node testable.
 const { findCallLink } = require('./renderer/call-link.js');
-const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
+const { shouldIgnoreRejoin } = require('@vibeconferencing/calls/core/rejoin-guard.js');
 
 // Case-insensitive substring/equality helpers. Kept tiny and local rather
 // than pulling in a string-utils dependency for two one-liners.

@@ -62,7 +62,7 @@ the `captions: false` case in `call-provider.js`.
 
 ## Where this comes from
 
-`electron-app/call-provider.js` is the interface every provider
+`packages/calls/core/call-provider.js` is the interface every provider
 implements, and `PROVIDER_CAPABILITIES` there is the one capability flag
 the app checks at runtime. The rows above come from the provider files:
 `google-meet-provider.js`, `zoom-provider.js`, `teams-provider.js`,

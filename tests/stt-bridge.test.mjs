@@ -24,8 +24,7 @@ test('every preload that runs page-inject installs the STT bridge', () => {
   const withInject = preloads.filter((f) => /injectPageScripts\(\{ tag:/.test(read(f)));
   assert.ok(withInject.length >= 4, 'expected the Meet, Slack, Zoom and Teams preloads, found: ' + withInject.join(', '));
   for (const f of withInject) {
-    // preload-meet hands the page to google-meet-provider.js, which installs it.
-    const src = f === 'preload-meet.js' ? read('google-meet-provider.js') : read(f);
+    const src = read(f);
     assert.ok(src.includes('installSttBridge(ipcRenderer)'), `${f} runs page-inject but never forwards the STT tap`);
   }
 });

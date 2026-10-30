@@ -150,7 +150,7 @@ ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, async (_e, { requestId } = {}) 
 ipcRenderer.on('trigger-leave-call', () => { provider.leave(); });
 
 // ---------------------------------------------------------------------------
-// page-inject → main: the same forwards google-meet-provider makes. tts-ended
+// page-inject → main: the same forwards preload-meet makes. tts-ended
 // matters most: main uses it to put the mic back in the mode's state.
 // ---------------------------------------------------------------------------
 window.addEventListener('message', (event) => {

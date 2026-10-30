@@ -86,6 +86,18 @@ const CALL_EVENTS = {
   ttsEnded: 'tts-ended',
   botJoinedCall: 'bot-joined-call',
   statusUpdate: 'meet-status-update',
+  // For the user, not the agent: { action: 'error', message } for a problem
+  // they can see or fix, { action: 'mic-status', status }, and the live caption
+  // line ({ action: 'raw-caption' | 'caption-update', … }).
+  notice: 'to-panel',
+  // Where the page landed when it isn't a meeting: { landing, url }. The host
+  // knows whether a join was in flight, so it judges whether that's a failure.
+  landing: 'meet-landing',
+  // Diagnostics: a full-page snapshot of an unrecognised state
+  // ({ reason, url, innerText, html }), and batched raw speaking observations
+  // for offline scoring (scripts/score-speaking.mjs; on with speakingEventCapture).
+  domCapture: 'capture-dom',
+  speakingEvents: 'speaking-events',
 };
 
 // Bootstrap values a provider pulls FROM the app at startup (ipcRenderer.invoke

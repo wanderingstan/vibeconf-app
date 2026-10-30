@@ -31,6 +31,34 @@ test('only hosts/electron requires Electron', () => {
   assert.deepEqual(offenders, []);
 });
 
+// Every provider is driven the same way: commands as method calls, reports as
+// provider events. The host's preload owns the IPC (Meet's did its own until
+// Phase 3b, which left the Playwright host a Meet-only wire to fake).
+test('no provider talks IPC itself', () => {
+  const code = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  const offenders = sources
+    .filter((p) => relative(pkg, p).startsWith('providers/'))
+    .filter((p) => /ipcRenderer|hostIpc/.test(code(readFileSync(p, 'utf8'))))
+    .map((p) => relative(pkg, p));
+  assert.deepEqual(offenders, []);
+});
+
+// Phase 3b dropped CALL_COMMANDS from Meet's import while speak() still used
+// it: every play-tts threw inside an IPC handler, silently, and the bots went
+// mute. A provider must import each contract name it uses.
+test('every provider imports the contract names it uses', () => {
+  for (const p of sources.filter((f) => relative(pkg, f).startsWith('providers/'))) {
+    const src = readFileSync(p, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    const imported = new Set();
+    for (const m of src.matchAll(/const \{([^}]+)\} = require\([^)]*call-provider[^)]*\)/g)) {
+      for (const n of m[1].split(',')) imported.add(n.trim().split(':').pop().trim());
+    }
+    for (const name of new Set(src.match(/\bCALL_(?:COMMANDS|EVENTS|BOOTSTRAP)\b/g) || [])) {
+      assert.ok(imported.has(name), `${relative(pkg, p)} uses ${name} without importing it`);
+    }
+  }
+});
+
 test('the package never requires a file outside itself', () => {
   const leaks = [];
   for (const p of sources) {

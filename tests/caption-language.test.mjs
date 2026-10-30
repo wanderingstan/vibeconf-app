@@ -26,6 +26,7 @@ const provider = readFileSync(join(root, 'packages/calls/providers/google-meet-p
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 const server = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
 const mcp = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
+const preload = readFileSync(join(root, 'electron-app/preload-meet.js'), 'utf8');
 
 const codeOnly = (src) => src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
 
@@ -108,8 +109,9 @@ test('the command and its result event are registered end to end', () => {
   assert.equal(CALL_EVENTS.captionLanguageResult, 'caption-language-result');
   // Allowlisted in main, or sendCallCmd drops it.
   assert.match(main, /CALL_COMMANDS\.setCaptionLanguage,/);
-  // The provider replies with the outcome rather than fire-and-forget.
-  assert.match(provider, /ipcRenderer\.send\(CALL_EVENTS\.captionLanguageResult/);
+  // Meet's preload replies with the provider's outcome rather than fire-and-forget.
+  assert.match(preload, /emit\(CALL_EVENTS\.captionLanguageResult, \{ requestId, \.\.\.\(result \|\| \{\}\) \}\)/);
+  assert.match(preload, /await meetProvider\.setCaptionLanguage\(/);
   // local-server dispatches the sync meta action and names the result.
   assert.match(server, /action === 'set-caption-language'/);
   assert.match(server, /results\.setCaptionLanguage = await this\.onSetCaptionLanguage/);

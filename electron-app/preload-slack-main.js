@@ -64,7 +64,7 @@ require('@vibeconferencing/calls/recording/preload-recording-bridge').installRec
 // Speech-to-text tap → main, for hearing calls by transcribing their audio (#850).
 require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
-// Bridge main → page-inject (same generic forward as google-meet-provider's
+// Bridge main → page-inject (same generic forward as preload-meet's
 // inbound handler). The VirtualMic AND the virtual-camera avatar both live HERE
 // in the main window, so page-inject needs the avatar-state messages too —
 // set-bot-state / set-call-status / set-anyone-speaking / set-mode /
@@ -81,7 +81,7 @@ ipcRenderer.on('extension-message', (_event, message) => {
 
 // Bridge page-inject → main: forward its 'log' lines (e.g. "Avatar → 🫥 ·
 // callStatus=… hasEngaged=…") to the main-process stdout/session log, exactly as
-// google-meet-provider does, so the Slack avatar's transitions are observable in
+// preload-meet does, so the Slack avatar's transitions are observable in
 // session logs like Meet's. ('page-inject-log' is consumed in main.js.)
 window.addEventListener('message', (event) => {
   if (event.source !== window || !event.data?.__botsInCalls) return;

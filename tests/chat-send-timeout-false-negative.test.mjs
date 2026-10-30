@@ -48,7 +48,7 @@ const src = readFileSync(join(root, 'packages/calls/providers/google-meet-provid
 const { MEET } = require('../packages/calls/providers/meet-selectors.js');
 
 const start = src.indexOf('// Chat sends must be SERIAL.');
-const end = src.indexOf("ipcRenderer.on('read-chat'");
+const end = src.indexOf('// Present-button discovery');
 assert.ok(start > 0 && end > start, 'could not slice the chat-send flow out of the provider');
 
 const compile = new Function('deps', `

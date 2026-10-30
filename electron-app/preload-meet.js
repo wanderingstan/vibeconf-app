@@ -96,15 +96,150 @@ window.__vibeconf_startWhiteboardShare = function (meetCode) {
 };
 
 // ---------------------------------------------------------------------------
-// All Meet automation lives in GoogleMeetProvider. Requiring the module
-// registers the IPC command handlers, the page-message forwarder, the DOM
-// trackers, and the auto-join flow (module side effects). preload-meet.js is
-// now just the page-world bootstrap shell — console timestamps, page-inject,
-// and the screen-share helpers — none of it Meet-specific beyond loading the
-// provider. Swap this require to load a different CallProvider backend.
+// All Meet automation lives in GoogleMeetProvider (the DOM trackers and the
+// auto-join flow install when it's required). This preload is its host, as
+// preload-zoom.js is ZoomProvider's: main's commands come in over IPC and
+// become provider calls, and the provider's events go back out over IPC.
 // ---------------------------------------------------------------------------
-// The provider reaches main through the library's host channel, and shows the
-// bot's own face (the Fluent 3D 🙂 the app and site use) in its status bar.
-require('@vibeconferencing/calls/core/host-ipc').setHostIpc(ipcRenderer);
-try { window.__vibeconfStatusIconUri = require('./emoji-assets.js').dataUriForRelPath('fluent3d/1f642.png'); } catch { /* the plain glyph */ }
-require('@vibeconferencing/calls/providers/google-meet-provider');
+const { startGoogleMeet } = require('@vibeconferencing/calls/providers/google-meet-provider');
+const { CALL_EVENTS, CALL_COMMANDS, CALL_BOOTSTRAP } = require('@vibeconferencing/calls/core/call-provider');
+
+let statusIconUri = null; // the bot's own face (the Fluent 3D 🙂 the app and site use)
+try { statusIconUri = require('./emoji-assets.js').dataUriForRelPath('fluent3d/1f642.png'); } catch { /* the plain glyph */ }
+
+const meetProvider = startGoogleMeet({
+  getBotName: () => ipcRenderer.invoke(CALL_BOOTSTRAP.getBotName),
+  getMode: () => ipcRenderer.invoke(CALL_BOOTSTRAP.getMode),
+  getConfig: (keys) => ipcRenderer.invoke(CALL_BOOTSTRAP.getConfig, keys),
+  statusIconUri,
+});
+try { window.meetProvider = meetProvider; } catch { /* window not ready */ }
+
+function emit(channel, ...args) {
+  try { ipcRenderer.send(channel, ...args); } catch { /* main not listening */ }
+}
+
+// Provider → main: every event, on the channel of the same name.
+for (const channel of Object.values(CALL_EVENTS)) {
+  meetProvider.on(channel, (...args) => emit(channel, ...args));
+}
+// main starts the transcript sync when the bot is in (same payload).
+meetProvider.on(CALL_EVENTS.botJoinedCall, (info) => emit('start-sync', info));
+
+// ---------------------------------------------------------------------------
+// main → provider. The call's own actions go to the provider; everything else
+// on extension-message (realtime voice, the speech test, avatar state) is the
+// page scripts', so it's forwarded into the page as on every platform.
+// ---------------------------------------------------------------------------
+const A = CALL_COMMANDS.ACTIONS;
+function toPage(message) {
+  window.postMessage({ __botsInCalls: true, __fromExtension: true, ...message }, '*');
+}
+ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_event, message) => {
+  if (!message) return;
+  switch (message.action) {
+    case A.playTts: meetProvider.speak(message.payload); break;
+    case A.unmuteMic: meetProvider.setMicMuted(false); break;
+    case A.muteMic: meetProvider.setMicMuted(true); break;
+    case A.cameraOn: meetProvider.setCameraOn(true); break;
+    case A.cameraOff: meetProvider.setCameraOn(false); break;
+    case 'set-banner-prefix-visible':
+      meetProvider.setBannerPrefixVisible(!!(message.payload && message.payload.visible));
+      break;
+    case 'start-realtime':
+    case 'stop-realtime':
+      // EXPERIMENT: realtime speech-to-speech. Only the short-lived ephemeral
+      // secret crosses into the page; the API key stays in main.
+      meetProvider.setRealtimeVoice(message.action === 'start-realtime', message.botName);
+      toPage(message);
+      break;
+    default: toPage(message);
+  }
+});
+
+ipcRenderer.on(CALL_COMMANDS.readChat, async (_event, { requestId }) => {
+  let result;
+  try { result = { ok: true, messages: await meetProvider.readChat() }; }
+  catch (err) { result = { ok: false, error: err.message, reason: err.reason }; }
+  emit(CALL_EVENTS.chatResult, { requestId, ...result });
+});
+ipcRenderer.on(CALL_COMMANDS.sendChat, async (_event, { requestId, text }) => {
+  let result;
+  try {
+    const sent = await meetProvider.sendChat(text);
+    result = sent ? { ok: true } : { ok: false, error: 'Message may not have sent (input not cleared)' };
+  } catch (err) { result = { ok: false, error: err.message, reason: err.reason }; }
+  emit(CALL_EVENTS.chatResult, { requestId, ...result });
+});
+
+ipcRenderer.on(CALL_COMMANDS.setStudioSound, (_event, payload) => { meetProvider.setStudioSound(!!(payload && payload.enabled)); });
+// Reports the OUTCOME back, not just fire-and-forget: the agent needs to know
+// whether the bot's hearing actually changed, and which tag Meet settled on.
+ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, async (_event, payload) => {
+  const requestId = payload && payload.requestId;
+  let result;
+  try {
+    result = await meetProvider.setCaptionLanguage((payload && payload.language) || '');
+  } catch (e) {
+    result = { ok: false, error: e.message };
+  }
+  emit(CALL_EVENTS.captionLanguageResult, { requestId, ...(result || {}) });
+});
+// Main confirmed real deafness (caption stall WHILE a remote is speaking) and
+// asks us to self-heal by rebuilding the caption region (#259).
+ipcRenderer.on(CALL_COMMANDS.recoverCaptions, () => {
+  try { meetProvider.recoverCaptions(); } catch (e) { console.warn('[caption-stall] recover handler failed: ' + e.message); }
+});
+ipcRenderer.on(CALL_COMMANDS.triggerScreenShare, (_event, options) => {
+  meetProvider.startShare(options?.shareType || 'window');
+});
+ipcRenderer.on(CALL_COMMANDS.triggerStopSharing, () => { meetProvider.stopShare(); });
+// Fired by main on hang-up, before it navigates the view away.
+ipcRenderer.on('trigger-leave-call', () => { meetProvider.leave(); });
+
+// Call recording (#209): the shared bridge carries start/stop and the tracks;
+// Meet also clamps its banner to one line while a recording runs.
+require('@vibeconferencing/calls/recording/preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[electron-meet]' });
+ipcRenderer.on('trigger-record', (_event, { recording } = {}) => { meetProvider.setRecording(!!recording); });
+// Speech-to-text tap → main, for hearing a call by transcribing its audio (#850).
+// On Meet this runs alongside the captions, which makes it the test bed (#836).
+require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
+
+// ---------------------------------------------------------------------------
+// page scripts → main: the same relays every platform's preload makes.
+// ---------------------------------------------------------------------------
+window.addEventListener('message', (event) => {
+  if (event.source !== window || !event.data?.__botsInCalls) return;
+  const { action, payload } = event.data;
+  if (action === 'tts-ended') {
+    // After speaking, main puts the mic back in the mode's state.
+    emit(CALL_EVENTS.ttsEnded);
+  } else if (action === 'self-audio') {
+    // #467: the barge-in grace runs in local-server, and without knowing when
+    // our own audio was loud it cannot tell a room that went quiet from one it
+    // merely stopped being able to hear.
+    emit('self-audio', { loud: !!payload?.loud, at: payload?.at || Date.now() });
+  } else if (action === 'audio-floor') {
+    // #115: fast floor signal from the Web Audio analyser (~16ms), published
+    // alongside the DOM path. Consumed only when fastFloorDetection is on.
+    emit('audio-floor', { speaking: !!payload?.speaking, at: payload?.at || Date.now() });
+  } else if (action === 'tts-stopped') {
+    // #360: how far playback got when a barge-in stopped it.
+    emit('tts-stopped', payload || {});
+  } else if (action === 'log' && payload?.line) {
+    emit('page-inject-log', payload.line);
+  } else if (action === 'avatar-emoji' && payload?.emoji) {
+    emit('avatar-emoji-changed', payload.emoji);
+  } else if (action === 'transcript' && payload?.text && payload?.speaker) {
+    emit('post-transcripts', [payload]);
+  }
+});
+
+// EXPERIMENT: the realtime voice (RealtimeVoice in page-realtime-voice.js)
+// asking to run a tool (main answers on realtime-tool-result), and its status,
+// which is otherwise invisible: nobody has a bot's page console open.
+window.addEventListener('message', (ev) => {
+  const m = ev && ev.data;
+  if (m && m.source === 'vibeconf-realtime-tool') emit('realtime-tool', { callId: m.callId, name: m.name, args: m.args });
+  else if (m && m.source === 'vibeconf-realtime-status') emit('realtime-status', { type: m.type, detail: m.detail });
+});

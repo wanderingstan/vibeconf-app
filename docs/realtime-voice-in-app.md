@@ -117,7 +117,7 @@ if you add another exit path, add it there too.
 ## Status reporting
 
 `RealtimeVoice` posts to `vibeconf-realtime-status`, forwarded by
-`google-meet-provider.js` to main, which logs it and raises `broadcastError` on
+Meet's preload (`preload-meet.js`) to main, which logs it and raises `broadcastError` on
 a refused session or a lost peer connection. Without this a failed session is
 invisible unless somebody has the page console open, which for a bot on a call
 is nobody.

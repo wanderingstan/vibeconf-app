@@ -1,118 +1,28 @@
 // google-meet-provider.js — GoogleMeetProvider: the CallProvider implementation
 // for Google Meet. Owns ALL Meet DOM automation (selectors via MEET, the
-// caption/speaker trackers, the join/admission flow, chat/share/mic/camera) and
-// BOTH directions of the CallProvider contract (commands in, CALL_EVENTS out).
+// caption/speaker trackers, the join/admission flow, chat/share/mic/camera).
 //
-// Loaded by preload-meet.js (the page-world bootstrap shell) via require(), so
-// it runs in the Meet page world (contextIsolation:false) with direct DOM
-// access. Requiring it registers the IPC command handlers, the page-message
-// forwarder, the DOM trackers, and the auto-join flow as module side effects.
+// Loaded by the host's preload via require(), so it runs in the Meet page
+// world (contextIsolation:false) with direct DOM access. Requiring it installs
+// the DOM trackers and the auto-join flow; startGoogleMeet(host) hands it the
+// values it needs from the host (bot name, join mode, config).
 //
-// A second backend (e.g. slack-provider.js) is a sibling that implements the
-// same CallProvider contract; main.js drives whichever over the same IPC wire.
+// Like every other provider it knows nothing of the wire: commands arrive as
+// method calls, and everything it reports leaves as provider events
+// (meetProvider.on(CALL_EVENTS.x, fn)). The preload carries both over IPC,
+// as preload-zoom.js does for ZoomProvider.
 
-// The host's channel (ipcRenderer under Electron), set by the host's preload.
-const ipcRenderer = require('../core/host-ipc').hostIpc();
 const { MEET } = require('./meet-selectors');
 const { CallProvider, CALL_COMMANDS, CALL_EVENTS } = require('../core/call-provider');
 
-// ---------------------------------------------------------------------------
-// Listen for messages from main process and forward to page context
-// ---------------------------------------------------------------------------
+// What the host supplies (startGoogleMeet). Null until then.
+let host = null;
 
 // EXPERIMENT: set while a realtime session owns this bot's voice. It changes
 // one thing here: whether the bot's own captions are dropped. See the caption
-// loop below for why that flips with the mode.
+// loop below for why that flips with the mode. Set by setRealtimeVoice().
 let realtimeMode = false;
 let realtimeBotName = '';
-
-ipcRenderer.on('extension-message', (_event, message) => {
-  // Forward to page context via window.postMessage
-  // page-inject.js listens for __botsInCalls messages
-  if (message.action === 'play-tts') {
-    meetProvider.speak(message.payload);
-  } else if (message.action === 'unmute-mic') {
-    meetProvider.setMicMuted(false);
-  } else if (message.action === 'mute-mic') {
-    meetProvider.setMicMuted(true);
-  } else if (message.action === 'camera-on') {
-    meetProvider.setCameraOn(true);
-  } else if (message.action === 'camera-off') {
-    meetProvider.setCameraOn(false);
-  } else if (message.action === 'realtime-note') {
-    window.postMessage({
-      __botsInCalls: true, __fromExtension: true,
-      action: 'realtime-note', text: message.text, announce: message.announce,
-    }, '*');
-  } else if (message.action === 'realtime-tool-result') {
-    window.postMessage({
-      __botsInCalls: true, __fromExtension: true,
-      action: 'realtime-tool-result',
-      callId: message.callId, output: message.output,
-    }, '*');
-  } else if (message.action === 'realtime-policy' || message.action === 'realtime-hold') {
-    // Who may make the bot speak, and a time-limited request for quiet.
-    window.postMessage({
-      __botsInCalls: true, __fromExtension: true,
-      action: message.action,
-      policy: message.policy, seconds: message.seconds, reason: message.reason,
-    }, '*');
-  } else if (message.action === 'realtime-brief') {
-    // Silent inject: the model learns something without being given the floor.
-    window.postMessage({
-      __botsInCalls: true, __fromExtension: true,
-      action: 'realtime-brief', note: message.note,
-    }, '*');
-  } else if (message.action === 'realtime-say') {
-    // Words from the slow model (or any speakText caller), to be spoken by the
-    // realtime model rather than synthesized into a second voice.
-    window.postMessage({
-      __botsInCalls: true, __fromExtension: true,
-      action: 'realtime-say', text: message.text,
-    }, '*');
-  } else if (message.action === 'start-realtime' || message.action === 'stop-realtime') {
-    realtimeMode = message.action === 'start-realtime';
-    realtimeBotName = realtimeMode ? (message.botName || '') : '';
-    // EXPERIMENT: realtime speech-to-speech. Only the short-lived ephemeral
-    // secret crosses into the page; the API key stays in main.
-    window.postMessage({
-      __botsInCalls: true,
-      __fromExtension: true,
-      action: message.action,
-      secret: message.secret,
-      model: message.model,
-    }, '*');
-  } else if (message.action === 'set-banner-prefix-visible') {
-    // The banner stays (it shows status + errors), but its "🤖 Bot's view —"
-    // PREFIX is redundant in the thumbnail column — the panel bar right above it
-    // already says that. So main hides just the icon+label there and shows them
-    // only when the view is popped into its own window. The status text is
-    // untouched, so errors are always visible.
-    try {
-      const show = !!(message.payload && message.payload.visible);
-      const disp = show ? '' : 'none';
-      const icon = document.querySelector('#vibeconf-status-bar .icon');
-      const label = document.querySelector('#vibeconf-status-bar .label');
-      if (icon) icon.style.display = disp;
-      if (label) label.style.display = disp;
-    } catch { /* body not ready — ensureStatusBar re-applies on next inject */ }
-  } else if (message.action === 'play-speech-test') {
-    // Resolve test audio — main process sends the base64 directly
-    window.postMessage({
-      __botsInCalls: true,
-      __fromExtension: true,
-      action: 'play-speech-test',
-      payload: message.payload,
-    }, '*');
-  } else {
-    // Generic forward
-    window.postMessage({
-      __botsInCalls: true,
-      __fromExtension: true,
-      ...message,
-    }, '*');
-  }
-});
 
 // ---------------------------------------------------------------------------
 // DOM helpers (from content-script.js)
@@ -1291,22 +1201,6 @@ async function sendChatFlow(text, onSent = () => {}) {
   }
 }
 
-ipcRenderer.on('read-chat', async (_event, { requestId }) => {
-  let result;
-  try { result = { ok: true, messages: await meetProvider.readChat() }; }
-  catch (err) { result = { ok: false, error: err.message, reason: err.reason }; }
-  meetProvider.emit(CALL_EVENTS.chatResult, { requestId, ...result });
-});
-
-ipcRenderer.on('send-chat', async (_event, { requestId, text }) => {
-  let result;
-  try {
-    const sent = await meetProvider.sendChat(text);
-    result = sent ? { ok: true } : { ok: false, error: 'Message may not have sent (input not cleared)' };
-  } catch (err) { result = { ok: false, error: err.message, reason: err.reason }; }
-  meetProvider.emit(CALL_EVENTS.chatResult, { requestId, ...result });
-});
-
 // ---------------------------------------------------------------------------
 // Present-button discovery
 // ---------------------------------------------------------------------------
@@ -1535,12 +1429,12 @@ function installCallHealthTick() {
       }
       const btn = document.querySelector(MEET.mic.anyButton);
       const label = btn?.getAttribute('aria-label') || '';
-      ipcRenderer.send('to-panel', {
+      meetProvider.emit(CALL_EVENTS.notice, {
         action: 'error',
         message: `Microphone issue: "${label}". Try reloading the Meet window.`,
       });
     } else if (next.micHealth === 'healthy' && lastMicReported !== 'healthy') {
-      ipcRenderer.send('to-panel', { action: 'mic-status', status: 'healthy' });
+      meetProvider.emit(CALL_EVENTS.notice, { action: 'mic-status', status: 'healthy' });
     }
     lastMicReported = next.micHealth;
 
@@ -1672,14 +1566,17 @@ let BOT_NAME = 'Unnamed bot';
 // autoJoin would type the placeholder above into the name input even when the
 // user has a different botName configured. Keep the promise around so the
 // DOMContentLoaded handler can await it before reading BOT_NAME.
-const botNameLoaded = ipcRenderer.invoke('get-meet-bot-name').then((name) => {
-  if (name) {
-    BOT_NAME = name;
-    console.log('[electron-meet] Loaded botName for this call:', BOT_NAME);
-  }
-}).catch((err) => {
-  console.warn('[electron-meet] Failed to load botName:', err.message);
-});
+let botNameLoaded = Promise.resolve();
+function loadBotName() {
+  botNameLoaded = Promise.resolve().then(() => host.getBotName()).then((name) => {
+    if (name) {
+      BOT_NAME = name;
+      console.log('[electron-meet] Loaded botName for this call:', BOT_NAME);
+    }
+  }).catch((err) => {
+    console.warn('[electron-meet] Failed to load botName:', err.message);
+  });
+}
 
 // (#407: the speaker-debug border that used to live here is gone, and not just
 // unused: toggling a class on the tile fed the very MutationObserver that
@@ -1697,7 +1594,8 @@ const botNameLoaded = ipcRenderer.invoke('get-meet-bot-name').then((name) => {
 // Re-read on each 2s scan so it can be changed mid-call.
 let speakingDetectionMode = 'meter';
 function refreshSpeakingDetectionMode() {
-  ipcRenderer.invoke('get-config', ['speakingDetectionMode']).then((r) => {
+  if (!host) return;
+  Promise.resolve().then(() => host.getConfig(['speakingDetectionMode'])).then((r) => {
     const v = r?.speakingDetectionMode;
     if (v && v !== speakingDetectionMode && ['mutation', 'meter', 'either'].includes(v)) {
       console.log('[speaker-tracker] speakingDetectionMode →', v);
@@ -1705,9 +1603,6 @@ function refreshSpeakingDetectionMode() {
     }
   }).catch(() => {});
 }
-refreshSpeakingDetectionMode();
-refreshSpeakingEventCapture();
-
 // Set by 'trigger-record' (below): the banner is clamped to one line while a
 // recording runs — see the .recording rule in ensureStatusBar's stylesheet.
 let recordingBannerClamp = false;
@@ -1726,7 +1621,7 @@ function ensureStatusBar() {
   // the Meet page's origin, so it can't fetch app files by URL); the plain
   // glyph otherwise.
   const iconEl = bar.querySelector('.icon');
-  const faceUri = window.__vibeconfStatusIconUri || null;
+  const faceUri = (host && host.statusIconUri) || null;
   if (faceUri) {
     const img = document.createElement('img');
     img.src = faceUri; img.alt = '';
@@ -2057,7 +1952,7 @@ function captureDenialDom(reason) {
   try { html = document.documentElement.outerHTML || ''; } catch { /* ignore */ }
   console.warn('[electron-meet] Denial/limbo DOM capture (' + reason + '). Visible text:\n' + innerText);
   try {
-    ipcRenderer.send('capture-dom', { reason, url: location.href, innerText, html });
+    meetProvider.emit(CALL_EVENTS.domCapture, { reason, url: location.href, innerText, html });
   } catch { /* ignore */ }
 }
 
@@ -2130,7 +2025,7 @@ async function autoJoin(botName) {
       if (nameInput.value !== botName) {
         const msg = `Persona name "${botName}" didn't stick on the pre-join input (got "${nameInput.value}"). Meet may overwrite it.`;
         console.warn('[electron-meet] ⚠️  ' + msg);
-        ipcRenderer.send('to-panel', { action: 'error', message: msg });
+        meetProvider.emit(CALL_EVENTS.notice, { action: 'error', message: msg });
       } else {
         console.log('[electron-meet] Persona name set on pre-join input:', botName);
       }
@@ -2141,7 +2036,7 @@ async function autoJoin(botName) {
       // and the input genuinely wasn't found (something's off).
       let mode = 'guest';
       try {
-        const info = await ipcRenderer.invoke('get-meet-mode');
+        const info = await host.getMode();
         if (info?.mode) mode = info.mode;
       } catch (err) {
         console.warn('[electron-meet] get-meet-mode failed, assuming guest:', err.message);
@@ -2149,7 +2044,7 @@ async function autoJoin(botName) {
       if (mode === 'guest') {
         const msg = `Guest mode but no "Your name" input on pre-join — the bot will appear under whatever Meet picks. Persona was "${botName}".`;
         console.warn('[electron-meet] ⚠️  ' + msg);
-        ipcRenderer.send('to-panel', { action: 'error', message: msg });
+        meetProvider.emit(CALL_EVENTS.notice, { action: 'error', message: msg });
       } else {
         console.log('[electron-meet] Account mode — using Google account display name (persona "' + botName + '" is informational).');
       }
@@ -2167,7 +2062,7 @@ async function autoJoin(botName) {
       if (!micHealthy) {
         console.warn('[electron-meet] Mic problem on pre-join screen');
         sendStatus('Error: mic issue detected');
-        ipcRenderer.send('to-panel', {
+        meetProvider.emit(CALL_EVENTS.notice, {
           action: 'error',
           message: `Cannot join: mic issue detected ("${micLabel}").`,
         });
@@ -2455,7 +2350,8 @@ let _capBuf = [];
 let _capFlushTimer = null;
 
 function refreshSpeakingEventCapture() {
-  ipcRenderer.invoke('get-config', ['speakingEventCapture']).then((r) => {
+  if (!host) return;
+  Promise.resolve().then(() => host.getConfig(['speakingEventCapture'])).then((r) => {
     const on = r?.speakingEventCapture === true;
     if (on === speakingEventCapture) return;
     speakingEventCapture = on;
@@ -2477,7 +2373,7 @@ function capture(kind, participant, value, source) {
     if (!_capBuf.length) return;
     const rows = _capBuf;
     _capBuf = [];
-    try { ipcRenderer.send('speaking-events', rows); } catch { /* main gone */ }
+    meetProvider.emit(CALL_EVENTS.speakingEvents, rows);
   }, CAPTURE_FLUSH_MS);
 }
 
@@ -3724,12 +3620,12 @@ class CaptionScraper {
       // Meet's own caption UI). Always send — the panel does its own dedup
       // on identical text.
       const last = turns[turns.length - 1];
-      ipcRenderer.send('to-panel', {
+      meetProvider.emit(CALL_EVENTS.notice, {
         action: 'raw-caption',
         text: last.text,
         speaker: last.speaker,
       });
-      ipcRenderer.send('to-panel', {
+      meetProvider.emit(CALL_EVENTS.notice, {
         action: 'caption-update',
         payload: { speaker: last.speaker, text: last.text, timestamp: Date.now(), source: 'captions' },
       });
@@ -3747,15 +3643,10 @@ class CaptionScraper {
 
 const captionScraper = new CaptionScraper();
 
-// Main confirmed real deafness (caption stall WHILE a remote is speaking) and
-// asks us to self-heal by rebuilding the caption region (#259). Gated in main so
-// we never toggle captions during a quiet room or the bot's own speech.
-ipcRenderer.on('recover-captions', () => {
-  try { meetProvider.recoverCaptions(); } catch (e) { console.warn('[caption-stall] recover handler failed: ' + e.message); }
-});
-
 // ---------------------------------------------------------------------------
-// Page message listener — forward from page-inject.js to main process
+// Page messages the provider itself needs. The plain relays to the host
+// (self-audio, audio-floor, tts-ended, tts-stopped, logs, the avatar's face,
+// transcripts, recording) are the preload's, as on every other platform.
 // ---------------------------------------------------------------------------
 
 window.addEventListener('message', (event) => {
@@ -3772,75 +3663,9 @@ window.addEventListener('message', (event) => {
     // the LOUD edges matter — see noteSelfAudioLoud.
     const { loud, at, amp } = event.data.payload || {};
     if (loud) noteSelfAudioLoud(at || Date.now());
-    // #467: main needs this too. The barge-in grace runs in local-server, and
-    // without knowing when our own audio was loud it cannot tell a room that
-    // went quiet from one it merely stopped being able to hear.
-    try { ipcRenderer.send('self-audio', { loud: !!loud, at: at || Date.now() }); } catch { /* renderer tearing down */ }
     // BOTH edges are captured (#422): the echo guard re-scores offline from our
     // own loud/quiet intervals, so the quiet edge is half the record.
     capture('self', null, loud ? 1 : 0, amp != null ? String(amp) : undefined);
-    return;
-  }
-
-  if (event.data.action === 'audio-floor') {
-    // #115: fast floor signal from the Web Audio analyser (~16ms) — published
-    // alongside the DOM mutation path (~400-700ms) so the two can be compared
-    // on a real call. Consumed only when fastFloorDetection is on.
-    const { speaking, at } = event.data.payload || {};
-    ipcRenderer.send('audio-floor', { speaking: !!speaking, at: at || Date.now() });
-  }
-
-  if (event.data.action === 'tts-ended') {
-    // After speaking, restore mic to its mode-appropriate state. Active mode
-    // wants the mic open so the bot can be heard; passive/silent want it muted
-    // so the user's mute click maps cleanly to mode. The current mode lives in
-    // the main process, so we just ask main to decide.
-    meetProvider.emit(CALL_EVENTS.ttsEnded);
-  }
-
-  if (event.data.action === 'tts-stopped') {
-    // #360: how far playback got when a barge-in stopped it — main pairs this
-    // with the chunk texts to tell the agent what the room never heard.
-    ipcRenderer.send('tts-stopped', event.data.payload || {});
-  }
-
-  if (event.data.action === 'log') {
-    // Forward page-inject log lines to main so they land in the Electron
-    // stdout stream alongside [local-server]/[electron] lines.
-    if (event.data.payload?.line) {
-      ipcRenderer.send('page-inject-log', event.data.payload.line);
-    }
-  }
-
-  if (event.data.action === 'avatar-emoji') {
-    // The rendered face changed — main relays it to the panel avatar.
-    if (event.data.payload?.emoji) ipcRenderer.send('avatar-emoji-changed', event.data.payload.emoji);
-  }
-
-  if (event.data.action === 'transcript') {
-    const t = event.data.payload;
-    if (t?.text && t?.speaker) {
-      ipcRenderer.send('post-transcripts', [t]);
-    }
-  }
-
-  // #209: call audio recording — the renderer captures each track, main writes
-  // it to disk (call-recorder.js). Forward the streamed chunks and the end
-  // signal; main owns the session (dir + files + manifest).
-  if (event.data.action === 'record-chunk') {
-    ipcRenderer.send('call-record-chunk', event.data.payload);
-  }
-  if (event.data.action === 'record-stopped') {
-    ipcRenderer.send('call-record-stopped', event.data.payload || {});
-  }
-  if (event.data.action === 'record-name') {
-    ipcRenderer.send('call-record-name', event.data.payload || {});
-  }
-  if (event.data.action === 'record-speaker-event') {
-    ipcRenderer.send('call-record-speaker', event.data.payload || {});
-  }
-  if (event.data.action === 'record-started') {
-    ipcRenderer.send('page-inject-log', `[call-record] renderer started recording (room ${event.data.payload?.room || '?'})`);
   }
 });
 
@@ -4202,20 +4027,6 @@ async function setCaptionLanguage(language) {
   }
 }
 
-ipcRenderer.on('set-studio-sound', (_event, payload) => { meetProvider.setStudioSound(!!(payload && payload.enabled)); });
-// Reports the OUTCOME back, not just fire-and-forget: the agent needs to know
-// whether the bot's hearing actually changed, and which tag Meet settled on.
-ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, async (_event, payload) => {
-  const requestId = payload && payload.requestId;
-  let result;
-  try {
-    result = await meetProvider.setCaptionLanguage((payload && payload.language) || '');
-  } catch (e) {
-    result = { ok: false, error: e.message };
-  }
-  ipcRenderer.send(CALL_EVENTS.captionLanguageResult, { requestId, ...(result || {}) });
-});
-
 // Detect Meet's intermittent screen-share error modal ("Can't share your screen
 // / Something went wrong when screen sharing. Please try again."). Returns the
 // matched text or null after watching for `ms`.
@@ -4240,10 +4051,6 @@ function dismissShareErrorModal() {
   return false;
 }
 
-ipcRenderer.on('trigger-screen-share', (_event, options) => {
-  meetProvider.startShare(options?.shareType || 'window');
-});
-
 function findStopPresentingButton() {
   return document.querySelector(MEET.present.stopAriaPresenting)
     || document.querySelector(MEET.present.stopAriaSharing)
@@ -4260,58 +4067,6 @@ function findStopPresentingButton() {
 // actually leaves the presenting state. For whiteboard shares onStopSharing has
 // already closed the share window, so presenting usually ends on its own and we
 // confirm on the first tick without needing a click.
-ipcRenderer.on('trigger-stop-sharing', () => { meetProvider.stopShare(); });
-
-// Explicit "Leave call" click, fired by main BEFORE it navigates the Meet view
-// away on hang-up. Without this, tearing the page out from under the call just
-// kills the media connection and leaves a ghost participant tile for everyone
-// else until Google's server-side timeout reaps it (the bot "didn't leave").
-// Clicking the real button sends Google a clean leave so the tile drops now.
-ipcRenderer.on('trigger-leave-call', () => {
-  // Before the click: this page is leaving deliberately, so its in-call UI is
-  // about to disappear for a reason we already know. Without this the page goes
-  // on counting and reports a ghost call ~12s later — landing in the middle of a
-  // rename's rejoin and kicking the bot straight back out.
-  markDeliberateLeave();
-  const clicked = meetProvider.leave();
-  console.log('[electron-meet] trigger-leave-call → Leave-call button ' + (clicked ? 'clicked' : 'NOT found'));
-});
-
-// #209: main tells the page-world CallRecorder to start/stop. Main owns the
-// decision (recordCallAudio pref / VIBECONF_RECORD_CALL) and the on-disk
-// session; the page just captures tracks and streams chunks back.
-// Speech-to-text tap → main, for hearing a call by transcribing its audio (#850).
-// On Meet this runs alongside the captions, which makes it the test bed (#836).
-require('../hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
-
-ipcRenderer.on('trigger-record', (_event, { recording, room, startedAt, botName } = {}) => {
-  setRecordingBannerClamp(!!recording);
-  window.postMessage({
-    __botsInCalls: true,
-    __fromExtension: true,
-    action: recording ? 'start-recording' : 'stop-recording',
-    payload: { room, startedAt, botName },
-  }, '*');
-});
-
-// EXPERIMENT: realtime voice status (RealtimeVoice in page-inject.js posts these).
-// Without this a failed session is invisible unless someone has the page console
-// open, which for a bot on a call is nobody.
-// The voice model asking to do something. Main runs it and answers on the
-// realtime-tool-result channel above.
-window.addEventListener('message', (ev) => {
-  const m = ev && ev.data;
-  if (m && m.source === 'vibeconf-realtime-tool') {
-    ipcRenderer.send('realtime-tool', { callId: m.callId, name: m.name, args: m.args });
-  }
-});
-
-window.addEventListener('message', (ev) => {
-  const m = ev && ev.data;
-  if (m && m.source === 'vibeconf-realtime-status') {
-    ipcRenderer.send('realtime-status', { type: m.type, detail: m.detail });
-  }
-});
 
 // ---------------------------------------------------------------------------
 // GoogleMeetProvider — the CallProvider implementation for Google Meet.
@@ -4322,31 +4077,56 @@ window.addEventListener('message', (ev) => {
 // now delegate to this object. Command methods wrap the existing DOM functions;
 // the two screen-share loops moved in verbatim as _runScreenShare/_runStopShare.
 //
-// NOT YET migrated (a later slice): the event surface. The trackers
-// (captionScraper, domSpeakerTracker, the health tick) still emit CALL_EVENTS
-// straight to IPC rather than through the provider.
+// Its events are plain in-process events: the trackers, the join flow and the
+// command methods call meetProvider.emit(CALL_EVENTS.x, payload), and whoever
+// hosts it subscribes with on(). A payload-less event reaches handlers with no
+// argument, so a host can forward it without inventing an `undefined`.
 // ---------------------------------------------------------------------------
 class GoogleMeetProvider extends CallProvider {
   static get id() { return 'google-meet'; }
 
-  // Event surface: the single seam for call events leaving the provider. The
-  // trackers/handlers call meetProvider.emit(CALL_EVENTS.x, payload) instead of
-  // ipcRenderer.send directly, so the provider owns BOTH directions of the
-  // contract. Forwarding to IPC keeps main.js unchanged. Preserve the original
-  // arg shape: a payload-less event must not send an explicit `undefined`.
-  emit(channel, payload) {
-    if (payload === undefined) ipcRenderer.send(channel);
-    else ipcRenderer.send(channel, payload);
+  constructor() {
+    super();
+    this._handlers = new Map(); // channel -> Set of handlers
+  }
+
+  on(channel, handler) {
+    if (!this._handlers.has(channel)) this._handlers.set(channel, new Set());
+    this._handlers.get(channel).add(handler);
+    return this;
+  }
+  off(channel, handler) {
+    const set = this._handlers.get(channel);
+    if (set) set.delete(handler);
+    return this;
+  }
+  emit(channel, ...args) {
+    const set = this._handlers.get(channel);
+    if (!set) return;
+    for (const h of set) {
+      try { h(...args); } catch (e) { console.warn('[electron-meet] ' + channel + ' handler failed: ' + e.message); }
+    }
   }
 
   async join(botName) { return autoJoin(botName ?? BOT_NAME); }
 
   // Click Meet's in-call "Leave call" button so Google registers a clean leave
-  // and drops our participant tile immediately. Wired to the 'trigger-leave-call'
-  // IPC (fired by main on hang-up, before it navigates the view away). Returns
-  // true if a button was found and clicked. Synchronous so the IPC handler can
-  // log the outcome; navigating away is still the fallback if no button is here.
+  // and drops our participant tile immediately. The host calls it on hang-up,
+  // before it navigates the view away (without it, tearing the page out from
+  // under the call leaves a ghost participant tile for everyone else until
+  // Google's server-side timeout reaps it). Returns true if a button was found
+  // and clicked; navigating away is still the fallback if no button is here.
   leave() {
+    // Before the click: this page is leaving deliberately, so its in-call UI is
+    // about to disappear for a reason we already know. Without this the page goes
+    // on counting and reports a ghost call ~12s later — landing in the middle of a
+    // rename's rejoin and kicking the bot straight back out.
+    markDeliberateLeave();
+    const clicked = this._clickLeave();
+    console.log('[electron-meet] leave → Leave-call button ' + (clicked ? 'clicked' : 'NOT found'));
+    return clicked;
+  }
+  _clickLeave() {
     const btn =
       findByAriaLabel(MEET.join.leaveCallLabel) ||
       document.querySelector(MEET.join.leaveCallTooltip);
@@ -4428,6 +4208,32 @@ class GoogleMeetProvider extends CallProvider {
   }
 
   getParticipants() { return domSpeakerTracker.getParticipantList(); }
+
+  // --- Meet-only: the bot-view banner and the realtime voice ------------------
+
+  // The banner stays (it shows status + errors), but its "🤖 Bot's view —"
+  // PREFIX is redundant in the thumbnail column — the panel bar right above it
+  // already says that. So the host hides just the icon+label there and shows
+  // them only when the view is popped into its own window. The status text is
+  // untouched, so errors are always visible.
+  setBannerPrefixVisible(visible) {
+    try {
+      const disp = visible ? '' : 'none';
+      const icon = document.querySelector('#vibeconf-status-bar .icon');
+      const label = document.querySelector('#vibeconf-status-bar .label');
+      if (icon) icon.style.display = disp;
+      if (label) label.style.display = disp;
+    } catch { /* body not ready — ensureStatusBar re-applies on next inject */ }
+  }
+
+  // While a recording runs the banner is clamped to one line (#209).
+  setRecording(on) { setRecordingBannerClamp(!!on); }
+
+  // EXPERIMENT: a realtime session owns the bot's voice (see realtimeMode).
+  setRealtimeVoice(on, botName) {
+    realtimeMode = !!on;
+    realtimeBotName = realtimeMode ? (botName || '') : '';
+  }
 }
 
 const meetProvider = new GoogleMeetProvider();
@@ -4482,7 +4288,6 @@ function enterInCallState() {
   // Not pathname.replace('/', ''): on /meet/<code> that yielded "meet/<code>".
   const meetCode = MEET.meetingCodeFromPath(window.location.pathname);
   if (meetCode) {
-    ipcRenderer.send('start-sync', { meetCode, botName: BOT_NAME });
     meetProvider.emit(CALL_EVENTS.botJoinedCall, { meetCode, botName: BOT_NAME });
   }
 }
@@ -4553,7 +4358,7 @@ window.addEventListener('DOMContentLoaded', () => {
       console.log('[electron-meet] Meet home/landing (no meeting code) — skipping join automation');
     }
     try {
-      ipcRenderer.send('meet-landing', { landing, url: window.location.href });
+      meetProvider.emit(CALL_EVENTS.landing, { landing, url: window.location.href });
     } catch { /* ignore */ }
     return;
   }
@@ -4593,6 +4398,18 @@ window.addEventListener('DOMContentLoaded', () => {
   })();
 });
 
-// Exported for direct use/testing; preload-meet.js requires this module for its
-// side effects (handler/tracker/flow registration), not these bindings.
-module.exports = { meetProvider, GoogleMeetProvider };
+// Hand the provider what it needs from the host. Call once, right after
+// require() and before the page's DOMContentLoaded:
+//   getBotName()       → Promise<string>, the name to join as
+//   getMode()          → Promise<{ mode: 'guest' | 'account' }>
+//   getConfig(keys)    → Promise<object>, the app's values for those keys
+//   statusIconUri      optional data: URI for the bot-view banner's face
+function startGoogleMeet(h) {
+  host = h;
+  loadBotName();
+  refreshSpeakingDetectionMode();
+  refreshSpeakingEventCapture();
+  return meetProvider;
+}
+
+module.exports = { meetProvider, GoogleMeetProvider, startGoogleMeet };

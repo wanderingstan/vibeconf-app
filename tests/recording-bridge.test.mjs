@@ -34,13 +34,13 @@ test('every preload that loads page-inject is wired for recording', () => {
   }
 });
 
-test('the bridge forwards on exactly the channels the Meet provider does', () => {
-  const meet = read('google-meet-provider.js');
-  for (const [action, channel] of Object.entries(PAGE_TO_MAIN)) {
-    const re = new RegExp(`action === '${action}'\\)\\s*\\{\\s*ipcRenderer\\.send\\('${channel}'`);
-    assert.match(meet, re, `${action} → ${channel} disagrees with google-meet-provider.js`);
-  }
-  // And main listens on each of them.
+test('Meet records through the same bridge, and main listens on each channel', () => {
+  // Meet kept its own copy of these forwards until Phase 3b; now every
+  // platform's preload installs the one bridge.
+  const meet = read('preload-meet.js');
+  assert.match(meet, /installRecordingBridge\(ipcRenderer, \{ tag: '\[electron-meet\]' \}\)/);
+  // Plus Meet's own banner clamp on the same command.
+  assert.match(meet, /ipcRenderer\.on\('trigger-record'[^\n]*meetProvider\.setRecording\(/);
   const main = read('main.js');
   for (const channel of Object.values(PAGE_TO_MAIN)) {
     assert.ok(main.includes(`'${channel}'`), `main.js does not handle ${channel}`);

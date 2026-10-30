@@ -3,7 +3,7 @@
 //
 //   const { launchPlaywrightHost } = require('@vibeconferencing/calls/hosts/playwright');
 //   const host = await launchPlaywrightHost({ userDataDir: '/tmp/bot-a' });
-//   const call = await host.join('https://meet.google.com/abc-defg-hij', { botName: 'Ada' });
+//   const call = await host.join(meetZoomOrTeamsLink, { botName: 'Ada' });
 //   call.on(CALL_EVENTS.captionTurns, ({ turns }) => …);
 //   await call.setMicMuted(false);
 //   await call.speak({ audioData: base64Mp3 });
@@ -16,9 +16,9 @@
 // events to Node. The Call returned here is a CallProvider whose methods run
 // the page's provider, and whose events are the page provider's events.
 //
-// Google Meet only, for now. The other providers' polling loops still live in
-// the app's preloads (preload-zoom.js, …); each needs the same move into the
-// library that Meet's got in Phase 3b before it can run here.
+// Google Meet, Zoom and Teams: the providers whose whole session runs in the
+// library. Slack (two windows) and the calling apps (answered, not joined) are
+// not here yet.
 //
 // Headed by default: the design doc expects Meet to detect headless Chromium.
 // `channel: 'chrome'` drives the installed Google Chrome, so nothing is
@@ -29,26 +29,33 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { CallProvider, CALL_EVENTS } = require('../../core/call-provider');
 const { MEDIA_CORE_PATH } = require('../../inject/load');
+const { platformFromUrl } = require('../../core/call-target');
+const { ZOOM } = require('../../providers/zoom-selectors');
+const { TEAMS } = require('../../providers/teams-selectors');
 const { bundlePageScript } = require('./bundle');
 
-const PAGE_HOST_PATH = path.join(__dirname, 'page-host.js');
+// Per platform: the page entry, the URL the bot actually loads, and anything
+// the page needs set before the media core runs. Zoom and Teams load their web
+// clients directly (as the Electron host does), and neither uses the
+// Meet-shaped RTCPeerConnection audio hook.
+const NO_AUDIO_HOOK = 'window.__vibeconf_disableAudioCapture = true;';
+const PLATFORMS = {
+  meet: { entry: 'page-meet.js', startUrl: (u) => u, before: '' },
+  zoom: { entry: 'page-zoom.js', startUrl: (u) => ZOOM.webClientJoinUrl(u) || u, before: NO_AUDIO_HOOK },
+  teams: { entry: 'page-teams.js', startUrl: (u) => TEAMS.lightMeetingUrl(u) || u, before: NO_AUDIO_HOOK },
+};
 
 // Electron loads preloads into the top frame only (nodeIntegrationInSubFrames
 // is off); an init script runs in every frame, so each is fenced to the top.
 const topFrameOnly = (src) => `if (window === window.top) {\n${src}\n}\n`;
 
-let _pageScripts = null;
-function pageScripts() {
-  if (!_pageScripts) {
-    _pageScripts = [
-      topFrameOnly(fs.readFileSync(MEDIA_CORE_PATH, 'utf8')),
-      topFrameOnly(bundlePageScript(PAGE_HOST_PATH)),
-    ];
-  }
-  return _pageScripts;
+function pageScripts(platform) {
+  const p = PLATFORMS[platform];
+  return [
+    topFrameOnly(p.before + '\n' + fs.readFileSync(MEDIA_CORE_PATH, 'utf8')),
+    topFrameOnly(bundlePageScript(path.join(__dirname, p.entry))),
+  ];
 }
-
-const MEET_URL_RE = /^https:\/\/meet\.google\.com\/[a-z]{3}-[a-z]{4}-[a-z]{3}(?:[/?#]|$)/;
 
 class PlaywrightCall extends CallProvider {
   static get id() { return 'playwright'; }
@@ -159,13 +166,11 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
   await context.exposeBinding('__vibeconfEmit', (source, channel, a) => {
     if (call && source.page === call.page) call._emit(channel, a || []);
   });
-  for (const src of pageScripts()) await context.addInitScript(src);
-
   return {
     context,
     /**
      * Join a call and resolve once the bot is in it (CALL_EVENTS.botJoinedCall).
-     * @param {string} url  a Google Meet link
+     * @param {string} url  a Google Meet, Zoom or Teams link
      * @param {object} [o]
      * @param {string} [o.botName='AI Assistant']
      * @param {'guest'|'account'} [o.mode='guest']  'account' when the profile is signed in to Google
@@ -173,15 +178,18 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
      * @param {number} [o.timeoutMs=120000]
      */
     async join(url, { botName = 'AI Assistant', mode = 'guest', config = {}, timeoutMs = 120000 } = {}) {
-      if (!MEET_URL_RE.test(url)) throw new Error('the Playwright host joins Google Meet links only, for now: ' + url);
+      const target = platformFromUrl(url);
+      const platform = target.ok && PLATFORMS[target.provider] ? target.provider : null;
+      if (!platform) throw new Error('the Playwright host joins Google Meet, Zoom and Teams links: ' + (target.error || target.provider));
       if (call) throw new Error('this host already has a call; launch another host for a second bot');
       answers = { botName, mode, config };
-      const origin = new URL(url).origin;
-      await context.grantPermissions(['microphone', 'camera'], { origin });
+      const startUrl = PLATFORMS[platform].startUrl(target.url || url);
+      for (const src of pageScripts(platform)) await context.addInitScript(src);
+      await context.grantPermissions(['microphone', 'camera'], { origin: new URL(startUrl).origin });
       const page = context.pages()[0] || await context.newPage();
       call = new PlaywrightCall(page);
       const joined = call.waitFor(CALL_EVENTS.botJoinedCall, () => true, timeoutMs);
-      await page.goto(url);
+      await page.goto(startUrl);
       await joined;
       return call;
     },

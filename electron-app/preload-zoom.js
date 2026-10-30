@@ -3,7 +3,7 @@
 // Zoom is a single surface like Meet: the bot loads app.zoom.us/wc/join/<n>
 // directly, which renders the meeting top-level. So this one preload does what
 // Slack splits across two: the media patch (page-inject.js: virtual mic + camera,
-// TTS) AND the DOM provider (ZoomProvider: mic, camera, chat, leave, roster).
+// TTS) AND the call (the library's zoom-session.js: ZoomProvider and its heartbeat).
 // main.js's commands reach it as they reach preload-meet: meetView IS this view.
 //
 // Drive it live from this view's DevTools (contextIsolation:false):
@@ -20,9 +20,8 @@
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const { ZoomProvider } = require('@vibeconferencing/calls/providers/zoom-provider');
-const { ZoomCaptionTracker } = require('@vibeconferencing/calls/hearing/zoom-captions');
-const { CALL_EVENTS, CALL_COMMANDS } = require('@vibeconferencing/calls/core/call-provider');
+const { startZoom } = require('@vibeconferencing/calls/providers/zoom-session');
+const { CALL_EVENTS, CALL_COMMANDS, CALL_BOOTSTRAP } = require('@vibeconferencing/calls/core/call-provider');
 const { ZOOM } = require('@vibeconferencing/calls/providers/zoom-selectors');
 
 // Match navigator.userAgentData to the spoofed Chrome UA (zoom-surface sets the
@@ -70,14 +69,17 @@ require('@vibeconferencing/calls/recording/preload-recording-bridge').installRec
 // Speech-to-text tap → main, for hearing calls by transcribing their audio (#850).
 require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
-const provider = new ZoomProvider();
+// The call itself runs in the library (zoom-session.js): the pre-join, the
+// heartbeat and the speaking poll. This preload is its host: main's commands
+// become provider calls, and the provider's events go out over IPC.
+const provider = startZoom({ getBotName: () => ipcRenderer.invoke(CALL_BOOTSTRAP.getBotName) });
 try { window.zoomProvider = provider; window.ZOOM = ZOOM; } catch { /* window not ready */ }
 
-function emit(channel, payload) {
-  try {
-    if (payload === undefined) ipcRenderer.send(channel);
-    else ipcRenderer.send(channel, payload);
-  } catch { /* main not listening */ }
+function emit(channel, ...args) {
+  try { ipcRenderer.send(channel, ...args); } catch { /* main not listening */ }
+}
+for (const channel of Object.values(CALL_EVENTS)) {
+  provider.on(channel, (...args) => emit(channel, ...args));
 }
 
 // ---------------------------------------------------------------------------
@@ -103,29 +105,9 @@ ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
   }
 });
 
-// Unread tracking: the newest message from someone else that the agent hasn't
-// read yet. wait_for_speech surfaces chat-unread on lulls, which is how a bot
-// that can't hear (v1) finds out someone typed to it.
-let lastReadChatId = null;
-let lastChatUnread = false;
-function newestOtherChatId(messages) {
-  for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].self) return messages[i].id;
-  return null;
-}
-function setChatUnread(unread) {
-  if (unread === lastChatUnread) return;
-  lastChatUnread = unread;
-  emit(CALL_EVENTS.chatUnread, { unread });
-}
-
 ipcRenderer.on(CALL_COMMANDS.readChat, async (_e, { requestId }) => {
   let result;
-  try {
-    const messages = await provider.readChat();
-    lastReadChatId = newestOtherChatId(messages);
-    setChatUnread(false);
-    result = { ok: true, messages };
-  }
+  try { result = { ok: true, messages: await provider.readChat() }; }
   catch (err) { result = { ok: false, error: err.message }; }
   emit(CALL_EVENTS.chatResult, { requestId, ...result });
 });
@@ -161,197 +143,4 @@ window.addEventListener('message', (event) => {
   else if (action === 'self-audio') emit('self-audio', { loud: !!payload?.loud, at: payload?.at || Date.now() });
   else if (action === 'log' && payload?.line) emit('page-inject-log', payload.line);
   else if (action === 'avatar-emoji' && payload?.emoji) emit('avatar-emoji-changed', payload.emoji);
-});
-
-// ---------------------------------------------------------------------------
-// Heartbeat: get through pre-join, then report in-call and push the roster.
-// ---------------------------------------------------------------------------
-let botName = '';
-ipcRenderer.invoke('get-meet-bot-name').then((n) => { botName = n || ''; }).catch(() => {});
-
-let lastSharing = false;
-let lastPresenter = null;
-let lastSharesKey = '[]';
-let prejoinTried = false;
-let captchaReported = false;
-let audioJoinTried = false;
-let waitingLogged = false;
-let reportedInCall = false;
-let captionsReported = null; // null = not checked yet; true/false once known
-let fiberProbed = false;
-const captions = new ZoomCaptionTracker();
-let inCallAt = 0;
-let lastRoster = '';
-
-function tick() {
-  try {
-    provider.dismissModals();
-
-    if (!provider.inMeeting()) {
-      if (provider.captchaFailed()) {
-        if (!captchaReported) {
-          captchaReported = true;
-          prejoinTried = true; // never click Join again on our own
-          console.warn('[zoom] Zoom rejected the guest join (reCAPTCHA). Not retrying. '
-            + 'Sign the bot in to a Zoom account (--zoom-url=https://zoom.us/signin), or click Join in the bot view yourself.');
-          emit(CALL_EVENTS.statusUpdate, 'Error: Zoom blocked the guest join (reCAPTCHA). Sign the bot in to a Zoom account, or click Join in the bot view.');
-          emit('page-inject-log', '[zoom] join blocked by Zoom reCAPTCHA');
-        }
-        return;
-      }
-      if (provider.inWaitingRoom()) {
-        if (!waitingLogged) { waitingLogged = true; console.log('[zoom] in the waiting room — the host has to admit the bot'); }
-        return;
-      }
-      if (!prejoinTried && botName) { provider.fillPrejoin(botName).then((ok) => { prejoinTried = ok; }); }
-      return;
-    }
-
-    if (!audioJoinTried) { audioJoinTried = true; provider.joinComputerAudio(); }
-
-    if (!reportedInCall) {
-      reportedInCall = true;
-      inCallAt = Date.now();
-      const meetCode = ZOOM.roomCodeFromUrl(location.href) || '';
-      emit(CALL_EVENTS.statusUpdate, 'In call (Zoom)');
-      emit(CALL_EVENTS.botJoinedCall, { meetCode, botName });
-      console.log('[zoom] in the meeting — reported in-call (' + meetCode + ')');
-      // Camera on so the virtual-camera avatar shows; open the roster so
-      // participants can be read; turn on live transcription (host-only).
-      setTimeout(async () => {
-        try { console.log('[zoom] setCameraOn →', await provider.setCameraOn(true)); } catch (e) { console.warn('[zoom] setCameraOn error:', e.message); }
-        try { console.log('[zoom] openParticipants →', await provider.openParticipants()); } catch (e) { console.warn('[zoom] openParticipants error:', e.message); }
-        // Chat open too: it's how people reach a bot that can't hear yet. Whether
-        // both panes stay open together is unverified — this log line says.
-        try {
-          const chatOk = await provider._ensureChatOpen();
-          const d = provider.doc();
-          console.log('[zoom] chat open →', chatOk, '| participants list still mounted:', !!d.querySelector(ZOOM.people.list));
-          lastReadChatId = newestOtherChatId(provider.scrapeChatMessages()); // history at join isn't "unread"
-        } catch (e) { console.warn('[zoom] open chat error:', e.message); }
-        try { console.log('[zoom] enableCaptions →', await provider.enableCaptions()); } catch (e) { console.warn('[zoom] enableCaptions error:', e.message); }
-      }, 2000);
-    }
-
-    // Our own share: report edges so the app's `sharing` follows Zoom (the app
-    // retries Share until it hears this). On start, pause the share's computer
-    // audio so Zoom gives the bot its mic back.
-    const sharing = provider.isSharing();
-    if (sharing !== lastSharing) {
-      lastSharing = sharing;
-      emit(CALL_EVENTS.selfPresenting, { presenting: sharing });
-      console.log('[zoom] self-presenting:', sharing);
-      if (sharing) setTimeout(() => provider.setShareAudioPaused(true), 500);
-    }
-
-    // Someone else's share: someone-presenting drives shared-screen reading and
-    // the change-wake (#673); screen-shares-updated lists every share, ours
-    // included, the way Meet's people pane does.
-    const remote = provider.remoteShares();
-    const presenter = remote.length ? remote[0].name : null;
-    if (presenter !== lastPresenter) {
-      lastPresenter = presenter;
-      emit(CALL_EVENTS.someonePresenting, { presenting: !!presenter, presenterName: presenter });
-      console.log('[zoom] someone presenting:', presenter);
-    }
-    const shares = sharing ? [...remote, { name: botName || 'self', id: 'self' }] : remote;
-    const sharesKey = JSON.stringify(shares);
-    if (sharesKey !== lastSharesKey) {
-      lastSharesKey = sharesKey;
-      emit(CALL_EVENTS.screenSharesUpdated, shares);
-    }
-
-    const parts = provider.getParticipants();
-    const pk = JSON.stringify(parts);
-    if (parts.length && pk !== lastRoster) {
-      lastRoster = pk;
-      emit(CALL_EVENTS.participantsUpdated, parts);
-      console.log('[zoom] participants:', pk);
-    }
-
-    const newest = newestOtherChatId(provider.scrapeChatMessages());
-    if (newest && newest !== lastReadChatId) setChatUnread(true);
-
-    // Hearing: the caption overlay, attributed by avatar (#318). captions-state
-    // follows whether the overlay exists (Show Captions is on), checked after
-    // ~10s of setup so a slow enable doesn't flap it.
-    // The overlay box mounts when Show Captions is on; #live-transcription-
-    // subtitle only appears with the first words, so it can't be the test.
-    const captionsOn = !!provider.doc().querySelector(ZOOM.captions.overlayBox);
-    if (captionsReported !== captionsOn && Date.now() - inCallAt > 10000) {
-      captionsReported = captionsOn;
-      emit(CALL_EVENTS.captionsState, { on: captionsOn });
-      if (!captionsOn) console.warn('[zoom] captions are off — the bot cannot hear until Show Captions is on');
-    }
-    // Drop the bot's own lines (its TTS gets captioned too), as Meet does, so it
-    // never answers itself. Self = the roster row marked "me", or the name we
-    // joined as if the roster isn't readable.
-    const selfName = (parts.find((p) => p.isSelf) || {}).name || botName;
-    const rows = provider.readOverlay().filter((r) => !selfName || r.speaker !== selfName);
-    if (rows.length && !fiberProbed) { fiberProbed = true; provider.probeCaptionFiber(); }
-    if (captions.update(rows)) {
-      const turns = captions.snapshot();
-      emit(CALL_EVENTS.captionTurns, { turns });
-      const last = turns[turns.length - 1];
-      if (last) console.log('[zoom] caption:', JSON.stringify({ speaker: last.speaker, text: last.text }));
-    }
-  } catch { /* DOM not ready yet */ }
-}
-
-// Who is speaking (#847 follow-up), from each participants-pane row's speaking
-// icon. Same shape as Teams' poll: faster than the 1s heartbeat, and it sends
-// the two events Meet's speaker tracker does — participantsUpdated with
-// speaking flags (the floor: anyoneSpeaking / peakSpeakers / barge-in) and
-// speakingChanged per edge (room presence). Shares lastRoster with tick().
-// The signal only exists while the pane is open, so reopen it if it closed.
-const lastSpeaking = new Map(); // name -> boolean (non-self only)
-let lastPaneReopenAt = 0;
-function pollSpeaking() {
-  if (!reportedInCall) return;
-  const d = provider.doc();
-  // Test for the ROWS, not the list container: live (2026-10-16) the rows were
-  // there and readable while #participants-ul was not, and a container check
-  // read the open pane as closed and skipped every poll.
-  if (!d.querySelector(ZOOM.people.item)) {
-    if (Date.now() - lastPaneReopenAt > 10000) {
-      lastPaneReopenAt = Date.now();
-      provider.openParticipants().then((ok) => console.log('[zoom] participants pane was closed; reopened for speaking detection →', ok)).catch(() => {});
-    }
-    return;
-  }
-  let parts;
-  try { parts = provider.getParticipants(); } catch { return; }
-  const seen = new Set();
-  let changed = false;
-  for (const p of parts) {
-    if (p.isSelf) continue;
-    seen.add(p.name);
-    if (lastSpeaking.get(p.name) !== p.speaking) {
-      if (lastSpeaking.has(p.name) || p.speaking) {
-        emit(CALL_EVENTS.speakingChanged, { name: p.name, speaking: p.speaking });
-        console.log('[zoom] speaking:', p.name, p.speaking ? 'started' : 'stopped');
-      }
-      lastSpeaking.set(p.name, p.speaking);
-      changed = true;
-    }
-  }
-  // Left (or scrolled out of the virtualized list) while speaking: close the edge.
-  for (const [name, was] of lastSpeaking) {
-    if (seen.has(name)) continue;
-    if (was) emit(CALL_EVENTS.speakingChanged, { name, speaking: false });
-    lastSpeaking.delete(name);
-    changed = true;
-  }
-  if (!changed) return;
-  const pk = JSON.stringify(parts);
-  if (parts.length && pk !== lastRoster) {
-    lastRoster = pk;
-    emit(CALL_EVENTS.participantsUpdated, parts);
-  }
-}
-
-window.addEventListener('DOMContentLoaded', () => {
-  console.log('[zoom] DOMContentLoaded — starting heartbeat (1s) and speaking poll (250ms); window.zoomProvider ready');
-  setInterval(tick, 1000);
-  setInterval(pollSpeaking, 250);
 });

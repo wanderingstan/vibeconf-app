@@ -64,7 +64,15 @@ class PlaywrightConformanceBot {
 
   async playClip(file) { await this.call.playAudioFile(file); }
 
-  async sendChat(text) { await this.call.sendChat(text); }
+  // One retry when the platform didn't confirm the send, as the Electron
+  // harness does (meet-test-lib sendChat): a flaky chat pane is a platform
+  // hiccup, not a broken chat path.
+  async sendChat(text) {
+    if (await this.call.sendChat(text)) return;
+    console.log(`[${this.name}] sendChat not confirmed; retrying once`);
+    await sleep(1500);
+    await this.call.sendChat(text);
+  }
 
   async chatContains(needle, timeoutMs) {
     const deadline = Date.now() + timeoutMs;

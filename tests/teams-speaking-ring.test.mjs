@@ -56,9 +56,9 @@ test("the bot's own tile never counts as speaking, and a tile without an outline
   ]);
 });
 
-test('preload-teams polls the ring and sends both of Meet’s events: the roster (floor) and speakingChanged (presence)', () => {
-  const src = readFileSync(join(root, 'electron-app/preload-teams.js'), 'utf8');
-  const poll = src.slice(src.indexOf('function pollSpeaking()'), src.indexOf("window.addEventListener('DOMContentLoaded'"));
+test('the teams session polls the ring and sends both of Meet’s events: the roster (floor) and speakingChanged (presence)', () => {
+  const src = readFileSync(join(root, 'packages/calls/providers/teams-session.js'), 'utf8');
+  const poll = src.slice(src.indexOf('function pollSpeaking()'), src.indexOf('const run = () =>'));
   assert.match(poll, /emit\(CALL_EVENTS\.speakingChanged, \{ name: p\.name, speaking: p\.speaking \}\)/);
   assert.match(poll, /emit\(CALL_EVENTS\.participantsUpdated, parts\)/);
   // A participant who leaves while lit gets a closing edge.

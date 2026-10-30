@@ -38,7 +38,7 @@ test('a reconcile corrects the flag but never re-fires the edge side effects', (
   // The edge path clears the (POC) external-tab share request on a real
   // stop. Running that once a second would clear state that is still
   // legitimately in use.
-  const h = main.slice(main.indexOf('ipcMain.on(CALL_EVENTS.selfPresenting'));
+  const h = main.slice(main.indexOf('callClient.on(CALL_EVENTS.selfPresenting'));
   const body = h.slice(0, h.indexOf('\n  });') + 6);
   assert.match(body, /if \(reconcile\) \{/);
   assert.match(body, /return;/, 'the reconcile branch must return before the edge logic');
@@ -49,7 +49,7 @@ test('a reconcile corrects the flag but never re-fires the edge side effects', (
 test('Meet wins, and a correction is logged rather than silent', () => {
   // A silent correction hides the bug it papers over. A run of these means the
   // stop click keeps failing, which is the thing worth seeing.
-  const h = main.slice(main.indexOf('ipcMain.on(CALL_EVENTS.selfPresenting'));
+  const h = main.slice(main.indexOf('callClient.on(CALL_EVENTS.selfPresenting'));
   const body = h.slice(0, h.indexOf('\n  });') + 6);
   assert.match(body, /wasSharing !== !!presenting/, 'only act on an actual disagreement');
   assert.match(body, /state disagreed with Meet/);

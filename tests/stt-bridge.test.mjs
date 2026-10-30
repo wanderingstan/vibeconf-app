@@ -39,8 +39,11 @@ test("the page tap answers main's start/stop and posts what the bridge forwards"
   assert.match(inject, /action === 'stop-stt-tap'\) sttTap\.stop\(\)/);
   assert.match(inject, /action: 'stt-audio'/);
   const main = read('main.js');
-  assert.match(main, /sendExtMsg\(\{ action: 'start-stt-tap' \}\)/);
-  assert.match(main, /sendExtMsg\(\{ action: 'stop-stt-tap' \}\)/);
+  assert.match(main, /startTap: \(\) => callClient\.startAudioTap\(\)/);
+  assert.match(main, /stopTap: \(\) => callClient\.stopAudioTap\(\)/);
+  const { CALL_COMMANDS } = require(join(app, 'call-provider.js'));
+  assert.equal(CALL_COMMANDS.ACTIONS.startSttTap, 'start-stt-tap');
+  assert.equal(CALL_COMMANDS.ACTIONS.stopSttTap, 'stop-stt-tap');
 });
 
 test('main picks the source per call and drops back to captions after it', () => {

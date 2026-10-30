@@ -93,12 +93,18 @@ test('hearing the clip takes two of its words, so a stray one does not pass', ()
   assert.ok(!heardClip(''));
 });
 
-test('the bundler turns the Meet provider into one script a plain page can run', () => {
-  const src = bundlePageScript(require.resolve('../packages/calls/hosts/playwright/page-host.js'));
-  assert.ok(!/\brequire\(/.test(src.replace(/\/\/.*$/gm, '')), 'no require() left for the page to choke on');
-  // It parses, and lists the provider and what it imports.
-  new vm.Script(src);
-  for (const marker of ['GoogleMeetProvider', 'const MEET = ', 'CALL_EVENTS = {']) assert.ok(src.includes(marker), marker);
+test('the bundler turns each platform page into one script a plain page can run', () => {
+  const markers = {
+    'page-meet.js': ['GoogleMeetProvider', 'const MEET = '],
+    'page-zoom.js': ['class ZoomProvider', 'ZoomCaptionTracker', 'function startZoom'],
+    'page-teams.js': ['class TeamsProvider', 'function startTeams'],
+  };
+  for (const [entry, want] of Object.entries(markers)) {
+    const src = bundlePageScript(require.resolve('../packages/calls/hosts/playwright/' + entry));
+    assert.ok(!/\brequire\(/.test(src.replace(/\/\/.*$/gm, '')), `${entry}: no require() left for the page to choke on`);
+    new vm.Script(src); // it parses
+    for (const m of [...want, 'CALL_EVENTS = {', 'function hostPage']) assert.ok(src.includes(m), `${entry}: ${m}`);
+  }
 });
 
 test('the bundler refuses a require a page cannot satisfy', () => {

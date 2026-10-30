@@ -12,8 +12,8 @@
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const { TeamsProvider } = require('@vibeconferencing/calls/providers/teams-provider');
-const { CALL_EVENTS, CALL_COMMANDS } = require('@vibeconferencing/calls/core/call-provider');
+const { startTeams } = require('@vibeconferencing/calls/providers/teams-session');
+const { CALL_EVENTS, CALL_COMMANDS, CALL_BOOTSTRAP } = require('@vibeconferencing/calls/core/call-provider');
 const { TEAMS } = require('@vibeconferencing/calls/providers/teams-selectors');
 
 // Present as current Chrome (main sets the UA string; this matches
@@ -60,7 +60,9 @@ require('@vibeconferencing/calls/recording/preload-recording-bridge').installRec
 // Speech-to-text tap → main, for hearing calls by transcribing their audio (#850).
 require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
-const provider = new TeamsProvider();
+// The call itself runs in the library (teams-session.js): launcher, pre-join,
+// lobby, the heartbeat and the speaking poll. This preload is its host.
+const provider = startTeams({ getBotName: () => ipcRenderer.invoke(CALL_BOOTSTRAP.getBotName) });
 // NOT window.TEAMS: Teams' own app may read globals by that name, and a stray
 // one is exactly the kind of thing that flips its desktop-client detection.
 try { window.teamsProvider = provider; window.__vibeTeamsSelectors = TEAMS; } catch { /* window not ready */ }
@@ -81,11 +83,11 @@ try {
   }));
 } catch { /* recon only */ }
 
-function emit(channel, payload) {
-  try {
-    if (payload === undefined) ipcRenderer.send(channel);
-    else ipcRenderer.send(channel, payload);
-  } catch { /* main not listening */ }
+function emit(channel, ...args) {
+  try { ipcRenderer.send(channel, ...args); } catch { /* main not listening */ }
+}
+for (const channel of Object.values(CALL_EVENTS)) {
+  provider.on(channel, (...args) => emit(channel, ...args));
 }
 
 ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
@@ -100,25 +102,10 @@ ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
   }
 });
 
-let lastReadChatId = null;
-let lastChatUnread = false;
-function newestOtherChatId(messages, selfName) {
-  for (let i = messages.length - 1; i >= 0; i--) if (messages[i].sender !== selfName) return messages[i].id;
-  return null;
-}
-function setChatUnread(unread) {
-  if (unread === lastChatUnread) return;
-  lastChatUnread = unread;
-  emit(CALL_EVENTS.chatUnread, { unread });
-}
-
 ipcRenderer.on(CALL_COMMANDS.readChat, async (_e, { requestId }) => {
   let result;
   try {
-    const messages = await provider.readChat();
-    lastReadChatId = newestOtherChatId(messages, botName);
-    setChatUnread(false);
-    result = { ok: true, messages };
+    result = { ok: true, messages: await provider.readChat() };
   } catch (err) { result = { ok: false, error: err.message }; }
   emit(CALL_EVENTS.chatResult, { requestId, ...result });
 });
@@ -149,167 +136,6 @@ window.addEventListener('message', (event) => {
   else if (action === 'self-audio') emit('self-audio', { loud: !!payload?.loud, at: payload?.at || Date.now() });
   else if (action === 'log' && payload?.line) emit('page-inject-log', payload.line);
   else if (action === 'avatar-emoji' && payload?.emoji) emit('avatar-emoji-changed', payload.emoji);
-});
-
-// ---------------------------------------------------------------------------
-// Heartbeat: launcher → pre-join → (lobby) → in-call, then captions/roster/chat.
-// ---------------------------------------------------------------------------
-let botName = '';
-ipcRenderer.invoke('get-meet-bot-name').then((n) => { botName = n || ''; provider.selfName = botName; }).catch(() => {});
-
-let lastSharing = false;
-let lastPresenter = null;
-let lastSharesKey = '[]';
-let launcherClicked = false;
-let prejoinDone = false;
-let lobbyLogged = false;
-let reportedInCall = false;
-let captionsReported = null;
-let inCallAt = 0;
-let lastCaptionKey = '';
-let lastRoster = '';
-
-function tick() {
-  try {
-    if (!provider.inMeeting()) {
-      if (!launcherClicked && provider.clickJoinOnWeb()) { launcherClicked = true; return; }
-      if (provider.inLobby()) {
-        if (!lobbyLogged) { lobbyLogged = true; console.log('[teams] in the lobby — the organizer has to admit the bot'); }
-        return;
-      }
-      if (!prejoinDone && botName) { provider.fillPrejoin(botName).then((ok) => { if (ok) prejoinDone = true; }); }
-      return;
-    }
-
-    if (!reportedInCall) {
-      reportedInCall = true;
-      inCallAt = Date.now();
-      emit(CALL_EVENTS.statusUpdate, 'In call (Teams)');
-      emit(CALL_EVENTS.botJoinedCall, { meetCode: '', botName });
-      console.log('[teams] in the meeting — reported in-call');
-      setTimeout(async () => {
-        try {
-          const b = document.querySelector(TEAMS.toolbar.mic);
-          console.log('[teams] mic button state:', JSON.stringify({ aria: b && b.getAttribute('aria-label'), pressed: b && b.getAttribute('aria-pressed'), checked: b && b.getAttribute('aria-checked') }));
-        } catch { /* recon log only */ }
-        try { console.log('[teams] enableCaptions →', await provider.enableCaptions()); } catch (e) { console.warn('[teams] enableCaptions error:', e.message); }
-        try {
-          console.log('[teams] chat open →', await provider._ensureChatOpen());
-          lastReadChatId = newestOtherChatId(provider.scrapeChatMessages(), botName);
-        } catch (e) { console.warn('[teams] open chat error:', e.message); }
-      }, 2000);
-    }
-
-    // Our own share: report edges, so the app stops retrying Share (which, on
-    // Teams, toggles the share off) once it has started.
-    const sharing = provider.isSharing();
-    if (sharing !== lastSharing) {
-      lastSharing = sharing;
-      emit(CALL_EVENTS.selfPresenting, { presenting: sharing });
-      console.log('[teams] self-presenting:', sharing);
-    }
-
-    // Someone else's share → someone-presenting (screen reading, #673 wake);
-    // every share → screen-shares-updated, ours included, as on Meet and Zoom.
-    const stageShares = provider.screenShares();
-    const others = stageShares.filter((s) => s.name !== botName);
-    const presenter = others.length ? others[others.length - 1].name : null;
-    if (presenter !== lastPresenter) {
-      lastPresenter = presenter;
-      emit(CALL_EVENTS.someonePresenting, { presenting: !!presenter, presenterName: presenter });
-      console.log('[teams] someone presenting:', presenter);
-    }
-    const shares = sharing && !stageShares.some((s) => s.name === botName)
-      ? [...stageShares, { name: botName || 'self', id: 'self' }] : stageShares;
-    const sharesKey = JSON.stringify(shares);
-    if (sharesKey !== lastSharesKey) {
-      lastSharesKey = sharesKey;
-      emit(CALL_EVENTS.screenSharesUpdated, shares);
-    }
-
-    const parts = provider.getParticipants();
-    const pk = JSON.stringify(parts);
-    if (parts.length && pk !== lastRoster) {
-      lastRoster = pk;
-      emit(CALL_EVENTS.participantsUpdated, parts);
-      console.log('[teams] participants:', pk);
-    }
-
-    const newest = newestOtherChatId(provider.scrapeChatMessages(), botName);
-    if (newest && newest !== lastReadChatId) setChatUnread(true);
-
-    const captionsOn = provider.captionsOn();
-    if (captionsReported !== captionsOn && Date.now() - inCallAt > 10000) {
-      captionsReported = captionsOn;
-      emit(CALL_EVENTS.captionsState, { on: captionsOn });
-      if (!captionsOn) console.warn('[teams] captions are off — the bot cannot hear until they are on');
-    }
-    // Captions are a persistent named list (like Meet's pane): send the visible
-    // snapshot, minus the bot's own lines so it never answers itself.
-    const caps = provider.scrapeCaptions().filter((c) => !botName || c.speaker !== botName);
-    const last = caps[caps.length - 1];
-    const key = last ? caps.length + '::' + last.speaker + '::' + last.text : '';
-    if (last && key !== lastCaptionKey) {
-      lastCaptionKey = key;
-      emit(CALL_EVENTS.captionTurns, {
-        turns: caps.map((c, i) => ({ turnId: i + 1, speaker: c.speaker, text: c.text, isBottommost: i === caps.length - 1 })),
-      });
-      console.log('[teams] caption:', JSON.stringify(last));
-    }
-  } catch { /* DOM not ready yet */ }
-}
-
-// Who is speaking (#847), from each tile's speaking ring. Polled faster than the
-// 1s heartbeat: Teams moves the ring about once a second, and a 1s poll on top
-// of that would add up to another second before the bot knows to hold its turn.
-//
-// Two outputs, the same pair Meet's speaker tracker produces:
-//   - participantsUpdated with speaking flags: LocalServer.setParticipants turns
-//     these into the floor (anyoneSpeaking / activeSpeakerCount / peakSpeakers)
-//     that the urgency and barge-in gates read. Without it Teams read an empty
-//     floor and the bot talked over people (#847: peakSpeakers=0, 18 of 18).
-//   - speakingChanged per edge: room presence (main.js updateSpeakingState).
-// Shares lastRoster with tick(), so a roster sent here isn't re-sent there.
-const lastSpeaking = new Map(); // name -> boolean (non-self only)
-function pollSpeaking() {
-  if (!reportedInCall) return;
-  let parts;
-  try { parts = provider.getParticipants(); } catch { return; }
-  const seen = new Set();
-  let changed = false;
-  for (const p of parts) {
-    if (p.isSelf) continue;
-    seen.add(p.name);
-    if (lastSpeaking.get(p.name) !== p.speaking) {
-      // A first sighting that isn't speaking is not an edge worth announcing.
-      if (lastSpeaking.has(p.name) || p.speaking) {
-        emit(CALL_EVENTS.speakingChanged, { name: p.name, speaking: p.speaking });
-        console.log('[teams] speaking:', p.name, p.speaking ? 'started' : 'stopped');
-      }
-      lastSpeaking.set(p.name, p.speaking);
-      changed = true;
-    }
-  }
-  // Someone left (or their tile scrolled off) while lit: close their edge, or
-  // presence would show them talking forever.
-  for (const [name, was] of lastSpeaking) {
-    if (seen.has(name)) continue;
-    if (was) emit(CALL_EVENTS.speakingChanged, { name, speaking: false });
-    lastSpeaking.delete(name);
-    changed = true;
-  }
-  if (!changed) return;
-  const pk = JSON.stringify(parts);
-  if (parts.length && pk !== lastRoster) {
-    lastRoster = pk;
-    emit(CALL_EVENTS.participantsUpdated, parts);
-  }
-}
-
-window.addEventListener('DOMContentLoaded', () => {
-  console.log('[teams] DOMContentLoaded — starting heartbeat (1s) and speaking poll (250ms); window.teamsProvider ready');
-  setInterval(tick, 1000);
-  setInterval(pollSpeaking, 250);
 });
 
 // Hide Node's `process` from Teams. With contextIsolation:false it is a page

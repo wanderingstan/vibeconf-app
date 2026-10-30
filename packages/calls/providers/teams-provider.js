@@ -14,7 +14,7 @@
 // Pure-ish: requires only the contract + selectors. Browser globals resolve at
 // run time in the page (contextIsolation:false).
 
-const { CallProvider } = require('../core/call-provider');
+const { CallProvider, CALL_COMMANDS } = require('../core/call-provider');
 const { TEAMS } = require('./teams-selectors');
 
 function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }
@@ -301,7 +301,10 @@ class TeamsProvider extends CallProvider {
   async setCaptionLanguage(/* language */) {
     return { ok: false, error: 'Caption language is not wired for Teams yet' };
   }
-  speak(/* payload */) { /* TTS rides page-inject's virtual mic (preload-teams) */ }
+  speak(payload) {
+    // The media core plays it through the bot's virtual mic, in this same page.
+    window.postMessage({ __botsInCalls: true, __fromExtension: true, action: CALL_COMMANDS.ACTIONS.playTts, payload }, '*');
+  }
 }
 
 module.exports = { TeamsProvider };

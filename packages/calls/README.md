@@ -12,12 +12,12 @@ API holds; the app (`electron-app/`) is its first user. Not published yet.
 | Folder | What's in it |
 | --- | --- |
 | `core/` | The `CallProvider` contract and its IPC wire (`call-provider.js`, `call-client.js`), platform detection from a join URL (`call-target.js`), the calling-app base class, call phases |
-| `providers/` | One provider per platform, with its DOM selectors next to it; the Twilio phone page and Voice SDK |
+| `providers/` | One provider per platform, with its DOM selectors next to it; Zoom's and Teams' sessions (`zoom-session.js`, `teams-session.js`: the heartbeat and speaking poll that run each call); the Twilio phone page and Voice SDK |
 | `inject/` | The media core that runs inside the call page (`page-inject.js`: virtual mic and camera, the `getUserMedia` / `getDisplayMedia` overrides, audio taps, recorder), and `load.js` to put it there |
 | `hearing/` | Captions and speech-to-text plumbing (`caption-source.js`, speech gate) |
 | `recording/` | Per-track call recording and the ffmpeg merge |
 | `hosts/electron/` | The Electron host: Slack's two surfaces, the recording windows, tab sharing, browser identity |
-| `hosts/playwright/` | The Playwright host: a bot from plain Node, with Playwright driving Chrome. Google Meet only, for now (see below) |
+| `hosts/playwright/` | The Playwright host: a bot from plain Node, with Playwright driving Chrome. Meet, Zoom and Teams (see below) |
 | `conformance/` | The conformance suite: the same two-bot checks for every provider on every host, plus its Playwright bot and test clip |
 
 ## Rules
@@ -29,8 +29,10 @@ API holds; the app (`electron-app/`) is its first user. Not published yet.
   host gets it passed in.
 - **Providers don't know the wire.** A provider takes commands as method calls
   and reports through its own events (`provider.on(CALL_EVENTS.x, fn)`); the
-  host's preload carries both over IPC. Meet's startup values (bot name, join
-  mode, config) come in through `startGoogleMeet(host)`.
+  host's preload carries both over IPC. Meet, Zoom and Teams start with
+  `startGoogleMeet(host)`, `startZoom(host)` and `startTeams(host)`, which run
+  the whole session in the page and ask the host for startup values (bot name,
+  join mode, config).
 - **Nothing reaches into the app.** No relative require leaves this folder.
 
 `tests/calls-package-boundary.test.mjs` checks the last three.
@@ -51,7 +53,7 @@ length of the pack and `after-pack.js` puts the link back.
 ```js
 const { launchPlaywrightHost } = require('@vibeconferencing/calls/hosts/playwright');
 const host = await launchPlaywrightHost({ userDataDir: '/tmp/bot-a' });
-const call = await host.join('https://meet.google.com/abc-defg-hij', { botName: 'Ada' });
+const call = await host.join(meetZoomOrTeamsLink, { botName: 'Ada' });
 call.on(CALL_EVENTS.captionTurns, ({ turns }) => console.log(turns.at(-1)));
 await call.setMicMuted(false);
 await call.playAudioFile('hello.mp3');
@@ -62,7 +64,8 @@ await host.close();
 It needs `playwright-core` (an optional peer dependency) and drives the
 installed Google Chrome, headed. The media core and the Meet provider are
 bundled (`bundle.js`) and added as init scripts; `page-host.js` is the page's
-half, the Playwright counterpart of the app's `preload-meet.js`.
+half (one entry per platform: `page-meet.js`, `page-zoom.js`, `page-teams.js`),
+the Playwright counterpart of the app's call preloads.
 
 Open, as of Phase 4:
 
@@ -70,8 +73,14 @@ Open, as of Phase 4:
   "You can't join this video call". Chrome driven over CDP reports
   `navigator.webdriver`, which the Electron host never does. Whether to mask
   that is a decision we haven't made yet.
-- **Meet only.** Zoom's and Teams' per-tick loops still live in the app's
-  preloads; each needs the move Meet's got in Phase 3b.
+- **Teams chat can drop a message on this host.** When the bot opens chat to
+  send at the moment another participant's message arrives, Teams' web client
+  never renders that message for the bot (its page has no trace of it; a
+  message a few seconds earlier shows fine). Unexplained; the same sequence
+  passes on the Electron host. The conformance suite catches it (Teams chat).
+- **Not Slack or the calling apps yet.** Slack's huddle runs across two
+  windows, and WhatsApp, Telegram and phone calls are answered rather than
+  joined; neither shape is in this host.
 - **No share.** Presenting an app-owned page needs the WebRTC loopback the
   design doc proposes; the conformance suite skips share on this host.
 

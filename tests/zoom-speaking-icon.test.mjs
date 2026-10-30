@@ -43,9 +43,9 @@ test('the selector is the class verified live', () => {
   assert.equal(ZOOM.people.speakingIcon, '.participants-icon__voip-speaking-icon');
 });
 
-test('preload-zoom polls speaking and sends both of Meet’s events, and reopens a closed pane', () => {
-  const src = readFileSync(join(root, 'electron-app/preload-zoom.js'), 'utf8');
-  const poll = src.slice(src.indexOf('function pollSpeaking()'), src.indexOf("window.addEventListener('DOMContentLoaded'"));
+test('the zoom session polls speaking and sends both of Meet’s events, and reopens a closed pane', () => {
+  const src = readFileSync(join(root, 'packages/calls/providers/zoom-session.js'), 'utf8');
+  const poll = src.slice(src.indexOf('function pollSpeaking()'), src.indexOf('const run = () =>'));
   assert.match(poll, /emit\(CALL_EVENTS\.speakingChanged, \{ name: p\.name, speaking: p\.speaking \}\)/);
   assert.match(poll, /emit\(CALL_EVENTS\.participantsUpdated, parts\)/);
   assert.match(poll, /if \(was\) emit\(CALL_EVENTS\.speakingChanged, \{ name, speaking: false \}\)/);

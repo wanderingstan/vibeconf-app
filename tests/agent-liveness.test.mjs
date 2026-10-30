@@ -19,7 +19,7 @@ const { classifyAgent, agentIsAbsent, AGENT_AWAY_MS } = require('../electron-app
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const server = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
-const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const inject = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
 const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
 const mcp = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
 

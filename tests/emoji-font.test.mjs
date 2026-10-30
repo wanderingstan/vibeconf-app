@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const { PREFERENCES, validate } = require('../electron-app/preferences-schema.js');
 const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
-const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const inject = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
 
 // emojiSet answers ONE question — how is the face drawn — so a machine-local
 // font is encoded in it rather than living in a second preference with a

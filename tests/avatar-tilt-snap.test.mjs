@@ -24,7 +24,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const P = require('../electron-app/avatar-posture.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const inject = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
 
 const FRAME_MS = 1000 / 30;       // the virtual camera's render rate
 const DEG = Math.PI / 180;

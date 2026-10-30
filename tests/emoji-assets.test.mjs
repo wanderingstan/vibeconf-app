@@ -50,7 +50,7 @@ test('path traversal in a relative path is stripped', () => {
 // the literal out of the source rather than importing (page-inject is a page
 // script with no exports and side effects on `window`).
 test('page-inject filename rules match emoji-assets, for every set and shape', () => {
-  const src = readFileSync(join(process.cwd(), 'electron-app', 'page-inject.js'), 'utf-8');
+  const src = readFileSync(join(process.cwd(), 'electron-app', 'page-avatar.js'), 'utf-8');
 
   const hexFn = src.match(/function _emojiHex\([\s\S]*?\n  \}/);
   assert.ok(hexFn, 'found _emojiHex in page-inject');
@@ -77,7 +77,7 @@ test('page-inject filename rules match emoji-assets, for every set and shape', (
     imageSets.sort(),
     'the same IMAGE sets exist on both sides',
   );
-  const pageFontSets = readFileSync(join(process.cwd(), 'electron-app', 'page-inject.js'), 'utf-8')
+  const pageFontSets = readFileSync(join(process.cwd(), 'electron-app', 'page-avatar.js'), 'utf-8')
     .match(/const EMOJI_FONT_SETS = \{([^}]*)\}/)[1]
     .match(/[a-z0-9]+(?=:)/g).sort();
   assert.deepEqual(pageFontSets, Object.keys(A.EMOJI_FONTS).sort(),

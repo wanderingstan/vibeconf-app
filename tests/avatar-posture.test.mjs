@@ -14,7 +14,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const P = require('../electron-app/avatar-posture.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const inject = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
 const preload = readFileSync(join(root, 'electron-app/page-scripts.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 const { PREFERENCES } = require('../electron-app/preferences-schema.js');
@@ -191,7 +191,7 @@ test('wiring: preload exposes the module, page-inject composes it, main pushes t
   assert.match(inject, /let tilt = speakTilt \+ tickTilt/);
   assert.match(inject, /mentionPop \* postScale/);
   assert.match(inject, /case 'set-avatar-posture':/);
-  assert.match(inject, /noteNameMentioned\(.*VirtualCamera\.MENTION_PULSE_MS\)/);
+  assert.match(inject, /noteNameMentioned\(.*AvatarFace\.MENTION_PULSE_MS\)/);
   assert.match(inject, /avatarPostureWasSpeaking && !speaking\) P\.noteSpeakingEnded/);
   assert.match(main, /action: 'set-avatar-posture'/);
   assert.equal(PREFERENCES.avatarPostureShifts.type, 'boolean');

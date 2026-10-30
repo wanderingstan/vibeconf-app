@@ -19,7 +19,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const src = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const src = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
 
 const NEUTRAL = 0x1f610;       // 😐 hearing — "I hear you"
 const EXPRESSIONLESS = 0x1f611; // 😑 ticking — same face, eyes closed

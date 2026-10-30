@@ -15,7 +15,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const inject = fs.readFileSync(path.join(__dirname, '../electron-app/page-inject.js'), 'utf-8');
+const inject = fs.readFileSync(path.join(__dirname, '../electron-app/page-avatar.js'), 'utf-8');
 
 test("the 'thinking' transition jitters the pulse start and rerolls direction + size", () => {
   const body = inject.slice(inject.indexOf("case 'set-bot-state':"), inject.indexOf("case 'set-mode':"));

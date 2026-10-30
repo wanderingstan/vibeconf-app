@@ -52,7 +52,6 @@ function injectPageScripts({ tag, dir = __dirname } = {}) {
     return false;
   }
   for (const file of PLUGINS) {
-    if (!fs.existsSync(path.join(dir, file))) continue;
     try {
       evalFile(dir, file);
     } catch (err) {

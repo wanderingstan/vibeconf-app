@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const server = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
-const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const inject = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
 
 test('the sweep starts and ends at level, peaking in the middle', () => {
   // sin(πp) over p∈[0,1]. Anything that does not return to 0 at p=1 breaks the

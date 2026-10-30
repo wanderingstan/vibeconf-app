@@ -1,7 +1,7 @@
 // realtime-response-gate.test.mjs — the decision the voice model no longer makes.
 //
 // With create_response:false the realtime model detects the end of a turn but
-// does not answer it; _shouldRespond in page-inject.js decides. That method is
+// does not answer it; _shouldRespond in page-realtime-voice.js decides. That method is
 // the difference between a bot that talks over a three-way call and one that
 // does not, and page-inject is injected script rather than a module, so it
 // cannot be imported.
@@ -19,9 +19,9 @@ import { dirname, join } from 'node:path';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 function extractShouldRespond() {
-  const src = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+  const src = readFileSync(join(root, 'electron-app/page-realtime-voice.js'), 'utf8');
   const start = src.indexOf('_shouldRespond(text) {');
-  assert.ok(start > 0, '_shouldRespond not found in page-inject.js');
+  assert.ok(start > 0, '_shouldRespond not found in page-realtime-voice.js');
   let depth = 0, i = src.indexOf('{', start);
   const from = i;
   for (; i < src.length; i++) {

@@ -18,7 +18,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const src = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const src = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
 const card = src.slice(src.indexOf('_renderArrivalCard(emojiImg, emoji) {'),
                        src.indexOf('_renderRecordingIndicator() {'));
 

@@ -5847,8 +5847,8 @@ class LocalServer {
     if (url.pathname === '/api/call/join' && req.method === 'POST') {
       let body = {};
       try { body = JSON.parse((await this._readBody(req)) || '{}') || {}; } catch { /* keep {} */ }
-      const { parseCallTarget, providerRoomIdForUrl } = require('./new-bot-target.js');
-      const target = parseCallTarget(body.url);
+      const { platformFromUrl, providerRoomIdForUrl } = require('./call-target');
+      const target = platformFromUrl(body.url);
       if (!target.ok) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: false, code: 'bad-url', detail: target.error || null }));

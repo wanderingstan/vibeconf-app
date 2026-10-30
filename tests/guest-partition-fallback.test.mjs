@@ -46,12 +46,15 @@ test('#282: Slack never follows the partition swap', () => {
   // The one constraint most likely to be broken later. Slack shares the home
   // partition and must stay pinned to it by NAME, never via the mutable
   // binding — that coupling is what forced the old three-partition design.
-  const slackBody = bodyOf('function activateSlackProvider(');
+  // Slack's partition is its PLATFORMS entry (Phase 1 step 3).
+  const slackBody = main.slice(main.indexOf('  slack: {'), main.indexOf('  zoom: {'));
   assert.doesNotMatch(slackBody, /activeMeetPartition/,
-    'activateSlackProvider must name SESSION_PARTITION literally, never the swappable binding');
+    'the Slack platform must name SESSION_PARTITION literally, never the swappable binding');
   // Not vacuous: it really does hand a partition to the Slack surface, and that
   // one has to be home.
-  assert.match(slackBody, /partition: SESSION_PARTITION/);
+  assert.match(slackBody, /partition: \(\) => SESSION_PARTITION/);
+  assert.match(slackBody, /partition: SESSION_PARTITION, url/);
+  assert.doesNotMatch(bodyOf('function activateSlackProvider('), /activeMeetPartition/);
 
   assert.doesNotMatch(bodyOf('function setupSlackRoom('), /activeMeetPartition/);
 });
@@ -64,6 +67,7 @@ test('#347: the swappable binding is confined to the Meet join path', () => {
     /^let activeMeetPartition = SESSION_PARTITION;$/,          // the declaration
     /^\s*ensureMeetSessionConfigured\(activeMeetPartition\);$/, // provider + join
     /^\s*meetView = createMeetView\(activeMeetPartition\);$/,
+    /^\s*partition: \(\) => activeMeetPartition,$/,             // Meet's PLATFORMS entry
     /^\s*activeMeetPartition = guestFallback \? GUEST_PARTITION : SESSION_PARTITION;$/,
     /^\s*const sess = session\.fromPartition\(activeMeetPartition\);$/,
     /^\s*await clearMeetIdentityCache\(activeMeetPartition\);$/,

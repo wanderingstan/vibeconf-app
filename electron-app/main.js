@@ -140,7 +140,7 @@ let _platformCaptions = null;
 let _audioTranscription = null;
 // The live call platform, by the short names the panel uses.
 function activeProviderName() {
-  return slackProviderMode ? 'slack' : zoomProviderMode ? 'zoom' : teamsProviderMode ? 'teams' : callingAppMode || 'meet';
+  return activePlatform;
 }
 
 function captionSource() {
@@ -291,20 +291,29 @@ function ts() {
 // DOM commands (mic/camera/chat/share/captions) target the huddle POPUP where
 // SlackProvider runs, while audio-out (play-tts/play-speech-test/play-join-chime)
 // targets the MAIN app.slack.com window (the VirtualMic that Chime captures).
-// Set in createMainWindow when --provider=slack.
-let slackProviderMode = false;
+//
+// Which platform's view is loaded in meetView: 'meet' | 'slack' | 'zoom' |
+// 'teams' | 'telegram' | 'whatsapp' | 'twilio'. One value, set by each provider
+// switch, so two platforms can never both look live. (It replaced four flags;
+// _openMeetInFreshView cleared three of them and left slackProviderMode set,
+// which sent a later Meet call's popup commands to a stale Slack surface.)
+//
+// It says which kind of VIEW is up, not whether a call is: it stays put when a
+// call ends and the view shows the idle page. callStatus says the rest.
+//
+// Zoom (#318) and Teams are one surface like Meet: meetView is the web-client
+// view and its preload handles every command. Calling apps (#843: Telegram,
+// WhatsApp, Twilio) are one surface too, with no link to join: the view sits in
+// the bot's own account waiting for calls ("standby"), and an allowed caller
+// turns it into a call. Slack is the one with two surfaces: slackSurface holds
+// the huddle popup, set in createMainWindow when --provider=slack.
+let activePlatform = 'meet';
 let slackSurface = null;
-// Zoom (#318) is one surface like Meet, so it needs no routing here: meetView is
-// the Zoom web-client view and preload-zoom.js handles every command. The flag
-// only tells provider switches and the join path which view is live.
-let zoomProviderMode = false;
-// Microsoft Teams: single surface like Zoom (preload-teams.js on meetView).
-let teamsProviderMode = false;
-// Calling apps (#843): Telegram or WhatsApp, a single surface too (its preload
-// on meetView), but with no link to join. While set, the view sits in the
-// bot's own account waiting for calls ("standby"); an allowed caller turns it
-// into a call. Holds the app's id ('telegram' | 'whatsapp'), null otherwise.
-let callingAppMode = null;
+const CALLING_APP_PLATFORMS = new Set(['telegram', 'whatsapp', 'twilio']);
+// The calling app whose standby or call holds the view, or null.
+function callingApp() {
+  return CALLING_APP_PLATFORMS.has(activePlatform) ? activePlatform : null;
+}
 // In Slack mode, ONLY these commands target the huddle POPUP (huddle-UI / DOM
 // ops handled by SlackProvider). Everything else — TTS/play-* (VirtualMic),
 // avatar/engagement (VirtualCamera), etc. — is a page-inject op on the MAIN
@@ -319,7 +328,7 @@ const SLACK_POPUP_CMDS = new Set([
 
 // The webContents a call command should target, given its action/channel name.
 function callCmdWC(name) {
-  if (slackProviderMode && slackSurface && SLACK_POPUP_CMDS.has(name)) {
+  if (activePlatform === 'slack' && slackSurface && SLACK_POPUP_CMDS.has(name)) {
     // These commands (chat, mic, camera, captions, share) are handled ONLY by
     // the huddle popup. If it isn't up yet (e.g. a chat fired before auto-join
     // completed), return null — do NOT fall back to meetView (the main
@@ -631,7 +640,7 @@ function cropCallRecordingEnabled() {
 // <video> elements, which on Zoom/Teams can be a fraction of the picture
 // (#814). Everywhere else, record the whole view.
 function recordingCropApplies() {
-  return cropCallRecordingEnabled() && !slackProviderMode && !zoomProviderMode && !teamsProviderMode && !callingAppMode;
+  return cropCallRecordingEnabled() && activePlatform === 'meet';
 }
 
 // force=true is the explicit request (start_recording MCP tool): record
@@ -2169,7 +2178,7 @@ const localServer = new globalThis.LocalServer({
     // to navigate to — synthesizing meet.google.com/<slack-code> would load a
     // broken page into the Slack surface. So skip navigation; /join-call becomes
     // "confirm in-call + start the loop". For Meet, navigate as before.
-    if (slackProviderMode || /^slack-/.test(meetCode || '')) {
+    if (activePlatform === 'slack' || /^slack-/.test(meetCode || '')) {
       console.log('[local-server] Slack join — bot already in huddle, skipping Meet navigation');
     } else if (/^whatsapp-link-/.test(meetCode || '')) {
       // A WhatsApp call link: activateWhatsAppCallLink (onJoinWhatsApp) loaded it.
@@ -2177,7 +2186,7 @@ const localServer = new globalThis.LocalServer({
     } else if (/^teams-/.test(meetCode || '')) {
       // Teams: activateTeamsProvider (via onJoinTeams) already loaded the meeting.
       console.log('[local-server] Teams join — meeting view already loading, skipping Meet navigation');
-    } else if (zoomProviderMode || /^zoom-/.test(meetCode || '')) {
+    } else if (activePlatform === 'zoom' || /^zoom-/.test(meetCode || '')) {
       // Zoom: activateZoomProvider (via onJoinZoom) already loaded the meeting.
       console.log('[local-server] Zoom join — meeting view already loading, skipping Meet navigation');
     } else {
@@ -2230,21 +2239,20 @@ const localServer = new globalThis.LocalServer({
     // already the driver. activateSlackProvider → setupSlackRoom sets
     // localServer.roomId to slack-<team>-<channel>.
     console.log('[local-server] Join Slack huddle requested by agent:', url);
-    activateSlackProvider(url, { autojoin: true });
-    return localServer.roomId || null;
+    return joinUrl(url, { platform: 'slack' });
   },
   onJoinTeams: (url) => {
     console.log('[local-server] Join Teams meeting requested by agent:', url);
-    return activateTeamsProvider(url);
+    return joinUrl(url, { platform: 'teams' });
   },
   onJoinWhatsApp: (url) => {
     console.log('[local-server] Join WhatsApp call link requested by agent:', url);
-    return activateWhatsAppCallLink(url);
+    return joinUrl(url, { platform: 'whatsapp' });
   },
   onJoinZoom: (url) => {
     // Programmatic Zoom join (#318), the Zoom analog of onJoinSlack.
     console.log('[local-server] Join Zoom meeting requested by agent:', url);
-    return activateZoomProvider(url);
+    return joinUrl(url, { platform: 'zoom' });
   },
   // The agent has finished its after-call work. Ends the phase now instead of
   // waiting out the backstop.
@@ -2512,9 +2520,7 @@ const localServer = new globalThis.LocalServer({
   // the room), then the agent, when a person asked.
   onJoinLink: ({ provider, url, spawnAgent }) => {
     console.log('[local-server] Add to ' + provider + ' call requested:', url);
-    const room = provider === 'slack'
-      ? (activateSlackProvider(url, { autojoin: true }), localServer.roomId || null)
-      : ({ zoom: activateZoomProvider, teams: activateTeamsProvider, whatsapp: activateWhatsAppCallLink }[provider] || (() => null))(url);
+    const room = provider === 'meet' ? null : joinUrl(url, { platform: provider }); // Meet comes in via onJoinMeet
     if (!room) return { ok: false, code: 'bad-url', detail: 'not a joinable ' + provider + ' link' };
     if (spawnAgent) launchClaudeTerminal(room);
     return { ok: true, roomId: room };
@@ -5505,6 +5511,28 @@ function scanBrowserMeetUrls({ timeoutMs = 8000 } = {}) {
   });
 }
 
+// The one place a call link becomes a join (Phase 1 of the calls library).
+// platformFromUrl reads the link; this runs that platform's join. Every entry
+// point goes through here: the agent's join actions, the panel's pasted links,
+// the supervisor's "Add", calendar auto-join and /call-new-bot. Returns the room
+// the bot is joining, or null when the link isn't one it can join. `platform`,
+// when given, is what the caller expects: a link for any other one is refused,
+// never joined as something else. Meet goes through joinMeetUrl (options passed
+// on); the rest switch provider, which joins and registers the room.
+function joinUrl(url, { platform = null, ...meetOpts } = {}) {
+  const { platformFromUrl } = require('./call-target');
+  const t = platformFromUrl(url);
+  if (!t.ok || (platform && t.provider !== platform)) return null;
+  switch (t.provider) {
+    case 'meet': joinMeetUrl(t.url, meetOpts); return t.roomId;
+    case 'slack': activateSlackProvider(t.url, { autojoin: true }); return localServer.roomId || null; // setupSlackRoom sets it
+    case 'zoom': return activateZoomProvider(t.url);
+    case 'teams': return activateTeamsProvider(t.url);
+    case 'whatsapp': return activateWhatsAppCallLink(t.url);
+    default: return null;
+  }
+}
+
 // Join a call at launch because /call-new-bot asked for it (--join-url, plus
 // --summoned=true when the call was already in progress). Same paths the
 // panel's own join buttons take, agent included: this instance was just
@@ -5514,18 +5542,12 @@ function scanBrowserMeetUrls({ timeoutMs = 8000 } = {}) {
 function joinSummonedCall({ url = null, summoned = false } = {}) {
   try {
     if (!url) return;
-    const { parseCallTarget } = require('./new-bot-target.js');
-    const t = parseCallTarget(url);
+    const { platformFromUrl } = require('./call-target');
+    const t = platformFromUrl(url);
     if (!t.ok) { console.warn('[call-new-bot]', t.error); return; }
     console.log(`[call-new-bot] joining ${t.provider} call${summoned ? ' already in progress' : ''}`);
-    if (t.provider === 'meet') {
-      joinMeetUrl(t.url, { summoned });
-      return;
-    }
-    const activate = { slack: (u) => { activateSlackProvider(u, { autojoin: true }); return localServer.roomId; },
-      zoom: (u) => activateZoomProvider(u), teams: (u) => activateTeamsProvider(u),
-      whatsapp: (u) => activateWhatsAppCallLink(u) }[t.provider];
-    const room = activate && activate(t.url);
+    const room = joinUrl(t.url, { summoned });
+    if (t.provider === 'meet') return; // joinMeetUrl starts the agent itself
     if (room) launchClaudeTerminal(room, { summoned });
     else console.warn('[call-new-bot] not a joinable', t.provider, 'link; skipping');
   } catch (err) {
@@ -9980,9 +10002,7 @@ app.whenReady().then(async () => {
     // the zoom-/teams- room, then start the agent on that room. The calendar
     // context is set AFTER the provider registers its room, because setting the
     // room resets it; joinMeetUrl does the same for Meet.
-    const room = link.provider === 'zoom' ? activateZoomProvider(meetUrl)
-      : link.provider === 'whatsapp' ? activateWhatsAppCallLink(meetUrl)
-      : activateTeamsProvider(meetUrl);
+    const room = joinUrl(meetUrl, { platform: link.provider });
     if (!room) {
       console.warn(`[calendar] Could not start the ${link.provider} join for "${event.summary || event.id}" (${meetUrl})`);
       return;
@@ -10343,14 +10363,14 @@ app.whenReady().then(async () => {
   ipcMain.on('join-detected-slack', (_event, { url }) => {
     if (!url) return;
     console.log('[electron] Join detected Slack huddle:', url);
-    activateSlackProvider(url, { autojoin: true });
+    const room = joinUrl(url, { platform: 'slack' });
     // Spawn the Claude terminal with the MCP wired — same as Meet — so the agent
     // can drive the conversation loop. activateSlackProvider → setupSlackRoom has
     // already set localServer.roomId to the slack-<team>-<channel> code; pass it
     // as the /join-call code. The bot is auto-joining the huddle, and onJoinCall
     // skips Meet navigation for slack- codes, so /join-call just starts the loop.
-    if (localServer.roomId) {
-      launchClaudeTerminal(localServer.roomId);
+    if (room) {
+      launchClaudeTerminal(room);
     } else {
       console.warn('[electron] join-detected-slack: no room id; skipping Claude terminal launch');
     }
@@ -10360,15 +10380,15 @@ app.whenReady().then(async () => {
   // handler: switch provider (which joins and sets the zoom-/teams- room id),
   // then start the agent on that room; onJoinCall skips Meet navigation for
   // those codes, so /join-call just starts the conversation loop.
-  for (const [channel, activate, label] of [
-    ['join-detected-zoom', (url) => activateZoomProvider(url), 'Zoom'],
-    ['join-detected-teams', (url) => activateTeamsProvider(url), 'Teams'],
-    ['join-detected-whatsapp', (url) => activateWhatsAppCallLink(url), 'WhatsApp'],
+  for (const [channel, platform, label] of [
+    ['join-detected-zoom', 'zoom', 'Zoom'],
+    ['join-detected-teams', 'teams', 'Teams'],
+    ['join-detected-whatsapp', 'whatsapp', 'WhatsApp'],
   ]) {
     ipcMain.on(channel, (_event, { url } = {}) => {
       if (!url) return;
       console.log('[electron] Join pasted ' + label + ' link:', url);
-      const room = activate(url);
+      const room = joinUrl(url, { platform });
       if (room) launchClaudeTerminal(room);
       else console.warn('[electron] ' + channel + ': not a joinable ' + label + ' link; skipping');
     });
@@ -10378,7 +10398,7 @@ app.whenReady().then(async () => {
   // Telegram chat box), for when the page's editing commands lack focus.
   // Only from the call view itself, and only into it.
   ipcMain.handle('calling-app-insert-text', async (event, { text } = {}) => {
-    if (!callingAppMode || !meetView || event.sender !== meetView.webContents) return { ok: false };
+    if (!callingApp() || !meetView || event.sender !== meetView.webContents) return { ok: false };
     try { await meetView.webContents.insertText(String(text || '').slice(0, 4000)); return { ok: true }; } catch (err) { return { ok: false, error: err.message }; }
   });
   ipcMain.handle('calling-app-incoming-call', (_event, { app, caller = {} } = {}) => {
@@ -11303,29 +11323,7 @@ function setupSlackRoom(slackUrl) {
 // Switch the embedded view to the Slack two-surface on a workspace/huddle URL,
 // tearing down whatever view (Meet, or an older Slack surface) was there.
 function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  console.log('[electron] Activating Slack provider:', slackUrl);
-  noteCallingAppStandbyTeardown(autojoin ? 'Slack huddle join' : 'Slack sign-in', { forCall: autojoin });
-  destroyProviderView();
-  ensureMeetSessionConfigured(SESSION_PARTITION);
-  const { createSlackSurface } = require('./slack-surface');
-  const surface = createSlackSurface(mainWindow, {
-    partition: SESSION_PARTITION,
-    url: slackUrl,
-    devtools: !!(cliArgs && cliArgs['devtools']),
-    autojoin,
-  });
-  meetView = surface.view;
-  pushInitialAvatarStateOnLoad(meetView); // #828
-  slackProviderMode = true;
-  zoomProviderMode = false;
-  teamsProviderMode = false;
-  callingAppMode = null;
-  slackSurface = surface;
-  mainWindow.addBrowserView(meetView);
-  layoutViews();
-  setupSlackRoom(slackUrl);
-
+  if (!activatePlatform('slack', { url: slackUrl, autojoin, via: autojoin ? 'Slack huddle join' : 'Slack sign-in', forCall: autojoin })) return;
   console.log('[electron] Slack provider on partition:', SESSION_PARTITION);
 }
 
@@ -11334,29 +11332,10 @@ function activateSlackProvider(slackUrl, { autojoin = true } = {}) {
 // whether a call is about to take the view: both only matter when this tears
 // down a calling-app standby (noteCallingAppStandbyTeardown).
 function activateMeetProvider({ via = 'activateMeetProvider', forCall = false } = {}) {
-  if (!slackProviderMode && !zoomProviderMode && !teamsProviderMode && !callingAppMode && meetView && !meetView.webContents.isDestroyed()) return;
+  if (activePlatform === 'meet' && meetView && !meetView.webContents.isDestroyed()) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
-  console.log('[electron] Activating Meet provider (was slack=' + slackProviderMode + ', zoom=' + zoomProviderMode + ', teams=' + teamsProviderMode + ', calling app=' + callingAppMode + ') via ' + via);
-  noteCallingAppStandbyTeardown(via, { forCall });
-  destroyProviderView();
-  slackProviderMode = false;
-  zoomProviderMode = false;
-  teamsProviderMode = false;
-  callingAppMode = null;
-  slackSurface = null;
-  // #347: follows the active partition, so a provider switch mid-fallback
-  // doesn't silently drop the bot back onto the blocked account.
-  ensureMeetSessionConfigured(activeMeetPartition);
-  meetView = createMeetView(activeMeetPartition);
-  attachMeetViewForState(); // #103: hidden host / popout / main window, per state
-  layoutViews();
-}
-
-// Room code for a Zoom meeting (zoom-<number>) → local server + sync, the Zoom
-// analog of setupSlackRoom.
-function setupZoomRoom(zoomUrl) {
-  const { ZOOM } = require('./zoom-selectors');
-  return registerProviderRoom('Zoom', ZOOM.roomCodeFromUrl(zoomUrl), zoomUrl);
+  console.log('[electron] Switching to Meet (was ' + activePlatform + ')');
+  activatePlatform('meet', { via, forCall, load: false });
 }
 
 // Room code → local server + vibeconferencing.com sync + ensureRoom, for the
@@ -11402,37 +11381,18 @@ async function clearTeamsPlatformCookies(sess) {
 // invite link itself is loaded: it lands on Teams' launcher, and preload-teams
 // takes "Continue on this browser", the guest pre-join and the lobby from there.
 function activateTeamsProvider(teamsUrl) {
-  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const r = activatePlatform('teams', { url: teamsUrl, via: 'Teams join' });
+  return r ? r.room : null;
+}
+
+// Self-heal "Classic Teams is no longer available" (/error/eoa). Teams
+// remembers a bad client classification in origin storage, not just cookies
+// (a service worker, by the look of it: the launcher itself answered with the
+// redirect even after the platform cookies were cleared). On landing there,
+// wipe the Teams origins' storage once and retry the invite.
+function teamsEoaSelfHeal(view, teamsUrl) {
   const { TEAMS } = require('./teams-selectors');
-  if (!TEAMS.isTeamsUrl(teamsUrl)) { console.warn('[electron] Teams: not a meeting link —', teamsUrl); return null; }
-  console.log('[electron] Activating Teams provider:', teamsUrl);
-  noteCallingAppStandbyTeardown('Teams join', { forCall: true });
-  destroyProviderView();
-  slackProviderMode = false;
-  slackSurface = null;
-  zoomProviderMode = false;
-  callingAppMode = null;
-  teamsProviderMode = true;
-  ensureMeetSessionConfigured(SESSION_PARTITION);
-  meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-teams.js' });
-  pushInitialAvatarStateOnLoad(meetView); // #828
-  // Present as current Chrome in the string AND the Sec-CH-UA* headers: Teams'
-  // server redirects what it takes for the Classic Teams Electron client to
-  // /error/eoa on the FIRST request, before any page script runs (live,
-  // 2026-10-15). Same spoof as the Slack surface (slack-ua.js).
-  const browserId = require('./slack-ua');
-  meetView.webContents.setUserAgent(browserId.UA);
-  try { browserId.installHeaderSpoof(session.fromPartition(SESSION_PARTITION)); } catch { /* best effort */ }
-  meetView.webContents.on('console-message', (_e, _level, message) => {
-    if (typeof message === 'string' && (message.includes('[teams]') || message.includes('[bots-in-calls]'))) console.log(message);
-  });
-  // Self-heal "Classic Teams is no longer available" (/error/eoa). Teams
-  // remembers a bad client classification in origin storage, not just cookies
-  // (a service worker, by the look of it: the launcher itself answered with the
-  // redirect even after the platform cookies were cleared). On landing there,
-  // wipe the Teams origins' storage once and retry the invite.
   let eoaRetried = false;
-  const view = meetView;
   view.webContents.on('did-navigate', (_e, url) => {
     if (eoaRetried || !/\/error\/eoa\b/.test(url)) return;
     eoaRetried = true;
@@ -11444,21 +11404,6 @@ function activateTeamsProvider(teamsUrl) {
     }).catch(() => {})))
       .then(() => { if (!view.webContents.isDestroyed()) view.webContents.loadURL(TEAMS.lightMeetingUrl(teamsUrl) || teamsUrl); });
   });
-  attachMeetViewForState();
-  layoutViews();
-  const room = registerProviderRoom('Teams', TEAMS.roomCodeFromUrl(teamsUrl), teamsUrl);
-  // Teams pins its client classification in a platformId cookie, and the
-  // launcher redirects on it with no page script involved. One bad visit (e.g.
-  // before preload-teams hid window.process) left platformId=1415 and every
-  // later join went to /error/eoa. Clear it so each join is classified afresh.
-  // Prefer the light guest client: the launcher sometimes routes to the full v2
-  // app, which detects Electron and bounces to /error/eoa; the light client
-  // never did. Links without a /meet/ code still go through the launcher.
-  const startUrl = TEAMS.lightMeetingUrl(teamsUrl) || teamsUrl;
-  console.log('[electron] Teams: loading', startUrl === teamsUrl ? 'the invite (launcher)' : 'the light guest client directly');
-  clearTeamsPlatformCookies(session.fromPartition(SESSION_PARTITION))
-    .finally(() => { if (meetView && !meetView.webContents.isDestroyed()) meetView.webContents.loadURL(startUrl); });
-  return room;
 }
 
 // --- Calling-app calls (#843): Telegram, WhatsApp ----------------------------
@@ -11476,6 +11421,159 @@ const CALLING_APP_CALLS = {
   twilio: { label: 'Phone', preload: 'preload-twilio.js', module: './twilio-call', callerKey: (c) => c && c.phone },
 };
 const CALLING_APP_ORDER = ['telegram', 'whatsapp', 'twilio'];
+
+// --- Platforms (Phase 1 step 3 of the calls library) ------------------------
+// What differs between the platforms the call view can hold, as data;
+// activatePlatform does the rest the same way for every one.
+//   label        for the log
+//   partition()  the session the view runs in
+//   preload      the call page's preload, i.e. its CallProvider
+//   identity     how the view presents itself to the site: null = Electron's
+//                own (Meet), 'ua' = current Chrome in the string, 'ua+hints' =
+//                the string and the client-hint headers (slack-ua.js)
+//   logTags      console prefixes forwarded to the main stdout
+//   startUrl(u)  the page a link loads; null = not a link this platform takes
+//   roomId(u)    the room the link registers as; null = no call (a sign-in page)
+//   createView, attach, onView, load: hooks for the steps that genuinely differ
+// Meet and Slack keep their extra steps as hooks: Meet loads its own URL
+// (loadMeetURL) and Slack is two surfaces, the channel and the huddle popup.
+const MEET_SURFACE_TAGS = ['[bots-in-calls]']; // page-inject: capture, virtual mic
+const PLATFORMS = {
+  meet: {
+    label: 'Meet',
+    // #347: follows the active partition, so a provider switch mid-fallback
+    // doesn't silently drop the bot back onto the blocked account.
+    partition: () => activeMeetPartition,
+    preload: 'preload-meet.js',
+    identity: null,
+    avatarOnLoad: false,
+  },
+  slack: {
+    label: 'Slack',
+    partition: () => SESSION_PARTITION,
+    identity: 'ua', // set by slack-surface itself
+    roomId: (u) => require('./slack-selectors').SLACK.roomCodeFromUrl(u),
+    startUrl: (u) => u,
+    createView: (url, { autojoin }) => {
+      const { createSlackSurface } = require('./slack-surface');
+      const surface = createSlackSurface(mainWindow, {
+        partition: SESSION_PARTITION, url, devtools: !!(cliArgs && cliArgs['devtools']), autojoin,
+      });
+      return { view: surface.view, surface };
+    },
+    attach: (view) => mainWindow.addBrowserView(view),
+    register: (url) => { setupSlackRoom(url); return localServer.roomId || null; },
+    load: () => {}, // the surface loaded the URL when it was created
+  },
+  zoom: {
+    label: 'Zoom',
+    partition: () => SESSION_PARTITION,
+    preload: 'preload-zoom.js',
+    identity: 'ua', // preload-zoom shims userAgentData to match
+    logTags: ['[zoom]', ...MEET_SURFACE_TAGS],
+    // A meeting link joins through the web client. Any other zoom.us page (e.g.
+    // https://zoom.us/signin) just loads, so the bot's Zoom account can be
+    // signed in to in this profile: a signed-in bot skips the guest join page
+    // and its reCAPTCHA.
+    startUrl: (u) => {
+      const { ZOOM } = require('./zoom-selectors');
+      const web = ZOOM.webClientJoinUrl(u);
+      if (web) return web;
+      let host = '';
+      try { host = new URL(u).hostname.toLowerCase(); } catch { /* not a URL */ }
+      return host === 'zoom.us' || host.endsWith('.zoom.us') ? u : null;
+    },
+    roomId: (u) => (require('./zoom-selectors').ZOOM.webClientJoinUrl(u) ? require('./zoom-selectors').ZOOM.roomCodeFromUrl(u) : null),
+  },
+  teams: {
+    label: 'Teams',
+    partition: () => SESSION_PARTITION,
+    preload: 'preload-teams.js',
+    // Teams' server redirects what it takes for the Classic Teams Electron
+    // client to /error/eoa on the FIRST request, before any page script runs
+    // (live, 2026-10-15), so the hint headers matter as much as the string.
+    identity: 'ua+hints',
+    logTags: ['[teams]', ...MEET_SURFACE_TAGS],
+    // Prefer the light guest client: the launcher sometimes routes to the full
+    // v2 app, which detects Electron and bounces to /error/eoa; the light client
+    // never did. Links without a /meet/ code still go through the launcher.
+    startUrl: (u) => {
+      const { TEAMS } = require('./teams-selectors');
+      return TEAMS.isTeamsUrl(u) ? (TEAMS.lightMeetingUrl(u) || u) : null;
+    },
+    roomId: (u) => require('./teams-selectors').TEAMS.roomCodeFromUrl(u),
+    onView: teamsEoaSelfHeal,
+    // Teams pins its client classification in a platformId cookie, and the
+    // launcher redirects on it with no page script involved. One bad visit (e.g.
+    // before preload-teams hid window.process) left platformId=1415 and every
+    // later join went to /error/eoa. Clear it so each join is classified afresh.
+    load: (view, startUrl, url) => {
+      console.log('[electron] Teams: loading', startUrl === url ? 'the invite (launcher)' : 'the light guest client directly');
+      clearTeamsPlatformCookies(session.fromPartition(SESSION_PARTITION))
+        .finally(() => { if (!view.webContents.isDestroyed()) view.webContents.loadURL(startUrl); });
+    },
+  },
+  // The calling apps (#843): the bot's own account in that app, waiting for
+  // calls. These apps check the browser before they'll show the app.
+  ...Object.fromEntries(CALLING_APP_ORDER.map((app) => [app, {
+    label: CALLING_APP_CALLS[app].label,
+    partition: () => SESSION_PARTITION,
+    preload: CALLING_APP_CALLS[app].preload,
+    identity: 'ua+hints',
+    logTags: ['[' + app + ']', ...MEET_SURFACE_TAGS],
+    callingApp: true,
+    startUrl: (u) => u || require(CALLING_APP_CALLS[app].module).WEB_URL,
+    roomId: () => null, // standby has no call yet; a WhatsApp link registers its own
+  }])),
+};
+
+// Put platform `id` in the call view, replacing whatever was there, and load
+// `url` in it. Returns { view, room } (room null when the page is no call, such
+// as a sign-in page or calling-app standby), or null when this can't: no
+// window, an unknown platform, or a link the platform doesn't take.
+//   via, forCall  passed on to noteCallingAppStandbyTeardown (the log, and
+//                 whether a call is taking over a calling-app standby)
+//   load: false   build the view but load nothing (Meet: loadMeetURL loads)
+//   autojoin      Slack: join the channel's huddle once it loads
+function activatePlatform(id, { url = null, via = null, forCall = true, load = true, autojoin = true } = {}) {
+  const p = PLATFORMS[id];
+  if (!p || !mainWindow || mainWindow.isDestroyed()) return null;
+  const startUrl = load ? p.startUrl(url) : null;
+  if (load && !startUrl) { console.warn('[electron] ' + p.label + ': not a link this joins —', url); return null; }
+  console.log('[electron] Activating ' + p.label + (startUrl ? ': ' + startUrl : '') + (via ? ' via ' + via : ''));
+  // A calling app's own standby replaces the view; it isn't interrupting itself.
+  if (!p.callingApp) noteCallingAppStandbyTeardown(via || p.label + ' join', { forCall });
+  destroyProviderView();
+  const partition = p.partition();
+  ensureMeetSessionConfigured(partition);
+  const built = p.createView
+    ? p.createView(startUrl, { autojoin })
+    : { view: createMeetView(partition, p.preload === 'preload-meet.js' ? {} : { preload: p.preload }), surface: null };
+  meetView = built.view;
+  activePlatform = id;
+  slackSurface = built.surface;
+  if (p.avatarOnLoad !== false) pushInitialAvatarStateOnLoad(meetView); // #828
+  if (p.identity && !p.createView) {
+    const browserId = require('./slack-ua');
+    meetView.webContents.setUserAgent(browserId.UA);
+    if (p.identity === 'ua+hints') {
+      try { browserId.installHeaderSpoof(session.fromPartition(partition)); } catch { /* best effort */ }
+    }
+  }
+  if (p.logTags) {
+    meetView.webContents.on('console-message', (_e, _level, message) => {
+      if (typeof message === 'string' && p.logTags.some((t) => message.includes(t))) console.log(message);
+    });
+  }
+  if (p.onView) p.onView(meetView, url);
+  if (p.attach) p.attach(meetView); else attachMeetViewForState(); // #103: hidden host / popout / main window
+  layoutViews();
+  if (!load) return { view: meetView, room: null };
+  const room = p.register ? p.register(url)
+    : (p.roomId(url) ? registerProviderRoom(p.label, p.roomId(url), url) : null);
+  if (p.load) p.load(meetView, startUrl, url); else meetView.webContents.loadURL(startUrl);
+  return { view: meetView, room };
+}
 
 // --- Twilio (#882): credentials and the gate --------------------------------
 // All of it lives in the profile store under keys that are NOT in
@@ -11551,11 +11649,12 @@ let callingAppStandbyLastViewUrl = null;
 let callingAppStandbyLastViewActivityAt = null;
 let callingAppStandbyTimer = null;
 
-// Called by every provider switch BEFORE it clears callingAppMode. Silent when
+// Called by every provider switch BEFORE it moves activePlatform off a calling app. Silent when
 // no standby was up or it is not wanted (deliberately switched off). A call
 // taking the view is routine; anything else is loud, in the log and the panel,
 // because from here until standby returns the bot answers no calls.
 function noteCallingAppStandbyTeardown(via, { forCall = false } = {}) {
+  const callingAppMode = callingApp();
   if (!callingAppMode) return;
   const { standbyTeardownSeverity } = require('./calling-app-standby');
   const standbyWanted = callingAppStandbyWanted();
@@ -11594,12 +11693,12 @@ function checkCallingAppStandby() {
     callingAppStandbyLastViewUrl = url;
     callingAppStandbyLastViewActivityAt = now;
   }
-  if (standbyWanted && callingAppMode !== standbyWanted && !callingAppStandbyInterruption && !callingAppStandbyLostSeenAt) {
+  if (standbyWanted && callingApp() !== standbyWanted && !callingAppStandbyInterruption && !callingAppStandbyLostSeenAt) {
     callingAppStandbyLostSeenAt = now;
   }
   const verdict = standbyRecovery({
     standbyWanted,
-    callingAppMode,
+    callingAppMode: callingApp(),
     callStatus: localServer?.callStatus,
     interruption: callingAppStandbyInterruption,
     firstSeenAt: callingAppStandbyLostSeenAt,
@@ -11630,34 +11729,12 @@ function activateCallingAppStandby(app, reason, { startUrl = null } = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   const spec = CALLING_APP_CALLS[app];
   if (!spec) return false;
-  const { WEB_URL } = require(spec.module);
   console.log('[electron] ' + spec.label + (startUrl ? ' (' + reason + '): opening ' + startUrl : ' standby (' + reason + '): waiting for calls'));
   // Back in the app: whatever took the view is over, and so is the warning.
   callingAppStandbyInterruption = null;
   callingAppStandbyLostSeenAt = null;
   clearBroadcastError(CALLING_APP_STANDBY_ERROR_KEY);
-  destroyProviderView();
-  slackProviderMode = false;
-  slackSurface = null;
-  zoomProviderMode = false;
-  teamsProviderMode = false;
-  callingAppMode = app;
-  ensureMeetSessionConfigured(SESSION_PARTITION);
-  meetView = createMeetView(SESSION_PARTITION, { preload: spec.preload });
-  pushInitialAvatarStateOnLoad(meetView); // #828
-  // These apps check the browser before they'll show the app; present as
-  // current Chrome in the string and the client-hint headers (slack-ua.js).
-  const browserId = require('./slack-ua');
-  meetView.webContents.setUserAgent(browserId.UA);
-  try { browserId.installHeaderSpoof(session.fromPartition(SESSION_PARTITION)); } catch { /* best effort */ }
-  const tag = '[' + app + ']';
-  meetView.webContents.on('console-message', (_e, _level, message) => {
-    if (typeof message === 'string' && (message.includes(tag) || message.includes('[bots-in-calls]'))) console.log(message);
-  });
-  attachMeetViewForState();
-  layoutViews();
-  meetView.webContents.loadURL(startUrl || WEB_URL);
-  return true;
+  return !!activatePlatform(app, { url: startUrl, via: reason });
 }
 
 // Join a WhatsApp call link (#891): the same WhatsApp view as standby, opened
@@ -11680,6 +11757,7 @@ function activateWhatsAppCallLink(url) {
 // Leave standby (the owner switched calls off, or signed out). Only while
 // idle: a live call is never cut by a settings change.
 function deactivateCallingAppStandby(reason) {
+  const callingAppMode = callingApp();
   if (!callingAppMode) return;
   const status = localServer?.callStatus;
   if (status && status !== 'idle' && status !== 'call-complete') return;
@@ -11693,7 +11771,7 @@ function refreshCallingAppStandby(reason) {
   const status = localServer?.callStatus;
   if (status && status !== 'idle' && status !== 'call-complete') return;
   const want = callingAppStandbyWanted();
-  if (want && want !== callingAppMode) activateCallingAppStandby(want, reason);
+  if (want && want !== callingApp()) activateCallingAppStandby(want, reason);
   else if (!want) deactivateCallingAppStandby(reason);
 }
 
@@ -11704,7 +11782,7 @@ function decideCallingAppCall(app, caller) {
   const spec = CALLING_APP_CALLS[app];
   if (!spec) return { answer: false, reason: 'unknown calling app: ' + app };
   const mod = require(spec.module);
-  if (callingAppMode !== app) return { answer: false, reason: 'not in ' + spec.label + ' standby' };
+  if (callingApp() !== app) return { answer: false, reason: 'not in ' + spec.label + ' standby' };
   if (!store || !store.get(app + 'AnswerCalls')) return { answer: false, reason: 'answering ' + spec.label + ' calls is off' };
   const status = localServer?.callStatus;
   // After-call work does not make the bot busy: a phone that won't pick up for
@@ -11736,43 +11814,10 @@ function decideCallingAppCall(app, caller) {
 // renders the meeting top-level where preload-zoom.js can reach it. preload-zoom
 // handles pre-join, computer audio and in-call reporting itself.
 function activateZoomProvider(zoomUrl) {
-  if (!mainWindow || mainWindow.isDestroyed()) return null;
   const { ZOOM } = require('./zoom-selectors');
-  // A meeting link joins. Any other zoom.us page (e.g. https://zoom.us/signin)
-  // just loads, so the bot's Zoom account can be signed in to in this profile:
-  // a signed-in bot skips the guest join page and its reCAPTCHA.
-  let webUrl = ZOOM.webClientJoinUrl(zoomUrl);
-  const isMeeting = !!webUrl;
-  if (!isMeeting) {
-    let host = '';
-    try { host = new URL(zoomUrl).hostname.toLowerCase(); } catch { /* not a URL */ }
-    if (host !== 'zoom.us' && !host.endsWith('.zoom.us')) { console.warn('[electron] Zoom: not a zoom.us link —', zoomUrl); return null; }
-    webUrl = zoomUrl;
-  }
-  console.log('[electron] Activating Zoom provider:', webUrl);
-  noteCallingAppStandbyTeardown(isMeeting ? 'Zoom join' : 'Zoom sign-in', { forCall: isMeeting });
-  destroyProviderView();
-  slackProviderMode = false;
-  slackSurface = null;
-  teamsProviderMode = false;
-  callingAppMode = null;
-  zoomProviderMode = true;
-  ensureMeetSessionConfigured(SESSION_PARTITION);
-  meetView = createMeetView(SESSION_PARTITION, { preload: 'preload-zoom.js' });
-  pushInitialAvatarStateOnLoad(meetView); // #828
-  // The web client checks the browser; present as current Chrome (the same
-  // spoof the Slack surface uses; preload-zoom shims userAgentData to match).
-  meetView.webContents.setUserAgent(require('./slack-ua').UA);
-  meetView.webContents.on('console-message', (_e, _level, message) => {
-    // [zoom] = preload-zoom/provider; [bots-in-calls] = page-inject (screen
-    // capture, virtual mic), the only record of what a share actually sent.
-    if (typeof message === 'string' && (message.includes('[zoom]') || message.includes('[bots-in-calls]'))) console.log(message);
-  });
-  attachMeetViewForState();
-  layoutViews();
-  const room = isMeeting ? setupZoomRoom(zoomUrl) : null;
-  meetView.webContents.loadURL(webUrl);
-  return room;
+  const isMeeting = !!ZOOM.webClientJoinUrl(zoomUrl);
+  const r = activatePlatform('zoom', { url: zoomUrl, via: isMeeting ? 'Zoom join' : 'Zoom sign-in', forCall: isMeeting });
+  return r ? r.room : null;
 }
 
 // Let the avatar banner run to the very top of the window, behind the window
@@ -12462,7 +12507,7 @@ function createMainWindow() {
     });
     meetView = surface.view;
     // Enable provider-aware command routing: DOM commands → the huddle popup.
-    slackProviderMode = true;
+    activePlatform = 'slack';
     slackSurface = surface;
     // Room code → local server + vibeconferencing.com sync + ensureRoom. The
     // code is deterministic from the URL (team+channel), the Slack analogue of a
@@ -12723,7 +12768,7 @@ function createMainWindow() {
   // loaded app.slack.com (or the channel deep-link) in createSlackSurface; in
   // Zoom mode activateZoomProvider already loaded the meeting.
   // A bot answering Telegram calls waits in Telegram instead (#843).
-  if (!slackMode && !zoomProviderMode && !teamsProviderMode) {
+  if (!slackMode && activePlatform !== 'zoom' && activePlatform !== 'teams') {
     const standby = callingAppStandbyWanted();
     if (standby) activateCallingAppStandby(standby, 'app start');
     else loadIdlePage('main-window created');
@@ -12922,9 +12967,8 @@ async function _openMeetInFreshView(meetUrl, { guestFallback = false } = {}) {
 
   noteCallingAppStandbyTeardown('Meet join', { forCall: true });
   meetView = createMeetView(activeMeetPartition);
-  zoomProviderMode = false; // a Meet view replaces any Zoom one (#318)
-  teamsProviderMode = false; // ... or Teams one
-  callingAppMode = null; // ... or a calling app's standby
+  activePlatform = 'meet'; // a Meet view replaces any other platform's (#318), Slack's included
+  slackSurface = null;
   attachMeetViewForState(); // #103: hidden host / popout / main window, per state
   layoutViews();
 
@@ -14536,7 +14580,7 @@ function setupIPC() {
     // there lets the account chip on Meet home report the email.
     const { googleSignInRoute } = require('./calling-app-standby');
     const route = googleSignInRoute({
-      callStatus: localServer.callStatus, callingAppMode, standbyWanted: callingAppStandbyWanted(),
+      callStatus: localServer.callStatus, callingAppMode: callingApp(), standbyWanted: callingAppStandbyWanted(),
     });
     if (route === 'window') {
       openBotSignInWindow();
@@ -14667,11 +14711,11 @@ function setupIPC() {
     // standby it would stop the bot answering calls, so there just tell the
     // panel to re-read the (cookie-derived) mode.
     const { signOutMayNavigateView } = require('./calling-app-standby');
-    if (signOutMayNavigateView({ callStatus: localServer.callStatus, callingAppMode, standbyWanted: callingAppStandbyWanted() })) {
+    if (signOutMayNavigateView({ callStatus: localServer.callStatus, callingAppMode: callingApp(), standbyWanted: callingAppStandbyWanted() })) {
       navigateMeetView(MEET_HOME_URL, 'Google sign-out');
     } else {
       console.log('[electron] Google sign-out: leaving the bot view where it is (callStatus=' + localServer.callStatus
-        + ', calling app=' + callingAppMode + ')');
+        + ', calling app=' + callingApp() + ')');
       broadcastToRenderers('meet-mode-changed', { partition: SESSION_PARTITION });
       broadcastAuthChanged();
     }
@@ -14833,7 +14877,7 @@ function setupIPC() {
       for (const k of ['twilioAccountSid', 'twilioApiKeySid', 'twilioApiKeySecret']) store.delete(k);
       store.set('twilioAnswerCalls', false);
       setCallingAppAccount('twilio', null);
-      if (callingAppMode === 'twilio') refreshCallingAppStandby('Twilio disconnected');
+      if (callingApp() === 'twilio') refreshCallingAppStandby('Twilio disconnected');
       return { ok: true };
     }
     const target = CALLING_APP_SIGN_IN[which];
@@ -14850,7 +14894,7 @@ function setupIPC() {
       return { ok: false, error: err.message };
     }
     setCallingAppAccount(which, null);
-    if (callingAppMode === which) refreshCallingAppStandby('signed out of ' + which);
+    if (callingApp() === which) refreshCallingAppStandby('signed out of ' + which);
     return { ok: true };
   });
 

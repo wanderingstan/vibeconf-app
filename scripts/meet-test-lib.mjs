@@ -95,6 +95,19 @@ export class Bot {
     return ok;
   }
 
+  // Join a non-Meet call by link: platform is 'zoom' | 'teams' | 'slack' |
+  // 'whatsapp', matching local-server's join-<platform> actions. Those actions
+  // key the room themselves (zoom-<number>, teams-<id>, …), so adopt the room
+  // they report: every later /api/sync call must target the room the app uses.
+  async joinLink(platform, url) {
+    const { data, ms } = await this._sync({ meta: { action: `join-${platform}`, url, botName: this.name } });
+    const r = data?.results?.join;
+    const ok = !!r?.ok;
+    if (ok && r.roomId) this.room = r.roomId;
+    log(this.name, `join:${platform}`, { ms, ok, note: ok ? this.room : (r?.error || JSON.stringify(data).slice(0, 120)) });
+    return ok;
+  }
+
   // Wait until the bot is actually in the call and it's live before the
   // conversation starts. A real participant doesn't start talking the instant
   // they click join — admission + call-UI load take ~8s, and speaking before the

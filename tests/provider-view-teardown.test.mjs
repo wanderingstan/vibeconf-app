@@ -52,8 +52,7 @@ test('every provider-view discard site goes through destroyProviderView', () => 
   // deliberately not on this list — it navigates, it does not discard.)
   for (const sig of [
     'async function _openMeetInFreshView(meetUrl',
-    'function activateSlackProvider(',
-    'function activateMeetProvider(',
+    'function activatePlatform(', // every provider switch, Slack and Meet included (Phase 1 step 3)
   ]) {
     const body = bodyOf(sig);
     assert.match(body, /destroyProviderView\(\)/,

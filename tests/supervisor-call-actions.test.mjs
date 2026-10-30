@@ -271,8 +271,6 @@ test('main wires onJoinLink to the same provider switch the panel\'s Join uses, 
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
   const body = src.slice(src.indexOf('onJoinLink: ('), src.indexOf('onJoinLink: (') + 900);
-  for (const fn of ['activateZoomProvider', 'activateTeamsProvider', 'activateWhatsAppCallLink', 'activateSlackProvider']) {
-    assert.ok(body.includes(fn), `onJoinLink should use ${fn}`);
-  }
+  assert.match(body, /joinUrl\(url, \{ platform: provider \}\)/, 'onJoinLink should join through joinUrl, as the panel does');
   assert.match(body, /if \(spawnAgent\) launchClaudeTerminal\(room\)/);
 });

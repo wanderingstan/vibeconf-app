@@ -26,7 +26,9 @@ const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const whatsappCall = require('./whatsapp-call');
-const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider');
+const { CALL_EVENTS } = require('./call-provider');
+const { WhatsAppProvider } = require('./whatsapp-provider');
+const { bindToIpc } = require('./calling-app-provider');
 
 require('./slack-ua').installClientHintsShim();
 
@@ -112,34 +114,15 @@ function emit(channel, payload) {
   } catch { /* main not listening */ }
 }
 
-const press = (label) => {
-  const b = whatsappCall.findButton(document, label);
-  if (b) b.click();
-  return !!b;
-};
-
-// The VirtualMic carries only the bot's voice: keep WhatsApp's own mute off
-// unless the app asks for it.
-function setMicMuted(muted) { return press(muted ? 'Mute microphone' : 'Unmute microphone'); }
-function setCameraOn(on) {
-  const ok = press(on ? 'Turn camera on' : 'Turn camera off');
-  // No button: WhatsApp has video in that state already (it turns the camera
-  // on by itself for a video call).
-  console.log('[whatsapp] camera', on ? 'on' : 'off', ok ? '' : '(already, no button to press)');
-  return ok;
-}
-
-ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
-  if (!message) return;
-  switch (message.action) {
-    case CALL_COMMANDS.ACTIONS.unmuteMic: setMicMuted(false); break;
-    case CALL_COMMANDS.ACTIONS.muteMic: setMicMuted(true); break;
-    case CALL_COMMANDS.ACTIONS.cameraOn: setCameraOn(true); break;
-    case CALL_COMMANDS.ACTIONS.cameraOff: setCameraOn(false); break;
-    default:
-      window.postMessage({ __botsInCalls: true, __fromExtension: true, ...message }, '*');
-  }
+// The call itself (mic, camera, chat, share, leave) is WhatsAppProvider's;
+// this preload keeps the incoming side: deciding, answering, standby.
+const provider = new WhatsAppProvider({
+  session: () => ({ state, caller, botName }),
+  onSharing: (on) => reportSharing(on),
 });
+const press = (label) => provider.press(label);
+const setMicMuted = (muted) => provider.setMicMuted(muted);
+const setCameraOn = (on) => provider.setCameraOn(on);
 
 // Chat = the caller's 1:1 WhatsApp chat (see whatsapp-call.js). Only during
 // a call, and only with the person on it.
@@ -158,32 +141,8 @@ function newestFromCaller(messages) {
   for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].fromMe) return messages[i].id;
   return null;
 }
-ipcRenderer.on(CALL_COMMANDS.readChat, (_e, { requestId }) => {
-  if (state !== 'in-call') { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'not in a WhatsApp call' }); return; }
-  if (!caller) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'A WhatsApp call-link call has no chat' }); return; }
-  try {
-    const messages = chatMessages();
-    lastReadChatId = newestFromCaller(messages);
-    setChatUnread(false);
-    emit(CALL_EVENTS.chatResult, { requestId, ok: true, messages: messages.map(({ id, sender, text }) => ({ id, sender, text })) });
-  } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
-});
-ipcRenderer.on(CALL_COMMANDS.sendChat, async (_e, { requestId, text }) => {
-  if (state !== 'in-call') { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'not in a WhatsApp call' }); return; }
-  if (!caller || !caller.peerJid) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'A WhatsApp call-link call has no chat' }); return; }
-  try {
-    await whatsappCall.sendChatMessage(window, caller.peerJid, text);
-    console.log('[whatsapp] sent a chat message to', caller.name || caller.phone);
-    emit(CALL_EVENTS.chatResult, { requestId, ok: true });
-  } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
-});
-ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, (_e, { requestId } = {}) => {
-  emit(CALL_EVENTS.captionLanguageResult, { requestId, ok: false, error: 'WhatsApp has no captions; the bot transcribes the call audio itself' });
-});
-// Screen share: WhatsApp's own ⋮ → "Share screen". It then asks
-// getDisplayMedia, which the app answers with the whiteboard window (no
-// picker), so the room sees the bot's whiteboard. Our side of the edge is
-// reported as self-presenting, so the app stops retrying once it's up.
+// Our side of a screen share is reported as self-presenting, so the app stops
+// retrying once it's up.
 let sharing = false;
 function reportSharing(on) {
   if (sharing === on) return;
@@ -191,23 +150,9 @@ function reportSharing(on) {
   emit(CALL_EVENTS.selfPresenting, { presenting: on });
   console.log('[whatsapp] self-presenting:', on);
 }
-ipcRenderer.on(CALL_COMMANDS.triggerScreenShare, async () => {
-  if (state !== 'in-call') { console.log('[whatsapp] share asked for outside a call — ignored'); return; }
-  if (whatsappCall.findMenuItem(document, 'Stop sharing screen')) { reportSharing(true); return; }
-  const ok = await whatsappCall.chooseCallMenuItem(window, 'Share screen');
-  console.log('[whatsapp] share screen →', ok ? 'started' : 'no "Share screen" in the call menu');
-  if (ok) reportSharing(true);
-});
-ipcRenderer.on(CALL_COMMANDS.triggerStopSharing, async () => {
-  const ok = await whatsappCall.chooseCallMenuItem(window, 'Stop sharing screen');
-  console.log('[whatsapp] stop sharing →', ok ? 'stopped' : 'was not sharing');
-  reportSharing(false);
-});
-ipcRenderer.on(CALL_COMMANDS.setStudioSound, () => {});
-ipcRenderer.on(CALL_COMMANDS.recoverCaptions, () => {});
-ipcRenderer.on('trigger-leave-call', () => {
-  const ok = press('End call') || press('Decline');
-  console.log('[whatsapp] leave requested →', ok ? 'pressed' : 'no call on screen');
+bindToIpc(ipcRenderer, provider, {
+  emit,
+  afterRead: (messages) => { lastReadChatId = newestFromCaller(messages); setChatUnread(false); },
 });
 
 window.addEventListener('message', (event) => {

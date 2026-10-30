@@ -171,15 +171,23 @@ test('meet-sign-out-bot only navigates when signOutMayNavigateView allows it', (
 });
 
 test('every provider switch reports a standby it tears down', () => {
-  for (const fn of ['activateMeetProvider', 'activateSlackProvider', 'activateTeamsProvider', 'activateZoomProvider', '_openMeetInFreshView']) {
+  for (const fn of ['activatePlatform', '_openMeetInFreshView']) {
     const start = main.indexOf('function ' + fn + '(');
     assert.ok(start >= 0, fn + ' exists');
     const end = main.indexOf('\nfunction ', start + 10);
     const body = main.slice(start, end);
     const note = body.indexOf('noteCallingAppStandbyTeardown(');
-    const clear = body.indexOf('callingAppMode = null');
+    // Every switch moves activePlatform, which is what drops a calling app's
+    // standby, so the report has to come first.
+    const move = body.indexOf('activePlatform = ');
     assert.ok(note >= 0, fn + ' calls noteCallingAppStandbyTeardown');
-    assert.ok(clear < 0 || note < clear, fn + ' reports before clearing callingAppMode');
+    assert.ok(move >= 0, fn + ' sets activePlatform');
+    assert.ok(note < move, fn + ' reports before moving activePlatform off the calling app');
+  }
+  // The switches themselves delegate to activatePlatform, so they report too.
+  for (const fn of ['activateMeetProvider', 'activateSlackProvider', 'activateTeamsProvider', 'activateZoomProvider']) {
+    const start = main.indexOf('function ' + fn + '(');
+    assert.match(main.slice(start, main.indexOf('\nfunction ', start + 10)), /activatePlatform\('/, fn + ' goes through activatePlatform');
   }
 });
 

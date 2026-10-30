@@ -50,15 +50,21 @@ source it. So from automation:
   creds on this machine" — but they ARE here, just in `~/.zshrc`.
 - A `pnpm dist` launched that way notarizes nothing (silent skip, as above).
 
-To build from an agent / script, load the creds first:
+To build from an agent / script, use the wrapper. It loads the three vars and
+fails if they're missing:
 
 ```sh
-cd electron-app
-source ~/.zshrc      # brings APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID into the env
-pnpm dist            # now actually signs + notarizes
+scripts/with-signing.sh pnpm --dir electron-app dist
+scripts/with-signing.sh --check     # a test signature, no build
 ```
 
-(Or export the three vars inline for that one command.) To replicate on another
+Over SSH the login keychain is locked too, so codesign fails with
+`errSecInternalComponent`. A Mac that builds over SSH needs a dedicated signing
+keychain, which the wrapper unlocks: run `scripts/setup-signing-keychain.sh` once
+at its screen, and again with `--rebuild` after renewing the cert (expires
+2027-02-01).
+
+To replicate on another
 Mac: add the same three exports to that machine's shell profile with a
 currently-valid app-specific password; `APPLE_TEAM_ID` copies over as-is; no
 `notarytool store-credentials` step is used by this project.

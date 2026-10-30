@@ -24,7 +24,7 @@ if (!name) { console.error('--name is required (the bot name the conformance run
 const userDataDir = path.join(os.tmpdir(), 'vibeconf-calls-conformance', name);
 console.log(`Opening ${name}'s profile (${userDataDir}). Sign in, then close the window.`);
 const context = await chromium.launchPersistentContext(userDataDir, {
-  channel: 'chrome', headless: false, viewport: null, ignoreDefaultArgs: ['--enable-automation'],
+  channel: 'chrome', headless: false, viewport: null, chromiumSandbox: true, ignoreDefaultArgs: ['--enable-automation'],
 });
 const page = context.pages()[0] || await context.newPage();
 await page.goto(url);

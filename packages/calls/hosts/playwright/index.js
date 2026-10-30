@@ -174,6 +174,9 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
     headless,
     ...(executablePath ? { executablePath } : { channel }),
     viewport: null,
+    // Keep Chrome's sandbox on (Playwright turns it off by default, and Chrome
+    // warns about --no-sandbox): these pages are third-party call clients.
+    chromiumSandbox: true,
     // Meet's CSP enforces Trusted Types, which refuses the provider's status
     // banner (innerHTML) and breaks Meet's own scripts once the media core is
     // in. The Electron host strips the CSP headers for the same reason.

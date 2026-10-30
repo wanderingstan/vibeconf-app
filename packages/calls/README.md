@@ -7,6 +7,13 @@ This is the calling layer of the Vibeconferencing app, being extracted into a
 standalone MIT library. It lives in the app's repo as a local package until its
 API holds; the app (`electron-app/`) is its first user. Not published yet.
 
+![Architecture: app, library core, hosts, page](docs/diagrams/architecture.svg)
+
+- [docs/design.md](docs/design.md): the design draft, kept as written
+  (goals, boundary, public API, hosts, platforms, plan, risks).
+- [docs/status.md](docs/status.md): what was built phase by phase, where it
+  departs from the design, conformance results, and what's open.
+
 ## Layout
 
 | Folder | What's in it |
@@ -19,6 +26,7 @@ API holds; the app (`electron-app/`) is its first user. Not published yet.
 | `hosts/electron/` | The Electron host: Slack's two surfaces, the recording windows, tab sharing, browser identity |
 | `hosts/playwright/` | The Playwright host: a bot from plain Node, with Playwright driving Chrome. Meet, Zoom, Teams and Slack (see below) |
 | `conformance/` | The conformance suite: the same two-bot checks for every provider on every host, plus its Playwright bot and test clip |
+| `docs/` | The design draft, the build status, and their diagrams |
 
 ## Rules
 

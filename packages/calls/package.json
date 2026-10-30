@@ -13,7 +13,8 @@
     "hearing/",
     "recording/",
     "hosts/",
-    "conformance/"
+    "conformance/",
+    "docs/"
   ],
   "peerDependencies": {
     "electron": ">=33",

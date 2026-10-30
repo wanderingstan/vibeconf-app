@@ -34,7 +34,7 @@ leave, skipping what a platform or host can't do. Last full results:
 | Meet | 12/12 | 10/10 (share skipped) |
 | Zoom | 12/12 | 10/10 (share skipped) |
 | Teams | 12/12 | 9/10 (share skipped, one chat miss, below) |
-| Slack | 12/12 | One bot verified; the two-bot run waits on a second signed-in profile |
+| Slack | 12/12 | 10/10 (share skipped) |
 
 The nightly canary (`.github/workflows/canary.yml`) runs this matrix on the
 Mac mini and posts the green streak to Telegram.
@@ -84,8 +84,6 @@ The diagram above is the design's view. In the code today:
 - Teams chat on Playwright: when a bot opens chat to send at the moment the
   other's message arrives, Teams never renders that message for it. The same
   sequence passes on Electron. Unexplained.
-- Slack on Playwright: the second bot's profile needs a Google Workspace
-  admin to clear its sign-in.
 - Share and call recording on Playwright: presenting an app-owned page needs
   the WebRTC loopback the design proposes; neither is built.
 - The calling apps (WhatsApp, Telegram, phone) aren't on the Playwright host.

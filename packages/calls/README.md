@@ -64,10 +64,10 @@ await host.close();
 It needs `playwright-core` (an optional peer dependency) and drives the
 installed Google Chrome, headed, with `navigator.webdriver` off as in the
 Electron host (Meet refuses a webdriver-flagged guest). The media core and the
-provider are
-bundled (`bundle.js`) and added as init scripts; `page-host.js` is the page's
-half (one entry per platform: `page-meet.js`, `page-zoom.js`, `page-teams.js`),
-the Playwright counterpart of the app's call preloads.
+provider are bundled (`bundle.js`) and added as init scripts; `page-host.js` is
+the page's half (one entry per platform: `page-meet.js`, `page-zoom.js`,
+`page-teams.js`, `page-slack.js`), the Playwright counterpart of the app's call
+preloads.
 
 Open:
 

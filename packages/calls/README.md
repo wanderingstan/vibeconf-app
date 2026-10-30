@@ -17,7 +17,7 @@ API holds; the app (`electron-app/`) is its first user. Not published yet.
 | `hearing/` | Captions and speech-to-text plumbing (`caption-source.js`, speech gate) |
 | `recording/` | Per-track call recording and the ffmpeg merge |
 | `hosts/electron/` | The Electron host: Slack's two surfaces, the recording windows, tab sharing, browser identity |
-| `hosts/playwright/` | The Playwright host: a bot from plain Node, with Playwright driving Chrome. Meet, Zoom and Teams (see below) |
+| `hosts/playwright/` | The Playwright host: a bot from plain Node, with Playwright driving Chrome. Meet, Zoom, Teams and Slack (see below) |
 | `conformance/` | The conformance suite: the same two-bot checks for every provider on every host, plus its Playwright bot and test clip |
 
 ## Rules
@@ -78,9 +78,11 @@ Open, as of Phase 4:
   never renders that message for the bot (its page has no trace of it; a
   message a few seconds earlier shows fine). Unexplained; the same sequence
   passes on the Electron host. The conformance suite catches it (Teams chat).
-- **Not Slack or the calling apps yet.** Slack's huddle runs across two
-  windows, and WhatsApp, Telegram and phone calls are answered rather than
-  joined; neither shape is in this host.
+- **Slack needs signed-in profiles.** There is no guest path into a huddle.
+  `node scripts/playwright-profile.mjs --name Alice --url https://app.slack.com`
+  opens that bot's Chrome profile for a person to sign in once.
+- **Not the calling apps yet.** WhatsApp, Telegram and phone calls are answered
+  rather than joined (WhatsApp call links do join, and fit `join(url)`).
 - **No share.** Presenting an app-owned page needs the WebRTC loopback the
   design doc proposes; the conformance suite skips share on this host.
 

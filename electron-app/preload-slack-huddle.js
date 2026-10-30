@@ -5,11 +5,9 @@
 // setWindowOpenHandler (see slack-surface.js) — the Slack analog of what
 // preload-meet.js is for Meet, but for the popup surface.
 //
-// FIRST PASS (live-test harness): instantiate SlackProvider, expose it on the
-// popup's window for hands-on driving from DevTools (contextIsolation:false), and
-// run a light scrape heartbeat that pushes participants + captions up to main
-// over the existing CALL_EVENTS channels. Full command IPC wiring (mute, speak,
-// chat, share) comes after the DOM layer is verified against a live huddle.
+// The huddle itself runs in the library (slack-session.js: SlackProvider and its
+// scrape heartbeat). This preload is its host: main's commands become provider
+// calls, and the provider's events go out over IPC.
 //
 // Drive it live: open this popup's DevTools and call, e.g.
 //   slackProvider.getParticipants()
@@ -29,11 +27,11 @@ const { ipcRenderer } = require('electron');
 // Match navigator.userAgentData to the spoofed Chrome UA before Slack's scripts run
 // (same Client-Hints gate as the main surface).
 require('@vibeconferencing/calls/hosts/electron/slack-ua').installClientHintsShim();
-const { SlackProvider } = require('@vibeconferencing/calls/providers/slack-provider');
+const { startSlackHuddle } = require('@vibeconferencing/calls/providers/slack-session');
 const { CALL_EVENTS, CALL_COMMANDS } = require('@vibeconferencing/calls/core/call-provider');
 const { SLACK } = require('@vibeconferencing/calls/providers/slack-selectors');
 
-const provider = new SlackProvider();
+const provider = startSlackHuddle({});
 
 // Expose for manual driving from the popup DevTools (contextIsolation:false).
 try {
@@ -83,81 +81,11 @@ ipcRenderer.on(CALL_COMMANDS.setStudioSound, (_e, p) => { provider.setStudioSoun
 // Slack has no separate "recover captions" — re-running enableCaptions re-asserts it.
 ipcRenderer.on(CALL_COMMANDS.recoverCaptions, () => { provider.enableCaptions(); });
 
-// Emit on the same CALL_EVENTS channels Meet uses, so main.js's existing
-// handlers already understand them. Preserve the no-payload arg shape.
-function emit(channel, payload) {
-  try {
-    if (payload === undefined) ipcRenderer.send(channel);
-    else ipcRenderer.send(channel, payload);
-  } catch { /* main not listening */ }
+// Every provider event goes to main on the CALL_EVENTS channel of the same name,
+// so main.js's existing handlers already understand them.
+function emit(channel, ...args) {
+  try { ipcRenderer.send(channel, ...args); } catch { /* main not listening */ }
 }
-
-// Scrape heartbeat: once the huddle UI is up, push roster + captions so we can
-// watch scraping work end-to-end. Deduped to avoid log/IPC spam.
-let lastRoster = '';
-let lastCaption = '';
-let lastSharing = false;
-let reportedInCall = false;
-function tick() {
-  try {
-    const parts = provider.getParticipants();
-    // Once participant tiles exist we're past the lobby and actually in the
-    // huddle — tell the app so it flips to 'in-call' (main.js maps a status
-    // containing "In call" → in-call), which unlocks the panel (TTS test, etc.).
-    if (!reportedInCall && parts.length) {
-      reportedInCall = true;
-      emit(CALL_EVENTS.statusUpdate, 'In call (Slack huddle)');
-      console.log('[slack-huddle] in a huddle — reported in-call to the app');
-      // Standard join setup, after the in-call toolbar settles: turn the camera
-      // on (the Slack lobby defaults it OFF, so the bot's virtual-camera avatar
-      // wouldn't show otherwise — we already own the toggle, so no lobby DOM is
-      // needed), then enable side-by-side captions (the Slack analog of
-      // auto-enabling captions on Meet). Camera first: it's a single idempotent
-      // click, done before captions opens its menus.
-      setTimeout(async () => {
-        try {
-          const camOk = await provider.setCameraOn(true);
-          console.log('[slack-huddle] setCameraOn →', camOk);
-        } catch (e) { console.warn('[slack-huddle] setCameraOn error:', e && e.message); }
-        provider.enableCaptions()
-          .then((ok) => console.log('[slack-huddle] enableCaptions →', ok))
-          .catch((e) => console.warn('[slack-huddle] enableCaptions error:', e && e.message));
-      }, 2000);
-    }
-    const pk = JSON.stringify(parts);
-    if (parts.length && pk !== lastRoster) {
-      lastRoster = pk;
-      emit(CALL_EVENTS.participantsUpdated, parts);
-      console.log('[slack-huddle] participants:', JSON.stringify(parts));
-    }
-    const caps = provider.scrapeCaptions();
-    if (caps.length) {
-      const last = caps[caps.length - 1];
-      const ck = last.speaker + '::' + last.text;
-      if (ck !== lastCaption) {
-        lastCaption = ck;
-        emit(CALL_EVENTS.captionTurns, {
-          turns: caps.map((c, i) => ({ turnId: i + 1, speaker: c.speaker, text: c.text, isBottommost: i === caps.length - 1 })),
-        });
-        console.log('[slack-huddle] caption:', JSON.stringify(last));
-      }
-    }
-    // Report the REAL screen-share state (the toggle button's pressed attr) so
-    // the app's `sharing` flag reflects what Slack is actually doing — the parity
-    // analog of Meet's screen-share-stopped correction. selfPresenting →
-    // setSharing(presenting) in main.js. This both CONFIRMS an agent-requested
-    // share actually engaged and CATCHES a stop/drop (user clicked the button,
-    // stream died) that the optimistic setSharing(true) wouldn't notice.
-    const sharing = provider.isSharing();
-    if (sharing !== lastSharing) {
-      lastSharing = sharing;
-      emit(CALL_EVENTS.selfPresenting, { presenting: sharing });
-      console.log('[slack-huddle] self-presenting:', sharing);
-    }
-  } catch { /* DOM not ready yet */ }
+for (const channel of Object.values(CALL_EVENTS)) {
+  provider.on(channel, (...args) => emit(channel, ...args));
 }
-
-window.addEventListener('DOMContentLoaded', () => {
-  console.log('[slack-huddle] DOMContentLoaded — starting scrape heartbeat (1s)');
-  setInterval(tick, 1000);
-});

@@ -59,11 +59,11 @@ test('every provider imports the contract names it uses', () => {
   }
 });
 
-// Meet, Zoom and Teams run their whole session in the library (Phases 3b and
-// 4b); their preloads only carry it over IPC. A loop back in a preload is a
+// Meet, Zoom, Teams and Slack run their whole session in the library (Phases
+// 3b, 4b and 4c); their preloads only carry it over IPC. A loop back in a preload is a
 // session the Playwright host can't run.
-test('the Meet, Zoom and Teams preloads run no loop of their own', () => {
-  for (const f of ['preload-meet.js', 'preload-zoom.js', 'preload-teams.js']) {
+test('the Meet, Zoom, Teams and Slack preloads run no loop of their own', () => {
+  for (const f of ['preload-meet.js', 'preload-zoom.js', 'preload-teams.js', 'preload-slack-main.js', 'preload-slack-huddle.js']) {
     const src = readFileSync(join(root, 'electron-app', f), 'utf8').replace(/\/\/.*$/gm, '');
     assert.ok(!/setInterval\(/.test(src), `${f} polls the page itself`);
   }

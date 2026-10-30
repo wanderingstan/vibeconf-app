@@ -98,6 +98,7 @@ test('the bundler turns each platform page into one script a plain page can run'
     'page-meet.js': ['GoogleMeetProvider', 'const MEET = '],
     'page-zoom.js': ['class ZoomProvider', 'ZoomCaptionTracker', 'function startZoom'],
     'page-teams.js': ['class TeamsProvider', 'function startTeams'],
+    'page-slack.js': ['class SlackProvider', 'function startSlackHuddle'],
   };
   for (const [entry, want] of Object.entries(markers)) {
     const src = bundlePageScript(require.resolve('../packages/calls/hosts/playwright/' + entry));

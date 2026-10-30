@@ -12,6 +12,7 @@
 const { BrowserView, session, globalShortcut, shell } = require('electron');
 const path = require('path');
 const { SLACK } = require('../../providers/slack-selectors');
+const { clickWhenReadyJs, clickButtonByTextRepeatingJs } = require('../../providers/slack-session');
 const slackUa = require('./slack-ua');
 
 // Slack sniffs the browser and rejects Electron (and older Chrome) — "your browser
@@ -22,44 +23,15 @@ const slackUa = require('./slack-ua');
 // there when Slack tightens its cutoff). Isolated to the Slack surface.
 const SLACK_UA = slackUa.UA;
 
-// Poll for `selector` in a webContents and click it once it appears (Slack is a
-// SPA, so toolbar/lobby buttons render well after load). Runs in-page via
-// executeJavaScript so the preloads stay media/scrape-only. Logs with a [slack]
-// prefix so the console-message forwarder surfaces it in the main stdout.
-function clickWhenReady(webContents, selector, label, { tries = 60, intervalMs = 500 } = {}) {
-  const js = `(() => {
-    const sel = ${JSON.stringify(selector)}, label = ${JSON.stringify(label)};
-    let n = 0;
-    const t = setInterval(() => {
-      const el = document.querySelector(sel);
-      if (el) { el.click(); clearInterval(t); console.log('[slack] autojoin: clicked ' + label); }
-      else if (++n > ${tries}) { clearInterval(t); console.warn('[slack] autojoin: timed out waiting for ' + label); }
-    }, ${intervalMs});
-  })();`;
-  webContents.executeJavaScript(js).catch(() => {});
+// The join clicks are page scripts shared with the Playwright host
+// (slack-session.js); here they run in a webContents via executeJavaScript, so
+// the preloads stay media/scrape-only. They log with a [slack] prefix, which the
+// console-message forwarder surfaces in the main stdout.
+function clickWhenReady(webContents, selector, label, opts) {
+  webContents.executeJavaScript(clickWhenReadyJs(selector, label, opts)).catch(() => {});
 }
-
-// Watch for a button whose visible text exactly matches `text` and click it
-// whenever it appears. Used for modals that have no stable data-qa — notably the
-// "You're in this huddle on a different device" dialog ("Switch to this device" /
-// "Use both devices"), which blocks auto-join when the bot account is in the
-// huddle on another session (e.g. two bot accounts on one machine, or a stale
-// session). We DON'T clearInterval on click, so a modal that re-appears later in
-// the call is dismissed again; the button vanishes after a successful click, so
-// it won't double-fire. Matched by text because Slack ships no data-qa here.
-function clickButtonByTextRepeating(webContents, text, label, { tries = 240, intervalMs = 500 } = {}) {
-  const js = `(() => {
-    const text = ${JSON.stringify(text)}, label = ${JSON.stringify(label)};
-    let n = 0;
-    const t = setInterval(() => {
-      const norm = (s) => (s || '').replace(/\\s+/g, ' ').trim();
-      const el = [...document.querySelectorAll('button, [role="button"], a')]
-        .find((e) => norm(e.textContent).includes(text) && e.offsetParent !== null);
-      if (el) { el.click(); console.log('[slack] autojoin: clicked ' + label); }
-      if (++n > ${tries}) clearInterval(t);
-    }, ${intervalMs});
-  })();`;
-  webContents.executeJavaScript(js).catch(() => {});
+function clickButtonByTextRepeating(webContents, text, label, opts) {
+  webContents.executeJavaScript(clickButtonByTextRepeatingJs(text, label, opts)).catch(() => {});
 }
 
 // Build the Slack surface bound to a session partition.

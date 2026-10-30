@@ -22,15 +22,14 @@ test('every preload that evals page-inject.js installs the emoji resolvers', () 
   // does not matter; presence does.
   const hosts = readdirSync(APP)
     .filter((f) => /^preload-.*\.js$/.test(f))
-    .filter((f) => /join\(__dirname, 'page-inject\.js'\)/.test(readFileSync(join(APP, f), 'utf-8')));
+    .filter((f) => /injectPageScripts\(\{ tag:/.test(readFileSync(join(APP, f), 'utf-8')));
   // Meet, Teams, Zoom, Slack. If a new provider shows up it is checked too.
   for (const h of ['preload-meet.js', 'preload-teams.js', 'preload-zoom.js', 'preload-slack-main.js', 'preload-telegram.js', 'preload-whatsapp.js', 'preload-twilio.js']) {
     assert.ok(hosts.includes(h), `${h} hosts page-inject`);
   }
-  for (const f of hosts) {
-    const src = readFileSync(join(APP, f), 'utf-8');
-    assert.ok(src.includes('installPageResolvers(globalThis'), `${f}: installs the emoji resolvers`);
-  }
+  // They all load the page scripts through page-scripts.js, which installs them.
+  const loader = readFileSync(join(APP, 'page-scripts.js'), 'utf-8');
+  assert.ok(loader.includes('installPageResolvers(globalThis'), 'page-scripts.js installs the emoji resolvers');
 });
 
 test('installPageResolvers gives page-inject a working face for the image sets', () => {

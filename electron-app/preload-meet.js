@@ -13,15 +13,6 @@ require('./slack-ua').installClientHintsShim();
 // default. Tagged [bots-in-calls] so the Meet view's console forwarder keeps it.
 require('./dom-probe').installDomProbe({ tag: '[bots-in-calls]', defaultSelector: '[data-participant-id]' });
 
-// The user's hour-cycle preference, for page-inject's canvas clock. It runs in
-// the page's world with no node access, and macOS keeps the 24-hour choice
-// outside the locale (AppleICUForce24HourTime) where ICU never looks — so the
-// value has to be carried in. contextIsolation is false here, so a global on
-// `window` is the whole mechanism. See electron-app/time-format.js.
-try {
-  window.__vibeconfHour12 = require('./time-format.js').resolveHour12();
-} catch { /* leave it undefined — page-inject falls back to the locale */ }
-
 // meetView runs with contextIsolation:false, so the preload and page share one
 // window. Expose a tiny helper the idle screen uses to open a URL in the user's
 // external browser (the "Start default testing meet" link).
@@ -60,23 +51,7 @@ try { window.vibeconfOpenExternal = (url) => ipcRenderer.send('open-external-url
 // so no URL check is needed. Injecting at DOMContentLoaded was too late — Meet's
 // scripts could call getUserMedia before that, getting a real mic stream instead
 // of our VirtualMic, causing TTS audio to silently fail.
-// Avatar posture math (resting offset/scale + occasional shifts) for the
-// virtual camera. Exposed BEFORE page-inject is eval'd, since page-inject has no
-// require. If it fails to load, the face simply stays centred.
-try {
-  globalThis.__vibeAvatarPosture = require('./avatar-posture.js');
-} catch (err) {
-  console.error('[electron-meet] avatar-posture.js failed to load (face stays centred):', err.message);
-}
-
-try {
-  const pageInjectPath = path.join(__dirname, 'page-inject.js');
-  const pageInjectCode = fs.readFileSync(pageInjectPath, 'utf-8');
-  (0, eval)(pageInjectCode);
-  console.log('[electron-meet] page-inject.js loaded (preload, before page scripts)');
-} catch (err) {
-  console.error('[electron-meet] Failed to load page-inject.js:', err.message);
-}
+require('./page-scripts').injectPageScripts({ tag: '[electron-meet]' });
 
 // P2 (Runway faces): load livekit-client (→ window.LivekitClient) + runway-avatar.js from
 // ../extension. OPT-IN — runway-avatar.js stays idle until a {source:'runway-avatar'} message,
@@ -95,19 +70,6 @@ try {
   console.error('[electron-meet] P2 runway-avatar/livekit-client load failed (emoji bots unaffected):', err.message);
 }
 
-// Emoji image sets (#316): expose a sync resolver so page-inject (eval'd into
-// this preload's global, where fs/__dirname aren't directly reachable) can read
-// a bundled emoji graphic by relative path ("<set>/<file>"). Returns a data URI
-// (SVG text or base64 PNG by extension) or null → renderer falls back to native.
-// The path/format handling lives in emoji-assets.js, shared with preload-panel.
-try {
-  require('./emoji-assets.js').installPageResolvers(globalThis, __dirname);
-} catch {
-  globalThis.__vibeEmojiDataUri = () => null;
-  globalThis.__vibeEmojiFontBytes = () => null;
-  globalThis.__vibeEmojiDirUri = () => null;
-  globalThis.__vibeEmojiDirCount = () => 0;
-}
 
 // P2: forward Runway-face control to runway-avatar.js (which listens for source:'runway-avatar').
 ipcRenderer.on('runway-avatar', (_event, payload) => {

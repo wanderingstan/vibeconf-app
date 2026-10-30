@@ -171,7 +171,7 @@ test('hearing does not override working or thinking on the face', () => {
   // page-inject.js is a browser IIFE, so pin the source like the other avatar
   // tests do. Two layers: the attentive (😐/🫤) face is suppressed outright
   // while busy, and the activity face outranks it in the waterfall regardless.
-  const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+  const inject = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
   const block = inject.slice(inject.indexOf('const attentive ='), inject.indexOf('const hearing = attentive'));
   assert.ok(block.includes("state !== 'working'"), 'working suppresses hearing/settling');
   assert.ok(block.includes("state !== 'thinking'"), 'thinking suppresses hearing/settling');

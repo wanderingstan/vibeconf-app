@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 test('every preload that runs page-inject installs the STT bridge', () => {
   const preloads = readdirSync(app).filter((f) => /^preload-.*\.js$/.test(f));
   // Code that LOADS page-inject, not a comment that mentions it (the bridges do).
-  const withInject = preloads.filter((f) => /path\.join\(__dirname, 'page-inject\.js'\)/.test(read(f)));
+  const withInject = preloads.filter((f) => /injectPageScripts\(\{ tag:/.test(read(f)));
   assert.ok(withInject.length >= 4, 'expected the Meet, Slack, Zoom and Teams preloads, found: ' + withInject.join(', '));
   for (const f of withInject) {
     // preload-meet hands the page to google-meet-provider.js, which installs it.

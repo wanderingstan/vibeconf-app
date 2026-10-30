@@ -45,19 +45,9 @@ require('./slack-ua').installClientHintsShim();
 
 require('./dom-probe').installDomProbe({ tag: '[telegram]', defaultSelector: '.ActiveCallHeader' });
 
-// Emoji sets (#828): the camera face's bundled art reaches page-inject only
-// through resolvers this preload installs (it has no fs).
-try { require('./emoji-assets.js').installPageResolvers(globalThis, __dirname); } catch (err) {
-  console.error('[telegram] emoji resolvers failed (faces stay native):', err.message);
-}
-
-try {
-  const code = fs.readFileSync(path.join(__dirname, 'page-inject.js'), 'utf-8');
-  (0, eval)(code);
-  console.log('[telegram] page-inject.js loaded (media patch, before page scripts)');
-} catch (err) {
-  console.error('[telegram] Failed to load page-inject.js:', err.message);
-}
+// The media scripts (page-inject's core, then the app's avatar and realtime
+// voice plugins), before any page script can ask for media. page-scripts.js.
+require('./page-scripts').injectPageScripts({ tag: '[telegram]' });
 
 window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');

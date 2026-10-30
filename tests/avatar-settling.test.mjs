@@ -16,7 +16,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const inject = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
 
 test('the settling face is 🫤, and distinct from hearing', () => {
   const m = inject.match(/static SETTLING_EMOJI = '([^']+)'/);
@@ -30,7 +30,7 @@ test('it fires only after speech stops, never while someone is talking', () => {
   // Same attentive window as before, split on anyoneSpeaking. Getting this
   // backwards would show "are you done?" AT someone mid-sentence.
   const block = inject.slice(inject.indexOf('const attentive ='), inject.indexOf('const activityEmoji'));
-  assert.match(block, /this\.anyoneSpeaking \? VirtualCamera\.HEARING_EMOJI : VirtualCamera\.SETTLING_EMOJI/);
+  assert.match(block, /this\.anyoneSpeaking \? AvatarFace\.HEARING_EMOJI : AvatarFace\.SETTLING_EMOJI/);
 });
 
 test('it inherits every existing suppression', () => {

@@ -19,7 +19,7 @@ require('../electron-app/local-server.js'); // registers globalThis.LocalServer
 const LocalServer = globalThis.LocalServer;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const inject = fs.readFileSync(path.join(__dirname, '../electron-app/page-inject.js'), 'utf-8');
+const inject = fs.readFileSync(path.join(__dirname, '../electron-app/page-avatar.js'), 'utf-8');
 
 function makeServer(botName) {
   const s = new LocalServer({ port: 0 });

@@ -88,10 +88,8 @@ test('every renderer site can actually see the preference', () => {
   // And the calendar banner — the site Stan actually reported — must use it.
   assert.match(panel, /const localTime = fmtTime\(next\.start\)/);
 
-  const preload = read('electron-app/preload-meet.js');
-  assert.match(preload, /window\.__vibeconfHour12/, 'the meet preload must carry it in');
-  const inject = read('electron-app/page-inject.js');
-  assert.match(inject, /window\.__vibeconfHour12/, 'the canvas clock must read it');
+  // (The in-page whiteboard's canvas clock read it too, through a global the
+  // Meet preload set; that whiteboard was dead code and is gone, Phase 2.)
 });
 
 test('a missing preference never throws or renders "undefined"', () => {

@@ -128,7 +128,7 @@ test('the "cannot speak" face is the one the app already uses for that meaning',
   // as "no mouth — will act but cannot speak". A voiceless bot is the same
   // condition reached a different way, so it should look the same rather than
   // inventing a second vocabulary for it.
-  const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+  const inject = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
   assert.match(inject, /silent: '\\u\{1F636\}'/, 'MODE_EMOJIS.silent should still be 😶');
   assert.match(main, /\\u\{1F636\}/, 'main should ask for that same face');
 });

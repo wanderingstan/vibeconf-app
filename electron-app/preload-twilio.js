@@ -35,17 +35,9 @@ const { bindToIpc } = require('./calling-app-provider');
 
 require('./dom-probe').installDomProbe({ tag: '[twilio]', defaultSelector: '#status' });
 
-try { require('./emoji-assets.js').installPageResolvers(globalThis, __dirname); } catch (err) {
-  console.error('[twilio] emoji resolvers failed (faces stay native):', err.message);
-}
-
-try {
-  const code = fs.readFileSync(path.join(__dirname, 'page-inject.js'), 'utf-8');
-  (0, eval)(code);
-  console.log('[twilio] page-inject.js loaded (media patch, before page scripts)');
-} catch (err) {
-  console.error('[twilio] Failed to load page-inject.js:', err.message);
-}
+// The media scripts (page-inject's core, then the app's avatar and realtime
+// voice plugins), before any page script can ask for media. page-scripts.js.
+require('./page-scripts').injectPageScripts({ tag: '[twilio]' });
 
 require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[twilio]' });
 require('./preload-stt-bridge').installSttBridge(ipcRenderer);

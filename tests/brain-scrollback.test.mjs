@@ -32,7 +32,7 @@ import { StreamActivitySource } from '../electron-app/agent-activity.js';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const transcriptJs = readFileSync(join(root, 'electron-app/agent-transcript.js'), 'utf8');
-const pageInject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const pageInject = readFileSync(join(root, 'electron-app/page-avatar.js'), 'utf8');
 const panelJs = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
 
 const sayEntry = (text) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } });

@@ -51,17 +51,9 @@ require('./dom-probe').installDomProbe({ tag: '[whatsapp]', defaultSelector: '[a
 
 window.__vibeconf_disableAudioCapture = true;
 
-try { require('./emoji-assets.js').installPageResolvers(globalThis, __dirname); } catch (err) {
-  console.error('[whatsapp] emoji resolvers failed (faces stay native):', err.message);
-}
-
-try {
-  const code = fs.readFileSync(path.join(__dirname, 'page-inject.js'), 'utf-8');
-  (0, eval)(code);
-  console.log('[whatsapp] page-inject.js loaded (media patch, before page scripts)');
-} catch (err) {
-  console.error('[whatsapp] Failed to load page-inject.js:', err.message);
-}
+// The media scripts (page-inject's core, then the app's avatar and realtime
+// voice plugins), before any page script can ask for media. page-scripts.js.
+require('./page-scripts').injectPageScripts({ tag: '[whatsapp]' });
 
 window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');

@@ -111,10 +111,10 @@ test('a clone whose source ends logs it (a dead call video is never silent)', ()
   assert.ok(logs.some((l) => l.includes('camera clone ENDED consumer=call:getUserMedia')));
 });
 
-test('VirtualCamera.getTrack delegates to the clone handout and getUserMedia labels its consumer', () => {
+test('CameraSurface.getTrack delegates to the clone handout and getUserMedia labels its consumer', () => {
   const method = /\n {4}getTrack\(consumer = 'unknown'\) \{([\s\S]*?)\n {4}\}\n/.exec(
-    src.slice(src.indexOf('class VirtualCamera'), src.indexOf('class VirtualMic')));
-  assert.ok(method, 'VirtualCamera.getTrack(consumer) not found');
+    src.slice(src.indexOf('class CameraSurface'), src.indexOf('class VirtualMic')));
+  assert.ok(method, 'CameraSurface.getTrack(consumer) not found');
   assert.match(method[1], /return handOutCameraTrack\(this, consumer, config\.fps\)/);
   assert.match(src, /tracks\.push\(camera\.getTrack\('call:getUserMedia'\)\)/);
 });

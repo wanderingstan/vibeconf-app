@@ -17,7 +17,7 @@ API holds; the app (`electron-app/`) is its first user. Not published yet.
 | `hearing/` | Captions and speech-to-text plumbing (`caption-source.js`, speech gate) |
 | `recording/` | Per-track call recording and the ffmpeg merge |
 | `hosts/electron/` | The Electron host: Slack's two surfaces, the recording windows, tab sharing, browser identity |
-| `hosts/playwright/` | The Playwright host: a bot from plain Node, with Playwright driving Chrome. Meet, Zoom and Teams (see below) |
+| `hosts/playwright/` | The Playwright host: a bot from plain Node, with Playwright driving Chrome. Meet, Zoom, Teams and Slack (see below) |
 | `conformance/` | The conformance suite: the same two-bot checks for every provider on every host, plus its Playwright bot and test clip |
 
 ## Rules
@@ -62,25 +62,25 @@ await host.close();
 ```
 
 It needs `playwright-core` (an optional peer dependency) and drives the
-installed Google Chrome, headed. The media core and the Meet provider are
-bundled (`bundle.js`) and added as init scripts; `page-host.js` is the page's
-half (one entry per platform: `page-meet.js`, `page-zoom.js`, `page-teams.js`),
-the Playwright counterpart of the app's call preloads.
+installed Google Chrome, headed, with `navigator.webdriver` off as in the
+Electron host (Meet refuses a webdriver-flagged guest). The media core and the
+provider are bundled (`bundle.js`) and added as init scripts; `page-host.js` is
+the page's half (one entry per platform: `page-meet.js`, `page-zoom.js`,
+`page-teams.js`, `page-slack.js`), the Playwright counterpart of the app's call
+preloads.
 
-Open, as of Phase 4:
+Open:
 
-- **Meet refuses it.** The bot reaches the join screen and Meet answers
-  "You can't join this video call". Chrome driven over CDP reports
-  `navigator.webdriver`, which the Electron host never does. Whether to mask
-  that is a decision we haven't made yet.
 - **Teams chat can drop a message on this host.** When the bot opens chat to
   send at the moment another participant's message arrives, Teams' web client
   never renders that message for the bot (its page has no trace of it; a
   message a few seconds earlier shows fine). Unexplained; the same sequence
   passes on the Electron host. The conformance suite catches it (Teams chat).
-- **Not Slack or the calling apps yet.** Slack's huddle runs across two
-  windows, and WhatsApp, Telegram and phone calls are answered rather than
-  joined; neither shape is in this host.
+- **Slack needs signed-in profiles.** There is no guest path into a huddle.
+  `node scripts/playwright-profile.mjs --name Alice --url https://app.slack.com`
+  opens that bot's Chrome profile for a person to sign in once.
+- **Not the calling apps yet.** WhatsApp, Telegram and phone calls are answered
+  rather than joined (WhatsApp call links do join, and fit `join(url)`).
 - **No share.** Presenting an app-owned page needs the WebRTC loopback the
   design doc proposes; the conformance suite skips share on this host.
 

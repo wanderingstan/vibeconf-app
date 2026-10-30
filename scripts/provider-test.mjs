@@ -17,14 +17,17 @@
 //   Zoom:  "join before host" on, captions allowed; test-zoom-1 signed in to
 //          Zoom once (a signed-in bot skips the guest reCAPTCHA)
 //   Teams: lobby set so everyone bypasses it
-//   scripts/spawn-test-fleet.sh 2 [--zoom | --teams]
+//   Slack: test-slack-N profiles signed in to Slack once; the fleet joins the
+//          channel's huddle at launch (--slack --slack-url=<channel>)
+//   scripts/spawn-test-fleet.sh 2 [--zoom | --teams | --slack --slack-url=<channel>]
 //
 // Run:
 //   node scripts/provider-test.mjs --platform meet  --bots Alice:7901,Bob:7902
 //   node scripts/provider-test.mjs --platform zoom  --url <zoom link>  --bots Alice:7901,Bob:7902
 //   node scripts/provider-test.mjs --platform teams --url <teams link> --bots Alice:7901,Bob:7902
 //   node scripts/provider-test.mjs --platform meet  --host playwright --bots Ada,Ben
-//   (--url falls back to the Meet test room / VIBECONF_ZOOM_URL / VIBECONF_TEAMS_URL)
+//   node scripts/provider-test.mjs --platform slack --url <channel> --bots Alice:7901,Bob:7902
+//   (--url falls back to the Meet test room / VIBECONF_ZOOM_URL / VIBECONF_TEAMS_URL / SLACK_TEST_URL)
 //
 // Exit code is non-zero if any step failed.
 
@@ -41,6 +44,7 @@ const PLATFORMS = {
   meet: () => `https://meet.google.com/${resolveTarget('default').room}`,
   zoom: () => process.env.VIBECONF_ZOOM_URL,
   teams: () => process.env.VIBECONF_TEAMS_URL,
+  slack: () => process.env.SLACK_TEST_URL,
 };
 
 const PLATFORM = arg('platform', '');
@@ -50,7 +54,7 @@ if (!PLATFORMS[PLATFORM]) {
 }
 const URL_ = arg('url', PLATFORMS[PLATFORM]() || '');
 if (!URL_) {
-  console.error(`No meeting link: pass --url or set ${PLATFORM === 'zoom' ? 'VIBECONF_ZOOM_URL' : 'VIBECONF_TEAMS_URL'}`);
+  console.error(`No meeting link: pass --url or set ${{ zoom: 'VIBECONF_ZOOM_URL', teams: 'VIBECONF_TEAMS_URL', slack: 'SLACK_TEST_URL' }[PLATFORM]}`);
   process.exit(2);
 }
 const HOST = arg('host', 'electron');

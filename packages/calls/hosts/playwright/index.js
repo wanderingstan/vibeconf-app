@@ -16,9 +16,10 @@
 // events to Node. The Call returned here is a CallProvider whose methods run
 // the page's provider, and whose events are the page provider's events.
 //
-// Google Meet, Zoom and Teams: the providers whose whole session runs in the
-// library. Slack (two windows) and the calling apps (answered, not joined) are
-// not here yet.
+// Google Meet, Zoom, Teams and Slack: the providers whose whole session runs in
+// the library. Slack's huddle spans two windows: the media core goes in the
+// main app.slack.com page, the provider in the about:blank popup it opens. The
+// calling apps (answered, not joined) are not here yet.
 //
 // Headed by default: the design doc expects Meet to detect headless Chromium.
 // `channel: 'chrome'` drives the installed Google Chrome, so nothing is
@@ -32,6 +33,8 @@ const { MEDIA_CORE_PATH } = require('../../inject/load');
 const { platformFromUrl } = require('../../core/call-target');
 const { ZOOM } = require('../../providers/zoom-selectors');
 const { TEAMS } = require('../../providers/teams-selectors');
+const { SLACK } = require('../../providers/slack-selectors');
+const { clickWhenReadyJs, clickButtonByTextRepeatingJs } = require('../../providers/slack-session');
 const { bundlePageScript } = require('./bundle');
 
 // Per platform: the page entry, the URL the bot actually loads, and anything
@@ -43,18 +46,44 @@ const PLATFORMS = {
   meet: { entry: 'page-meet.js', startUrl: (u) => u, before: '' },
   zoom: { entry: 'page-zoom.js', startUrl: (u) => ZOOM.webClientJoinUrl(u) || u, before: NO_AUDIO_HOOK },
   teams: { entry: 'page-teams.js', startUrl: (u) => TEAMS.lightMeetingUrl(u) || u, before: NO_AUDIO_HOOK },
+  slack: { entry: 'page-slack.js', startUrl: (u) => u, before: NO_AUDIO_HOOK, huddlePopup: true },
 };
 
+// Slack's join clicks (slack-session.js), the same ones the Electron host runs:
+// the channel's Huddle button in the main page; the lobby's Start Huddle in the
+// popup; and in both, the two interstitials that block a join.
+const SLACK_MAIN_NUDGES = [
+  clickWhenReadyJs(SLACK.huddle.startButton, 'channel Huddle button'),
+  clickButtonByTextRepeatingJs('Slack in your browser', '"use Slack in your browser" interstitial (main)', { tries: 40 }),
+  clickButtonByTextRepeatingJs('Switch to this device', '"Switch to this device" (main)'),
+];
+const SLACK_POPUP_NUDGES = [
+  clickWhenReadyJs(SLACK.huddle.lobbyStartButton, 'lobby Start Huddle'),
+  clickButtonByTextRepeatingJs('Switch to this device', '"Switch to this device" (popup)'),
+  clickButtonByTextRepeatingJs('Slack in your browser', '"use Slack in your browser" interstitial (popup)'),
+];
+
 // Electron loads preloads into the top frame only (nodeIntegrationInSubFrames
-// is off); an init script runs in every frame, so each is fenced to the top.
-const topFrameOnly = (src) => `if (window === window.top) {\n${src}\n}\n`;
+// is off); an init script runs in every frame, so each is fenced to the top,
+// and kept out of a popup's initial about:blank (Slack's huddle window, which
+// gets the provider instead).
+const MAIN_PAGE_ONLY = 'window === window.top && !(window.opener && location.href === "about:blank")';
+const fenced = (src) => `if (${MAIN_PAGE_ONLY}) {\n${src}\n}\n`;
+
+// The media core, plus the one message of its the host needs: an utterance
+// finished playing (on Electron, each preload relays the same).
+const TTS_ENDED_RELAY = `window.addEventListener('message', (e) => {
+  if (e.source === window && e.data && e.data.__botsInCalls && e.data.action === 'tts-ended') {
+    try { window.__vibeconfEmit(${JSON.stringify(CALL_EVENTS.ttsEnded)}, []); } catch (_) { /* page closing */ }
+  }
+});`;
 
 function pageScripts(platform) {
   const p = PLATFORMS[platform];
-  return [
-    topFrameOnly(p.before + '\n' + fs.readFileSync(MEDIA_CORE_PATH, 'utf8')),
-    topFrameOnly(bundlePageScript(path.join(__dirname, p.entry))),
-  ];
+  return {
+    media: fenced(p.before + '\n' + fs.readFileSync(MEDIA_CORE_PATH, 'utf8') + '\n' + TTS_ENDED_RELAY),
+    provider: bundlePageScript(path.join(__dirname, p.entry)),
+  };
 }
 
 class PlaywrightCall extends CallProvider {
@@ -62,7 +91,8 @@ class PlaywrightCall extends CallProvider {
 
   constructor(page) {
     super();
-    this.page = page;
+    this.page = page;      // where the provider runs (Slack: the huddle popup)
+    this.mediaPage = page; // where the media core runs (Slack: the main window)
     this._events = new EventEmitter();
     this._events.setMaxListeners(50);
   }
@@ -101,7 +131,13 @@ class PlaywrightCall extends CallProvider {
   async setMicMuted(muted) { return this._run('setMicMuted', !!muted); }
   async setCameraOn(on) { return this._run('setCameraOn', !!on); }
   /** payload: { audioData: base64 audio, … }, as the media core takes it. */
-  async speak(payload) { return this._run('speak', payload); }
+  // Straight to the media core, wherever it runs: on Slack that's the main
+  // window, not the provider's popup.
+  async speak(payload) {
+    return this.mediaPage.evaluate(([action, p]) => {
+      window.postMessage({ __botsInCalls: true, __fromExtension: true, action, payload: p }, '*');
+    }, ['play-tts', payload]);
+  }
   async setStudioSound(enabled) { return this._run('setStudioSound', !!enabled); }
   async setCaptionLanguage(language) { return this._run('setCaptionLanguage', language); }
   async enableCaptions() { return this._run('enableCaptions'); }
@@ -138,6 +174,9 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
     headless,
     ...(executablePath ? { executablePath } : { channel }),
     viewport: null,
+    // Keep Chrome's sandbox on (Playwright turns it off by default, and Chrome
+    // warns about --no-sandbox): these pages are third-party call clients.
+    chromiumSandbox: true,
     // Meet's CSP enforces Trusted Types, which refuses the provider's status
     // banner (innerHTML) and breaks Meet's own scripts once the media core is
     // in. The Electron host strips the CSP headers for the same reason.
@@ -151,6 +190,9 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
       '--disable-background-timer-throttling',
       '--disable-renderer-backgrounding',
       '--disable-backgrounding-occluded-windows',
+      // navigator.webdriver stays false, as in the Electron host. Meet answers a
+      // webdriver-flagged guest with "You can't join this video call".
+      '--disable-blink-features=AutomationControlled',
       ...args,
     ],
   });
@@ -164,13 +206,13 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
     throw new Error('unknown host question: ' + name);
   });
   await context.exposeBinding('__vibeconfEmit', (source, channel, a) => {
-    if (call && source.page === call.page) call._emit(channel, a || []);
+    if (call && (source.page === call.page || source.page === call.mediaPage)) call._emit(channel, a || []);
   });
   return {
     context,
     /**
      * Join a call and resolve once the bot is in it (CALL_EVENTS.botJoinedCall).
-     * @param {string} url  a Google Meet, Zoom or Teams link
+     * @param {string} url  a Google Meet, Zoom or Teams link, or a Slack channel (its huddle)
      * @param {object} [o]
      * @param {string} [o.botName='AI Assistant']
      * @param {'guest'|'account'} [o.mode='guest']  'account' when the profile is signed in to Google
@@ -180,15 +222,39 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
     async join(url, { botName = 'AI Assistant', mode = 'guest', config = {}, timeoutMs = 120000 } = {}) {
       const target = platformFromUrl(url);
       const platform = target.ok && PLATFORMS[target.provider] ? target.provider : null;
-      if (!platform) throw new Error('the Playwright host joins Google Meet, Zoom and Teams links: ' + (target.error || target.provider));
+      if (!platform) throw new Error('the Playwright host joins Google Meet, Zoom, Teams and Slack links: ' + (target.error || target.provider));
       if (call) throw new Error('this host already has a call; launch another host for a second bot');
       answers = { botName, mode, config };
       const startUrl = PLATFORMS[platform].startUrl(target.url || url);
-      for (const src of pageScripts(platform)) await context.addInitScript(src);
+      const scripts = pageScripts(platform);
+      await context.addInitScript(scripts.media);
+      if (!PLATFORMS[platform].huddlePopup) await context.addInitScript(`if (window === window.top) {\n${scripts.provider}\n}\n`);
       await context.grantPermissions(['microphone', 'camera'], { origin: new URL(startUrl).origin });
       const page = context.pages()[0] || await context.newPage();
       call = new PlaywrightCall(page);
-      const joined = call.waitFor(CALL_EVENTS.botJoinedCall, () => true, timeoutMs);
+      if (PLATFORMS[platform].huddlePopup) {
+        // The huddle opens as an about:blank popup that Slack fills from the main
+        // window. The provider and the lobby clicks go in it, and from then on
+        // it is where the call is driven; the media stays in the main page.
+        context.on('page', async (popup) => {
+          if (popup.url() !== 'about:blank' || (await popup.opener()) !== page) return;
+          call.page = popup;
+          try {
+            await popup.evaluate(scripts.provider);
+            for (const js of SLACK_POPUP_NUDGES) await popup.evaluate(js);
+          } catch (e) { console.warn('[playwright-host] huddle popup setup failed:', e.message); }
+        });
+        page.on('load', () => { for (const js of SLACK_MAIN_NUDGES) page.evaluate(js).catch(() => {}); });
+      }
+      // In the call: botJoinedCall (Meet, Zoom, Teams), or the "In call" status
+      // Slack's huddle reports (it sends no botJoinedCall, so the Electron app
+      // plays no join chime there).
+      const waits = [
+        call.waitFor(CALL_EVENTS.botJoinedCall, () => true, timeoutMs),
+        call.waitFor(CALL_EVENTS.statusUpdate, (s) => /^In call/.test(s), timeoutMs),
+      ];
+      waits.forEach((w) => w.catch(() => {})); // the loser times out later, unheard
+      const joined = Promise.race(waits);
       await page.goto(startUrl);
       await joined;
       return call;

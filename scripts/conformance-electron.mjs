@@ -22,6 +22,11 @@ export class ElectronConformanceBot {
     if (target.provider === 'meet') {
       this.bot.room = target.roomId;
       ok = await this.bot.join();
+    } else if (target.provider === 'slack') {
+      // Slack bots join the huddle themselves at launch (spawn-test-fleet.sh
+      // --slack --slack-url): a second join would leave and rejoin it.
+      this.bot.room = target.roomId;
+      ok = true;
     } else {
       ok = await this.bot.joinLink(target.provider, url);
     }

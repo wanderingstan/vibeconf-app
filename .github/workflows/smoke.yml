@@ -69,7 +69,7 @@ jobs:
         if: failure()
         run: |
           ENV="$HOME/.claude/channels/telegram/.env"
-          TOK=$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "$ENV" 2>/dev/null | cut -d= -f2- | tr -d '"'"'"' )
+          TOK=$(grep -m1 '^TELEGRAM_BOT_TOKEN=' "$ENV" 2>/dev/null | cut -d= -f2- | tr -d "\"'" )
           [ -z "$TOK" ] && { echo "no telegram token — skipping"; exit 0; }
           RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           MSG=$(printf '🔴 app-health smoke FAILED on main @ %s\n%s\n\n%s\n\n%s' \

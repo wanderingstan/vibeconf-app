@@ -59,11 +59,11 @@ test('every provider imports the contract names it uses', () => {
   }
 });
 
-// Meet, Zoom and Teams run their whole session in the library (Phases 3b and
-// 4b); their preloads only carry it over IPC. A loop back in a preload is a
+// Meet, Zoom, Teams and Slack run their whole session in the library (Phases
+// 3b, 4b and 4c); their preloads only carry it over IPC. A loop back in a preload is a
 // session the Playwright host can't run.
-test('the Meet, Zoom and Teams preloads run no loop of their own', () => {
-  for (const f of ['preload-meet.js', 'preload-zoom.js', 'preload-teams.js']) {
+test('the Meet, Zoom, Teams and Slack preloads run no loop of their own', () => {
+  for (const f of ['preload-meet.js', 'preload-zoom.js', 'preload-teams.js', 'preload-slack-main.js', 'preload-slack-huddle.js']) {
     const src = readFileSync(join(root, 'electron-app', f), 'utf8').replace(/\/\/.*$/gm, '');
     assert.ok(!/setInterval\(/.test(src), `${f} polls the page itself`);
   }
@@ -87,6 +87,12 @@ test('the app depends on the package, linked from the repo under npm and pnpm al
   // pnpm would copy a file: directory into its store, so edits wouldn't show
   // until a reinstall; the override makes it a symlink, as npm already does.
   assert.equal(app.pnpm.overrides['@vibeconferencing/calls'], 'link:../packages/calls');
+  // And pnpm's lockfile agrees, in the same dependency field: the mini's smoke
+  // run installs with --frozen-lockfile and refuses any drift (it caught the
+  // package recorded under devDependencies after a revert, Phase 3).
+  const lock = readFileSync(join(root, 'electron-app', 'pnpm-lock.yaml'), 'utf8');
+  const deps = lock.slice(lock.indexOf('    dependencies:'), lock.indexOf('    devDependencies:'));
+  assert.match(deps, /'@vibeconferencing\/calls':\n\s+specifier: link:\.\.\/packages\/calls/);
   const lib = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
   assert.equal(lib.name, '@vibeconferencing/calls');
   assert.equal(lib.license, 'MIT');

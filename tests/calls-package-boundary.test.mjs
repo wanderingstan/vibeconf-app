@@ -87,6 +87,12 @@ test('the app depends on the package, linked from the repo under npm and pnpm al
   // pnpm would copy a file: directory into its store, so edits wouldn't show
   // until a reinstall; the override makes it a symlink, as npm already does.
   assert.equal(app.pnpm.overrides['@vibeconferencing/calls'], 'link:../packages/calls');
+  // And pnpm's lockfile agrees, in the same dependency field: the mini's smoke
+  // run installs with --frozen-lockfile and refuses any drift (it caught the
+  // package recorded under devDependencies after a revert, Phase 3).
+  const lock = readFileSync(join(root, 'electron-app', 'pnpm-lock.yaml'), 'utf8');
+  const deps = lock.slice(lock.indexOf('    dependencies:'), lock.indexOf('    devDependencies:'));
+  assert.match(deps, /'@vibeconferencing\/calls':\n\s+specifier: link:\.\.\/packages\/calls/);
   const lib = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
   assert.equal(lib.name, '@vibeconferencing/calls');
   assert.equal(lib.license, 'MIT');

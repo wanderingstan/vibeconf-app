@@ -11,6 +11,9 @@ importers:
 
   .:
     dependencies:
+      '@vibeconferencing/calls':
+        specifier: link:../packages/calls
+        version: link:../packages/calls
       electron-store:
         specifier: ^8.1.0
         version: 8.2.0
@@ -24,9 +27,6 @@ importers:
         specifier: 2.2.1
         version: 2.2.1
     devDependencies:
-      '@vibeconferencing/calls':
-        specifier: link:../packages/calls
-        version: link:../packages/calls
       electron:
         specifier: ^33.0.0
         version: 33.4.11

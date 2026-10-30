@@ -69,8 +69,8 @@ test('joining needs the bot signed in to WhatsApp, and a link room is joinable',
   const body = fn.slice(0, fn.indexOf('\n}\n'));
   assert.match(body, /\.whatsapp\)\) \{/);
   assert.match(body, /activateCallingAppStandby\('whatsapp', 'call link', \{ startUrl: canonical \}\)/);
-  assert.match(main, /\['join-detected-whatsapp', \(url\) => activateWhatsAppCallLink\(url\), 'WhatsApp'\]/);
-  assert.match(main, /whatsapp: \(u\) => activateWhatsAppCallLink\(u\)/);
+  assert.match(main, /\['join-detected-whatsapp', 'whatsapp', 'WhatsApp'\]/);
+  assert.match(main, /case 'whatsapp': return activateWhatsAppCallLink\(t\.url\);/);
   const preload = readFileSync(join(root, 'electron-app/preload-whatsapp.js'), 'utf8');
   assert.match(preload, /whatsappCall\.findJoinCallButton\(document\)/);
 });

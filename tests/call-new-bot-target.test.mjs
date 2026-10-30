@@ -286,7 +286,7 @@ test('a fresh Meet is made by the instance that got the request, not the brand-n
 test('the new instance joins at launch with its agent, via the shared join paths', () => {
   assert.match(main, /if \(cliArgs\['join-url'\]\) \{\s*\n\s*joinSummonedCall\(/);
   const helper = main.slice(main.indexOf('function joinSummonedCall'), main.indexOf('async function websiteRequest'));
-  assert.match(helper, /joinMeetUrl\(t\.url, \{ summoned \}\)/);
+  assert.match(helper, /joinUrl\(t\.url, \{ summoned \}\)/);
   assert.match(helper, /launchClaudeTerminal\(room, \{ summoned \}\)/);
 });
 

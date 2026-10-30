@@ -2239,21 +2239,20 @@ const localServer = new globalThis.LocalServer({
     // already the driver. activateSlackProvider → setupSlackRoom sets
     // localServer.roomId to slack-<team>-<channel>.
     console.log('[local-server] Join Slack huddle requested by agent:', url);
-    activateSlackProvider(url, { autojoin: true });
-    return localServer.roomId || null;
+    return joinUrl(url, { platform: 'slack' });
   },
   onJoinTeams: (url) => {
     console.log('[local-server] Join Teams meeting requested by agent:', url);
-    return activateTeamsProvider(url);
+    return joinUrl(url, { platform: 'teams' });
   },
   onJoinWhatsApp: (url) => {
     console.log('[local-server] Join WhatsApp call link requested by agent:', url);
-    return activateWhatsAppCallLink(url);
+    return joinUrl(url, { platform: 'whatsapp' });
   },
   onJoinZoom: (url) => {
     // Programmatic Zoom join (#318), the Zoom analog of onJoinSlack.
     console.log('[local-server] Join Zoom meeting requested by agent:', url);
-    return activateZoomProvider(url);
+    return joinUrl(url, { platform: 'zoom' });
   },
   // The agent has finished its after-call work. Ends the phase now instead of
   // waiting out the backstop.
@@ -2521,9 +2520,7 @@ const localServer = new globalThis.LocalServer({
   // the room), then the agent, when a person asked.
   onJoinLink: ({ provider, url, spawnAgent }) => {
     console.log('[local-server] Add to ' + provider + ' call requested:', url);
-    const room = provider === 'slack'
-      ? (activateSlackProvider(url, { autojoin: true }), localServer.roomId || null)
-      : ({ zoom: activateZoomProvider, teams: activateTeamsProvider, whatsapp: activateWhatsAppCallLink }[provider] || (() => null))(url);
+    const room = provider === 'meet' ? null : joinUrl(url, { platform: provider }); // Meet comes in via onJoinMeet
     if (!room) return { ok: false, code: 'bad-url', detail: 'not a joinable ' + provider + ' link' };
     if (spawnAgent) launchClaudeTerminal(room);
     return { ok: true, roomId: room };
@@ -5514,6 +5511,28 @@ function scanBrowserMeetUrls({ timeoutMs = 8000 } = {}) {
   });
 }
 
+// The one place a call link becomes a join (Phase 1 of the calls library).
+// platformFromUrl reads the link; this runs that platform's join. Every entry
+// point goes through here: the agent's join actions, the panel's pasted links,
+// the supervisor's "Add", calendar auto-join and /call-new-bot. Returns the room
+// the bot is joining, or null when the link isn't one it can join. `platform`,
+// when given, is what the caller expects: a link for any other one is refused,
+// never joined as something else. Meet goes through joinMeetUrl (options passed
+// on); the rest switch provider, which joins and registers the room.
+function joinUrl(url, { platform = null, ...meetOpts } = {}) {
+  const { platformFromUrl } = require('./call-target');
+  const t = platformFromUrl(url);
+  if (!t.ok || (platform && t.provider !== platform)) return null;
+  switch (t.provider) {
+    case 'meet': joinMeetUrl(t.url, meetOpts); return t.roomId;
+    case 'slack': activateSlackProvider(t.url, { autojoin: true }); return localServer.roomId || null; // setupSlackRoom sets it
+    case 'zoom': return activateZoomProvider(t.url);
+    case 'teams': return activateTeamsProvider(t.url);
+    case 'whatsapp': return activateWhatsAppCallLink(t.url);
+    default: return null;
+  }
+}
+
 // Join a call at launch because /call-new-bot asked for it (--join-url, plus
 // --summoned=true when the call was already in progress). Same paths the
 // panel's own join buttons take, agent included: this instance was just
@@ -5523,18 +5542,12 @@ function scanBrowserMeetUrls({ timeoutMs = 8000 } = {}) {
 function joinSummonedCall({ url = null, summoned = false } = {}) {
   try {
     if (!url) return;
-    const { parseCallTarget } = require('./new-bot-target.js');
-    const t = parseCallTarget(url);
+    const { platformFromUrl } = require('./call-target');
+    const t = platformFromUrl(url);
     if (!t.ok) { console.warn('[call-new-bot]', t.error); return; }
     console.log(`[call-new-bot] joining ${t.provider} call${summoned ? ' already in progress' : ''}`);
-    if (t.provider === 'meet') {
-      joinMeetUrl(t.url, { summoned });
-      return;
-    }
-    const activate = { slack: (u) => { activateSlackProvider(u, { autojoin: true }); return localServer.roomId; },
-      zoom: (u) => activateZoomProvider(u), teams: (u) => activateTeamsProvider(u),
-      whatsapp: (u) => activateWhatsAppCallLink(u) }[t.provider];
-    const room = activate && activate(t.url);
+    const room = joinUrl(t.url, { summoned });
+    if (t.provider === 'meet') return; // joinMeetUrl starts the agent itself
     if (room) launchClaudeTerminal(room, { summoned });
     else console.warn('[call-new-bot] not a joinable', t.provider, 'link; skipping');
   } catch (err) {
@@ -9989,9 +10002,7 @@ app.whenReady().then(async () => {
     // the zoom-/teams- room, then start the agent on that room. The calendar
     // context is set AFTER the provider registers its room, because setting the
     // room resets it; joinMeetUrl does the same for Meet.
-    const room = link.provider === 'zoom' ? activateZoomProvider(meetUrl)
-      : link.provider === 'whatsapp' ? activateWhatsAppCallLink(meetUrl)
-      : activateTeamsProvider(meetUrl);
+    const room = joinUrl(meetUrl, { platform: link.provider });
     if (!room) {
       console.warn(`[calendar] Could not start the ${link.provider} join for "${event.summary || event.id}" (${meetUrl})`);
       return;
@@ -10352,14 +10363,14 @@ app.whenReady().then(async () => {
   ipcMain.on('join-detected-slack', (_event, { url }) => {
     if (!url) return;
     console.log('[electron] Join detected Slack huddle:', url);
-    activateSlackProvider(url, { autojoin: true });
+    const room = joinUrl(url, { platform: 'slack' });
     // Spawn the Claude terminal with the MCP wired — same as Meet — so the agent
     // can drive the conversation loop. activateSlackProvider → setupSlackRoom has
     // already set localServer.roomId to the slack-<team>-<channel> code; pass it
     // as the /join-call code. The bot is auto-joining the huddle, and onJoinCall
     // skips Meet navigation for slack- codes, so /join-call just starts the loop.
-    if (localServer.roomId) {
-      launchClaudeTerminal(localServer.roomId);
+    if (room) {
+      launchClaudeTerminal(room);
     } else {
       console.warn('[electron] join-detected-slack: no room id; skipping Claude terminal launch');
     }
@@ -10369,15 +10380,15 @@ app.whenReady().then(async () => {
   // handler: switch provider (which joins and sets the zoom-/teams- room id),
   // then start the agent on that room; onJoinCall skips Meet navigation for
   // those codes, so /join-call just starts the conversation loop.
-  for (const [channel, activate, label] of [
-    ['join-detected-zoom', (url) => activateZoomProvider(url), 'Zoom'],
-    ['join-detected-teams', (url) => activateTeamsProvider(url), 'Teams'],
-    ['join-detected-whatsapp', (url) => activateWhatsAppCallLink(url), 'WhatsApp'],
+  for (const [channel, platform, label] of [
+    ['join-detected-zoom', 'zoom', 'Zoom'],
+    ['join-detected-teams', 'teams', 'Teams'],
+    ['join-detected-whatsapp', 'whatsapp', 'WhatsApp'],
   ]) {
     ipcMain.on(channel, (_event, { url } = {}) => {
       if (!url) return;
       console.log('[electron] Join pasted ' + label + ' link:', url);
-      const room = activate(url);
+      const room = joinUrl(url, { platform });
       if (room) launchClaudeTerminal(room);
       else console.warn('[electron] ' + channel + ': not a joinable ' + label + ' link; skipping');
     });

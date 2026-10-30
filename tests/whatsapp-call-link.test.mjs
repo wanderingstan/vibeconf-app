@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const wa = require('../electron-app/whatsapp-call.js');
+const wa = require('../packages/calls/providers/whatsapp-call.js');
 const { findCallLink } = require('../electron-app/renderer/call-link.js');
 const { parseCallTarget } = require('../electron-app/new-bot-target.js');
 

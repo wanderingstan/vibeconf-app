@@ -94,10 +94,10 @@ test('the bot own speech never reaches updateTurns, so it cannot trigger its own
   // only ever sees OTHER participants' speech. If that filter ever moved,
   // this feature would start reacting to the bot saying its own name.
   const provider = fs.readFileSync(
-    path.join(__dirname, '../electron-app/google-meet-provider.js'), 'utf-8');
+    path.join(__dirname, '../packages/calls/providers/google-meet-provider.js'), 'utf-8');
   assert.match(provider, /speaker === MEET\.captions\.selfSpeaker/);
   const selectors = fs.readFileSync(
-    path.join(__dirname, '../electron-app/meet-selectors.js'), 'utf-8');
+    path.join(__dirname, '../packages/calls/providers/meet-selectors.js'), 'utf-8');
   assert.match(selectors, /selfSpeaker: 'You'/);
 });
 

@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const tg = require('../electron-app/telegram-call.js');
+const tg = require('../packages/calls/providers/telegram-call.js');
 
 // --- A small fake DOM: enough for tag / .class / [attr] selectors. ---------
 function el(tag, { cls = '', attrs = {}, text = '' } = {}, children = []) {

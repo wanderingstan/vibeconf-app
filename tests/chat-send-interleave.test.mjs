@@ -23,9 +23,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const provider = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
+const provider = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
-const callClient = readFileSync(join(root, 'electron-app/call-client.js'), 'utf8');
+const callClient = readFileSync(join(root, 'packages/calls/core/call-client.js'), 'utf8');
 
 // --- 1. sends are serialized ------------------------------------------------
 
@@ -68,7 +68,7 @@ test('the chat round-trip exposes its timeout error as a named constant callers 
   assert.match(callClient, /const CHAT_TIMEOUT_ERROR = 'Chat operation timed out'/);
   assert.match(callClient, /timeoutError: CHAT_TIMEOUT_ERROR/,
     'the timeout path must resolve with the shared constant, not a string literal');
-  assert.match(main, /const \{ CallClient, CHAT_TIMEOUT_ERROR \} = require\('\.\/call-client\.js'\)/,
+  assert.match(main, /const \{ CallClient, CHAT_TIMEOUT_ERROR \} = require\('@vibeconferencing\/calls\/core\/call-client\.js'\)/,
     'main must test against the same constant the client resolves with');
 });
 

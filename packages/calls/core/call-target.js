@@ -41,9 +41,9 @@ function platformFromUrl(raw) {
   const zoom = ZOOM_HOST.test(s) && s.match(ZOOM_MEETING);
   if (zoom) return { ok: true, provider: 'zoom', roomId: `zoom-${zoom[1]}`, url: s };
   if (TEAMS_URL.test(s)) return { ok: true, provider: 'teams', roomId: null, url: s };
-  const waLink = require('./whatsapp-call').parseCallLink(s);
+  const waLink = require('../providers/whatsapp-call').parseCallLink(s);
   if (waLink) {
-    const { roomCodeForLink } = require('./whatsapp-call');
+    const { roomCodeForLink } = require('../providers/whatsapp-call');
     return { ok: true, provider: 'whatsapp', roomId: roomCodeForLink(waLink.token), url: `https://call.whatsapp.com/${waLink.kind}/${waLink.token}` };
   }
 
@@ -70,12 +70,12 @@ function roomIdToJoinUrl(roomId) {
 // uses when it activates the provider (registerProviderRoom), so a link and the
 // room it produced compare equal. Null for anything else.
 function providerRoomIdForUrl(url) {
-  const { TEAMS } = require('./teams-selectors');
-  const { ZOOM } = require('./zoom-selectors');
+  const { TEAMS } = require('../providers/teams-selectors');
+  const { ZOOM } = require('../providers/zoom-selectors');
   const s = String(url || '');
   if (TEAMS_URL.test(s)) return TEAMS.roomCodeFromUrl(s);
   if (ZOOM_HOST.test(s)) return ZOOM.roomCodeFromUrl(s);
-  const wa = require('./whatsapp-call');
+  const wa = require('../providers/whatsapp-call');
   const waLink = wa.parseCallLink(s);
   if (waLink) return wa.roomCodeForLink(waLink.token);
   return null;

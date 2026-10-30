@@ -35,7 +35,7 @@ const require = createRequire(import.meta.url);
 // (it predates being importable) — same contract as room-adoption.test.mjs.
 require('../electron-app/local-server.js');
 const LocalServer = globalThis.LocalServer;
-const { shouldIgnoreRejoin } = require('../electron-app/rejoin-guard.js');
+const { shouldIgnoreRejoin } = require('../packages/calls/core/rejoin-guard.js');
 
 const ROOM = 'abc-defg-hij';
 const fresh = () => new LocalServer({ port: 0 });

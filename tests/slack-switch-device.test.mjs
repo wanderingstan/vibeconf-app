@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const src = readFileSync(new URL('../electron-app/slack-surface.js', import.meta.url), 'utf8');
+const src = readFileSync(new URL('../packages/calls/hosts/electron/slack-surface.js', import.meta.url), 'utf8');
 const clicks = (target) =>
   new RegExp(`clickButtonByTextRepeating\\(${target}, 'Switch to this device'`).test(src);
 
@@ -28,6 +28,6 @@ test('main view: clicks "Switch to this device" on every page load', () => {
 // minute in a hidden view. Both Slack surfaces are hidden on a bot, so both opt
 // out, as Meet's view does (#424).
 test('neither Slack surface is background-throttled', () => {
-  assert.match(src, /preload-slack-main\.js'[\s\S]{0,400}backgroundThrottling: false/);
-  assert.match(src, /preload-slack-huddle\.js'[^}]*backgroundThrottling: false/);
+  assert.match(src, /preload: mainPreload,[\s\S]{0,400}backgroundThrottling: false/);
+  assert.match(src, /preload: huddlePreload,[^}]*backgroundThrottling: false/);
 });

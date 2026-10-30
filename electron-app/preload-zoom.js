@@ -20,14 +20,14 @@
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const { ZoomProvider } = require('./zoom-provider');
-const { ZoomCaptionTracker } = require('./zoom-captions');
-const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider');
-const { ZOOM } = require('./zoom-selectors');
+const { ZoomProvider } = require('@vibeconferencing/calls/providers/zoom-provider');
+const { ZoomCaptionTracker } = require('@vibeconferencing/calls/hearing/zoom-captions');
+const { CALL_EVENTS, CALL_COMMANDS } = require('@vibeconferencing/calls/core/call-provider');
+const { ZOOM } = require('@vibeconferencing/calls/providers/zoom-selectors');
 
 // Match navigator.userAgentData to the spoofed Chrome UA (zoom-surface sets the
 // UA string) before Zoom's scripts run, so its browser check sees Chrome.
-require('./slack-ua').installClientHintsShim();
+require('@vibeconferencing/calls/hosts/electron/slack-ua').installClientHintsShim();
 
 (function installTimestampedConsole() {
   const _ts = () => {
@@ -46,10 +46,10 @@ require('./slack-ua').installClientHintsShim();
 
 // Recon (#814): log where Zoom's call audio lives. Off unless
 // VIBECONF_AUDIO_PROBE=1. Installed before page-inject and Zoom's scripts.
-if (process.env.VIBECONF_AUDIO_PROBE === '1') require('./audio-probe').installAudioProbe('[zoom]');
+if (process.env.VIBECONF_AUDIO_PROBE === '1') require('@vibeconferencing/calls/core/audio-probe').installAudioProbe('[zoom]');
 // Research (dom-probe.js): --dom-probe=1 watches participant rows and video
 // tiles, where Zoom's speaking indicator is still unverified. Off by default.
-require('./dom-probe').installDomProbe({ tag: '[zoom]', defaultSelector: '.participants-li, .video-avatar__avatar, .speaker-active-container__wrap' });
+require('@vibeconferencing/calls/core/dom-probe').installDomProbe({ tag: '[zoom]', defaultSelector: '.participants-li, .video-avatar__avatar, .speaker-active-container__wrap' });
 
 // The RTCPeerConnection audio-capture hook is Meet-shaped and unused here (we
 // don't read call audio); keep the getUserMedia virtual mic + play-tts path.
@@ -66,9 +66,9 @@ window.__vibeconf_getScreenShareSource = async function () {
 
 // Call recording: start/stop the page recorder and carry its tracks to main
 // (#814). Without this a Zoom recording was silent video.
-require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[zoom]' });
+require('@vibeconferencing/calls/recording/preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[zoom]' });
 // Speech-to-text tap → main, for hearing calls by transcribing their audio (#850).
-require('./preload-stt-bridge').installSttBridge(ipcRenderer);
+require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
 const provider = new ZoomProvider();
 try { window.zoomProvider = provider; window.ZOOM = ZOOM; } catch { /* window not ready */ }

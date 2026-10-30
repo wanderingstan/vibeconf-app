@@ -22,7 +22,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const server = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
 const local = readFileSync(join(root, 'electron-app/local-server.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
-const provider = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
+const provider = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
 
 test('#199: speech queued until in-call is reported as queued, not spoken', () => {
   // The app queues because the virtual mic is not connected to the other

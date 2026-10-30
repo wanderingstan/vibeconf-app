@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { probeConfig, diffSnapshots, installDomProbe } = require('../electron-app/dom-probe.js');
+const { probeConfig, diffSnapshots, installDomProbe } = require('../packages/calls/core/dom-probe.js');
 
 test('probeConfig: off unless asked; "1" means the provider default; anything else is a selector', () => {
   assert.equal(probeConfig({}, '.tile'), null);

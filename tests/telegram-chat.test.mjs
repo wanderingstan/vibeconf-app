@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const tg = require('../electron-app/telegram-call.js');
+const tg = require('../packages/calls/providers/telegram-call.js');
 
 // A minimal element: classes, children, innerText, cloneNode, remove.
 function el(cls = '', { id = null, text = '' } = {}, children = []) {
@@ -59,14 +59,14 @@ test('a chat counts as open only when it is that caller\'s (by id in the address
 test('Telegram calls carry no camera: as the answering side it can never reach the caller (#889)', () => {
   // The call commands are TelegramProvider's now (Phase 1 step 4).
   const preload = readFileSync(join(root, 'electron-app/preload-telegram.js'), 'utf8');
-  const provider = readFileSync(join(root, 'electron-app/telegram-provider.js'), 'utf8');
+  const provider = readFileSync(join(root, 'packages/calls/providers/telegram-provider.js'), 'utf8');
   for (const src of [preload, provider]) assert.doesNotMatch(src, /findCallButton\(document, 'start video'\)/, 'no camera presses');
   assert.doesNotMatch(preload, /setCameraOn/);
   assert.match(provider, /async setCameraOn\(\) \{ return false; \}/);
 });
 
 test('page-inject honours a screen request that refuses audio (Telegram takes the first track)', () => {
-  const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+  const inject = readFileSync(join(root, 'packages/calls/inject/page-inject.js'), 'utf8');
   assert.match(inject, /const refusesAudio = constraints\?\.audio === false;/);
   assert.match(inject, /audio: !refusesAudio/);
   assert.match(inject, /if \(inElectron && !refusesAudio\) installShareAudioGain\(stream\);/);
@@ -84,7 +84,7 @@ test('a request for a calling-app room that isn\'t the current call is refused, 
 
 test('the preload reads and sends only after checking the open chat is the caller\'s', () => {
   // TelegramProvider does the reading and sending now (Phase 1 step 4).
-  const provider = readFileSync(join(root, 'electron-app/telegram-provider.js'), 'utf8');
+  const provider = readFileSync(join(root, 'packages/calls/providers/telegram-provider.js'), 'utf8');
   const read = provider.slice(provider.indexOf('async readChat()'));
   const body = read.slice(0, read.indexOf('\n  }\n'));
   assert.match(body, /state !== 'in-call'/);

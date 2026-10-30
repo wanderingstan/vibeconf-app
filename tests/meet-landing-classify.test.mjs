@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { MEET } = require('../electron-app/meet-selectors.js');
+const { MEET } = require('../packages/calls/providers/meet-selectors.js');
 
 // Classify from a URL string the way the preload does, so each case reads as
 // the address bar the bot would actually be sitting on.

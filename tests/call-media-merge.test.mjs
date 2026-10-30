@@ -33,7 +33,7 @@ const {
   DEFAULT_CROP_MARGINS,
   cropExprFromMargins,
   probeVideoStream,
-} = require('../electron-app/call-media-merge.js');
+} = require('../packages/calls/recording/call-media-merge.js');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'call-media-merge-'));
@@ -290,7 +290,7 @@ test('a VP9 input is always re-encoded to h264, never a raw VP9 copy — video-o
 // not the flag is present. A runtime test here passes for the wrong reason,
 // which is worse than no test. (Checked: it passes with the flag removed.)
 test('the video encode passes through real timestamps rather than materialising a declared frame rate', () => {
-  const src = fs.readFileSync(new URL('../electron-app/call-media-merge.js', import.meta.url), 'utf8');
+  const src = fs.readFileSync(new URL('../packages/calls/recording/call-media-merge.js', import.meta.url), 'utf8');
   const m = src.match(/const VIDEO_ENCODE_ARGS = \[([\s\S]*?)\];/);
   assert.ok(m, 'expected a VIDEO_ENCODE_ARGS array');
   assert.match(m[1], /'-fps_mode',\s*'passthrough'/);
@@ -838,7 +838,7 @@ test('aborting mid-flight on the copy path leaves no output file', { skip: !HAVE
 // On Teams and Zoom the video track starts ~1.6–2s after the audio tracks, and
 // muxing every track at t=0 made audio lag video by exactly that gap.
 
-const { audioAlignmentMs, audioFilter } = require('../electron-app/call-media-merge.js');
+const { audioAlignmentMs, audioFilter } = require('../packages/calls/recording/call-media-merge.js');
 
 test('audioAlignmentMs: each audio track\'s start minus the video\'s; tiny or unknown gaps are 0', () => {
   const video = { startWallClock: 10_000 };

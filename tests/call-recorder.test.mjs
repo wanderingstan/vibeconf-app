@@ -17,7 +17,7 @@ const {
   CallRecordingSession,
   MAX_TRACK_BYTES_BY_KIND,
   CAP_WARN_RATIO,
-} = require('../electron-app/call-recorder.js');
+} = require('../packages/calls/recording/call-recorder.js');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'call-rec-'));
@@ -219,7 +219,7 @@ test('a near-cap warning fires exactly once, before the track actually caps', ()
 
 test('the recording canvas is 16:9 by construction, not whatever the first crop sampled', async () => {
   const { readFileSync } = await import('node:fs');
-  const src = readFileSync(new URL('../electron-app/renderer/call-recording-window.js', import.meta.url), 'utf8');
+  const src = readFileSync(new URL('../packages/calls/hosts/electron/call-recording-window-renderer.js', import.meta.url), 'utf8');
   // Was `even(sw * first.w) x even(sh * first.h)`: one sample 1.5s in decided
   // the file's aspect for the whole call, so the same room recorded at 1.89,
   // 1.97, 2.01 and 2.72:1 on different days.
@@ -249,7 +249,7 @@ test('the frame-sized canvas gives exact, round output at every view size', () =
 
 test('the capture box matches the largest view, so a 1080p region is not silently downscaled', async () => {
   const { readFileSync } = await import('node:fs');
-  const src = readFileSync(new URL('../electron-app/renderer/call-recording-window.js', import.meta.url), 'utf8');
+  const src = readFileSync(new URL('../packages/calls/hosts/electron/call-recording-window-renderer.js', import.meta.url), 'utf8');
   const L = require('../electron-app/bot-view-layout.js');
   const biggest = Object.values(L.MEET_VIEW_SIZES).reduce((a, b) => (a.width * a.height > b.width * b.height ? a : b));
   const w = /width: \{ ideal: (\d+) \}/.exec(src);

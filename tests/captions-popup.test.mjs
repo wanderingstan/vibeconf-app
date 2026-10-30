@@ -17,8 +17,8 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { MEET } = require('../electron-app/meet-selectors.js');
-const src = readFileSync(new URL('../electron-app/google-meet-provider.js', import.meta.url), 'utf8');
+const { MEET } = require('../packages/calls/providers/meet-selectors.js');
+const src = readFileSync(new URL('../packages/calls/providers/google-meet-provider.js', import.meta.url), 'utf8');
 const START = src.indexOf("// ── Captions: Meet's old toggle and its new pop-up");
 const END = src.indexOf('// The last-resort aria-label match for the JOIN button.');
 assert.ok(START > 0 && END > START, 'could not slice the caption helpers');

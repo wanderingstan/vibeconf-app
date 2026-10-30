@@ -9,7 +9,7 @@ import { createRequire } from 'module';
 
 // slack-selectors.js is CommonJS; load it from this ESM test.
 const require = createRequire(import.meta.url);
-const { SLACK } = require('../electron-app/slack-selectors.js');
+const { SLACK } = require('../packages/calls/providers/slack-selectors.js');
 
 test('roomCodeFor: team+channel → lowercased slack-<team>-<channel> slug', () => {
   assert.equal(SLACK.roomCodeFor('T0BCX7N0RA6', 'C0BCZ4E3Q49'), 'slack-t0bcx7n0ra6-c0bcz4e3q49');

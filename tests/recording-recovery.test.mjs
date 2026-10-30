@@ -27,7 +27,7 @@ const {
   CallRecordingSession,
   MANIFEST_REFRESH_MS,
   RECOVERY_NOTE,
-} = require('../electron-app/call-recorder.js');
+} = require('../packages/calls/recording/call-recorder.js');
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const main = fs.readFileSync(join(root, 'electron-app/main.js'), 'utf8');

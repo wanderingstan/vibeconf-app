@@ -5,14 +5,17 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const app = join(root, 'electron-app');
-const read = (f) => readFileSync(join(app, f), 'utf8');
+// The app's files, or the calls library's (packages/calls) by the same name.
+const LIB = ['core', 'providers', 'inject', 'hearing', 'recording'].map((d) => join(root, 'packages', 'calls', d));
+const at = (f) => [app, ...LIB].map((d) => join(d, f)).find((p) => existsSync(p)) || join(app, f);
+const read = (f) => readFileSync(at(f), 'utf8');
 const require = createRequire(import.meta.url);
 
 test('every preload that runs page-inject installs the STT bridge', () => {
@@ -28,8 +31,8 @@ test('every preload that runs page-inject installs the STT bridge', () => {
 });
 
 test('one channel name on both sides of the IPC', () => {
-  const { STT_AUDIO_CHANNEL: bridge } = require(join(app, 'preload-stt-bridge.js'));
-  const { STT_AUDIO_CHANNEL: source } = require(join(app, 'caption-source.js'));
+  const { STT_AUDIO_CHANNEL: bridge } = require(at('preload-stt-bridge.js'));
+  const { STT_AUDIO_CHANNEL: source } = require(at('caption-source.js'));
   assert.equal(bridge, source);
 });
 
@@ -41,7 +44,7 @@ test("the page tap answers main's start/stop and posts what the bridge forwards"
   const main = read('main.js');
   assert.match(main, /startTap: \(\) => callClient\.startAudioTap\(\)/);
   assert.match(main, /stopTap: \(\) => callClient\.stopAudioTap\(\)/);
-  const { CALL_COMMANDS } = require(join(app, 'call-provider.js'));
+  const { CALL_COMMANDS } = require(at('call-provider.js'));
   assert.equal(CALL_COMMANDS.ACTIONS.startSttTap, 'start-stt-tap');
   assert.equal(CALL_COMMANDS.ACTIONS.stopSttTap, 'stop-stt-tap');
 });

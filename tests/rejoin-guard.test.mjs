@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { shouldIgnoreRejoin } = require('../electron-app/rejoin-guard.js');
+const { shouldIgnoreRejoin } = require('../packages/calls/core/rejoin-guard.js');
 
 const ROOM = 'abc-defg-hij';
 

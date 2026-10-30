@@ -12,9 +12,9 @@ import { createRequire } from 'node:module';
 import { readFileSync } from 'node:fs';
 
 const require = createRequire(import.meta.url);
-const selectors = require('../electron-app/meet-selectors.js');
+const selectors = require('../packages/calls/providers/meet-selectors.js');
 const MEET = selectors.MEET || selectors;
-const PROVIDER = readFileSync(new URL('../electron-app/google-meet-provider.js', import.meta.url), 'utf8');
+const PROVIDER = readFileSync(new URL('../packages/calls/providers/google-meet-provider.js', import.meta.url), 'utf8');
 
 test('the self-view selectors are text/ARIA based, never minified classes', () => {
   const SV = MEET.selfView;

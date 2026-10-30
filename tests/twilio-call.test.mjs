@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const tw = require('../electron-app/twilio-call.js');
+const tw = require('../packages/calls/providers/twilio-call.js');
 
 const AC = 'AC' + 'a'.repeat(32);
 const SK = 'SK' + 'b'.repeat(32);

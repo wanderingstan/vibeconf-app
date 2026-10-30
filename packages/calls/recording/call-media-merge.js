@@ -218,7 +218,13 @@ const STDERR_TAIL_BYTES = 8192;
 //      again in the future without silently losing the ability to merge.
 // mergeCallMedia goes through this one resolver so there is exactly one place
 // that knows how to find ffmpeg.
-function resolveFfmpegPath({ execSyncFn = execSync, requireFn = require, existsSyncFn = fs.existsSync } = {}) {
+// ffmpeg-static is the host app's dependency, not the library's: the app passes
+// its own require (useHostRequire) so the lookup starts from its node_modules.
+// The library's own require is the fallback, which finds it in a packaged app.
+let hostRequire = require;
+function useHostRequire(requireFn) { hostRequire = requireFn; _ffmpegPath = undefined; }
+
+function resolveFfmpegPath({ execSyncFn = execSync, requireFn = hostRequire, existsSyncFn = fs.existsSync } = {}) {
   if (_ffmpegPath !== undefined) return _ffmpegPath;
 
   try {
@@ -611,6 +617,7 @@ module.exports = {
   mergeCallMedia,
   ffmpegAvailable,
   resolveFfmpegPath,
+  useHostRequire,
   probeVideoStream,
   _resetFfmpegAvailabilityCache,
   DEFAULT_CROP_MARGINS,

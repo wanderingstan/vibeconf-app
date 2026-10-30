@@ -25,7 +25,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const src = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
+const src = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
 
 // Pull one top-level function out by name: from its declaration up to the next
 // line that closes a top-level block.

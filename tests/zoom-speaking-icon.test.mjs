@@ -10,8 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { ZOOM } = require('../electron-app/zoom-selectors.js');
-const { ZoomProvider } = require('../electron-app/zoom-provider.js');
+const { ZOOM } = require('../packages/calls/providers/zoom-selectors.js');
+const { ZoomProvider } = require('../packages/calls/providers/zoom-provider.js');
 
 // Fake participants pane: one .participants-li per person, aria-label in Zoom's
 // real format, and the speaking icon present or not.

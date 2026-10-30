@@ -18,8 +18,8 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { CallClient, CHAT_TIMEOUT_ERROR, NO_CALL_VIEW_ERROR } = require('../electron-app/call-client.js');
-const { CallProvider, CALL_COMMANDS, CALL_EVENTS } = require('../electron-app/call-provider.js');
+const { CallClient, CHAT_TIMEOUT_ERROR, NO_CALL_VIEW_ERROR } = require('../packages/calls/core/call-client.js');
+const { CallProvider, CALL_COMMANDS, CALL_EVENTS } = require('../packages/calls/core/call-provider.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
 // Two fake surfaces, like Slack mode: popup-only names go to `popup`.

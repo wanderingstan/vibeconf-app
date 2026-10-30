@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
-const { TEAMS } = require('../electron-app/teams-selectors.js');
+const { TEAMS } = require('../packages/calls/providers/teams-selectors.js');
 
 const PERSONAL = 'https://teams.live.com/meet/9356141248380?p=BCVZW8Nwpa0dZ6Vzr7'; // verified live
 const WORK_MEET = 'https://teams.microsoft.com/meet/27389117658431?p=AbCdEf123';

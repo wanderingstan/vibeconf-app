@@ -25,8 +25,8 @@ const LocalServer = globalThis.LocalServer;
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const server = readFileSync(join(root, 'mcp-server/server.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
-const pageInject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
-const provider = readFileSync(join(root, 'electron-app/google-meet-provider.js'), 'utf8');
+const pageInject = readFileSync(join(root, 'packages/calls/inject/page-inject.js'), 'utf8');
+const provider = readFileSync(join(root, 'packages/calls/providers/google-meet-provider.js'), 'utf8');
 
 // --- splitAtWordFraction --------------------------------------------------
 

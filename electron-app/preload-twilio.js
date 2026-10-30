@@ -13,10 +13,10 @@
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const twilioCall = require('./twilio-call');
-const { CALL_EVENTS } = require('./call-provider');
-const { TwilioProvider } = require('./twilio-provider');
-const { bindToIpc } = require('./calling-app-provider');
+const twilioCall = require('@vibeconferencing/calls/providers/twilio-call');
+const { CALL_EVENTS } = require('@vibeconferencing/calls/core/call-provider');
+const { TwilioProvider } = require('@vibeconferencing/calls/providers/twilio-provider');
+const { bindToIpc } = require('@vibeconferencing/calls/core/calling-app-provider');
 
 (function installTimestampedConsole() {
   const _ts = () => {
@@ -33,14 +33,14 @@ const { bindToIpc } = require('./calling-app-provider');
   console.error = wrap(console.error.bind(console));
 })();
 
-require('./dom-probe').installDomProbe({ tag: '[twilio]', defaultSelector: '#status' });
+require('@vibeconferencing/calls/core/dom-probe').installDomProbe({ tag: '[twilio]', defaultSelector: '#status' });
 
 // The media scripts (page-inject's core, then the app's avatar and realtime
 // voice plugins), before any page script can ask for media. page-scripts.js.
 require('./page-scripts').injectPageScripts({ tag: '[twilio]' });
 
-require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[twilio]' });
-require('./preload-stt-bridge').installSttBridge(ipcRenderer);
+require('@vibeconferencing/calls/recording/preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[twilio]' });
+require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
 function emit(channel, payload) {
   try {

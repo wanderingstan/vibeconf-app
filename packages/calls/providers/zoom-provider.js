@@ -22,7 +22,7 @@
 // Pure-ish: requires only the contract + selectors. Browser globals resolve at
 // run time in the page (contextIsolation:false).
 
-const { CallProvider } = require('./call-provider');
+const { CallProvider } = require('../core/call-provider');
 const { ZOOM } = require('./zoom-selectors');
 
 function delay(ms) { return new Promise((r) => setTimeout(r, ms)); }

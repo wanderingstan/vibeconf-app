@@ -25,12 +25,12 @@
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const whatsappCall = require('./whatsapp-call');
-const { CALL_EVENTS } = require('./call-provider');
-const { WhatsAppProvider } = require('./whatsapp-provider');
-const { bindToIpc } = require('./calling-app-provider');
+const whatsappCall = require('@vibeconferencing/calls/providers/whatsapp-call');
+const { CALL_EVENTS } = require('@vibeconferencing/calls/core/call-provider');
+const { WhatsAppProvider } = require('@vibeconferencing/calls/providers/whatsapp-provider');
+const { bindToIpc } = require('@vibeconferencing/calls/core/calling-app-provider');
 
-require('./slack-ua').installClientHintsShim();
+require('@vibeconferencing/calls/hosts/electron/slack-ua').installClientHintsShim();
 
 (function installTimestampedConsole() {
   const _ts = () => {
@@ -47,7 +47,7 @@ require('./slack-ua').installClientHintsShim();
   console.error = wrap(console.error.bind(console));
 })();
 
-require('./dom-probe').installDomProbe({ tag: '[whatsapp]', defaultSelector: '[aria-label="End call"]' });
+require('@vibeconferencing/calls/core/dom-probe').installDomProbe({ tag: '[whatsapp]', defaultSelector: '[aria-label="End call"]' });
 
 window.__vibeconf_disableAudioCapture = true;
 
@@ -59,8 +59,8 @@ window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');
 };
 
-require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[whatsapp]' });
-require('./preload-stt-bridge').installSttBridge(ipcRenderer);
+require('@vibeconferencing/calls/recording/preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[whatsapp]' });
+require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
 try { window.whatsappCall = whatsappCall; } catch { /* window not ready */ }
 

@@ -19,14 +19,14 @@
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const telegramCall = require('./telegram-call');
-const { CALL_EVENTS } = require('./call-provider');
-const { TelegramProvider } = require('./telegram-provider');
-const { bindToIpc } = require('./calling-app-provider');
+const telegramCall = require('@vibeconferencing/calls/providers/telegram-call');
+const { CALL_EVENTS } = require('@vibeconferencing/calls/core/call-provider');
+const { TelegramProvider } = require('@vibeconferencing/calls/providers/telegram-provider');
+const { bindToIpc } = require('@vibeconferencing/calls/core/calling-app-provider');
 
 // Present as current Chrome (main sets the UA string; this matches
 // navigator.userAgentData to it) before Telegram's scripts run.
-require('./slack-ua').installClientHintsShim();
+require('@vibeconferencing/calls/hosts/electron/slack-ua').installClientHintsShim();
 
 (function installTimestampedConsole() {
   const _ts = () => {
@@ -43,7 +43,7 @@ require('./slack-ua').installClientHintsShim();
   console.error = wrap(console.error.bind(console));
 })();
 
-require('./dom-probe').installDomProbe({ tag: '[telegram]', defaultSelector: '.ActiveCallHeader' });
+require('@vibeconferencing/calls/core/dom-probe').installDomProbe({ tag: '[telegram]', defaultSelector: '.ActiveCallHeader' });
 
 // The media scripts (page-inject's core, then the app's avatar and realtime
 // voice plugins), before any page script can ask for media. page-scripts.js.
@@ -53,9 +53,9 @@ window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');
 };
 
-require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[telegram]' });
+require('@vibeconferencing/calls/recording/preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[telegram]' });
 // Speech-to-text tap → main: the only way this bot hears a Telegram call.
-require('./preload-stt-bridge').installSttBridge(ipcRenderer);
+require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
 try { window.telegramCall = telegramCall; } catch { /* window not ready */ }
 

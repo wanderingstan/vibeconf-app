@@ -246,7 +246,7 @@ test('a Teams or Zoom link goes to onJoinLink with its provider, the full link, 
 });
 
 test('re-adding a bot to the Teams call it is already in is a no-op too', async () => {
-  const { TEAMS } = require('../electron-app/teams-selectors.js');
+  const { TEAMS } = require('../packages/calls/providers/teams-selectors.js');
   let called = false;
   await withBot({ onJoinLink: async () => { called = true; return { ok: true }; } }, async (bot, post) => {
     bot.setRoom(TEAMS.roomCodeFromUrl(TEAMS_LINK));

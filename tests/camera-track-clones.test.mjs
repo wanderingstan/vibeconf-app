@@ -17,7 +17,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const src = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
+const src = readFileSync(join(root, 'packages/calls/inject/page-inject.js'), 'utf8');
 
 const fnSrc = /\n {2}function handOutCameraTrack\([\s\S]*?\n {2}\}\n/.exec(src);
 assert.ok(fnSrc, 'handOutCameraTrack not found in page-inject.js');

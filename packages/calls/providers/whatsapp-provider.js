@@ -5,7 +5,7 @@
 // was sent to) has no caller and no chat. The incoming side stays in
 // preload-whatsapp.js; see calling-app-provider.js.
 
-const { CallingAppProvider } = require('./calling-app-provider');
+const { CallingAppProvider } = require('../core/calling-app-provider');
 const whatsappCall = require('./whatsapp-call');
 
 class WhatsAppProvider extends CallingAppProvider {

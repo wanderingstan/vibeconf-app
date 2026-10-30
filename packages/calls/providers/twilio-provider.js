@@ -5,7 +5,7 @@
 // or screen. The incoming side (the gate, the allowlist) runs on Twilio's side
 // and in preload-twilio.js; see calling-app-provider.js.
 
-const { CallingAppProvider } = require('./calling-app-provider');
+const { CallingAppProvider } = require('../core/calling-app-provider');
 
 class TwilioProvider extends CallingAppProvider {
   static get id() { return 'twilio'; }

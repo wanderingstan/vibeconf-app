@@ -392,7 +392,7 @@ function ensureClaudeIntegration({ defaultPort, botName } = {}) {
 
   // --- Ensure global skill in ~/.claude/skills/join-call/ ---
   // Version-tracked: updates when app version changes
-  const SKILL_VERSION = '71';  // Bump this when updating the skill content below
+  const SKILL_VERSION = '72';  // Bump this when updating the skill content below
   // What each .version file holds: SKILL_VERSION, plus the port base when the
   // block is moved (skillVersionStamp), because the installed text carries the
   // ports (localizeSkillPorts).

@@ -12,13 +12,13 @@
 const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const { TeamsProvider } = require('./teams-provider');
-const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider');
-const { TEAMS } = require('./teams-selectors');
+const { TeamsProvider } = require('@vibeconferencing/calls/providers/teams-provider');
+const { CALL_EVENTS, CALL_COMMANDS } = require('@vibeconferencing/calls/core/call-provider');
+const { TEAMS } = require('@vibeconferencing/calls/providers/teams-selectors');
 
 // Present as current Chrome (main sets the UA string; this matches
 // navigator.userAgentData to it) before Teams' scripts run.
-require('./slack-ua').installClientHintsShim();
+require('@vibeconferencing/calls/hosts/electron/slack-ua').installClientHintsShim();
 
 (function installTimestampedConsole() {
   const _ts = () => {
@@ -37,10 +37,10 @@ require('./slack-ua').installClientHintsShim();
 
 // Recon (#814): log where Teams' call audio lives. Off unless
 // VIBECONF_AUDIO_PROBE=1. Installed before page-inject and Teams' scripts.
-if (process.env.VIBECONF_AUDIO_PROBE === '1') require('./audio-probe').installAudioProbe('[teams]');
+if (process.env.VIBECONF_AUDIO_PROBE === '1') require('@vibeconferencing/calls/core/audio-probe').installAudioProbe('[teams]');
 // Research (dom-probe.js): --dom-probe=1 watches every video tile. Off by default.
 // Installed here, before the `delete window.process` below, which it needs.
-require('./dom-probe').installDomProbe({ tag: '[teams]', defaultSelector: '[data-tid^="video-item-container-"]' });
+require('@vibeconferencing/calls/core/dom-probe').installDomProbe({ tag: '[teams]', defaultSelector: '[data-tid^="video-item-container-"]' });
 
 // The Meet-shaped RTCPeerConnection audio hook is unused here; keep the
 // getUserMedia virtual mic + play-tts path (as Slack and Zoom do).
@@ -56,9 +56,9 @@ window.__vibeconf_getScreenShareSource = async function () {
 
 // Call recording: start/stop the page recorder and carry its tracks to main
 // (#814). Without this a Teams recording was silent video.
-require('./preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[teams]' });
+require('@vibeconferencing/calls/recording/preload-recording-bridge').installRecordingBridge(ipcRenderer, { tag: '[teams]' });
 // Speech-to-text tap → main, for hearing calls by transcribing their audio (#850).
-require('./preload-stt-bridge').installSttBridge(ipcRenderer);
+require('@vibeconferencing/calls/hearing/preload-stt-bridge').installSttBridge(ipcRenderer);
 
 const provider = new TeamsProvider();
 // NOT window.TEAMS: Teams' own app may read globals by that name, and a stray

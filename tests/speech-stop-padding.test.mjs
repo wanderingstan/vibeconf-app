@@ -50,7 +50,7 @@ function makeServer(prefs = {}) {
 // --- the tracker side: no padding left in it ------------------------------
 
 const providerSrc = readFileSync(
-  new URL('../electron-app/google-meet-provider.js', import.meta.url), 'utf8');
+  new URL('../packages/calls/providers/google-meet-provider.js', import.meta.url), 'utf8');
 
 test('#395: the speaker tracker no longer pads the stop edge', () => {
   assert.ok(!/SPEAKING_GRACE_MS\s*=/.test(providerSrc),

@@ -46,9 +46,9 @@ const AUTH_TOKEN_DIR = path.join(os.homedir(), '.vibeconferencing', 'local-token
 function localTokenPath(port) { return path.join(AUTH_TOKEN_DIR, `${port}.token`); }
 const prefsSchema = require('./preferences-schema.js');
 const { classifyAgent, agentIsAbsent, AGENT_AWAY_MS } = require('./agent-liveness.js');
-const { isFinished } = require('./call-phase.js');
+const { isFinished } = require('@vibeconferencing/calls/core/call-phase.js');
 const { getRecentSessionLog, getSessionLogPath, sliceCallLines } = require('./session-log.js');
-const { shouldIgnoreRejoin } = require('./rejoin-guard.js');
+const { shouldIgnoreRejoin } = require('@vibeconferencing/calls/core/rejoin-guard.js');
 const { probeReadable, describeReadError, checkLoadUrlTarget } = require('./local-file-access.js');
 const { makeUtterance, defaultStaleWhen, evaluateStaleness } = require('./utterance.js');
 const { TranscriptActivitySource, StreamActivitySource } = require('./agent-activity.js');
@@ -5847,7 +5847,7 @@ class LocalServer {
     if (url.pathname === '/api/call/join' && req.method === 'POST') {
       let body = {};
       try { body = JSON.parse((await this._readBody(req)) || '{}') || {}; } catch { /* keep {} */ }
-      const { platformFromUrl, providerRoomIdForUrl } = require('./call-target');
+      const { platformFromUrl, providerRoomIdForUrl } = require('@vibeconferencing/calls/core/call-target');
       const target = platformFromUrl(body.url);
       if (!target.ok) {
         res.writeHead(400, { 'Content-Type': 'application/json' });

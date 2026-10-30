@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { platformFromUrl } = require('../electron-app/call-target.js');
+const { platformFromUrl } = require('../packages/calls/core/call-target.js');
 const main = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
 const body = main.slice(main.indexOf('function joinUrl('), main.indexOf('// Join a call at launch because /call-new-bot'));
 

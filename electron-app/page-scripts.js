@@ -6,9 +6,10 @@
 //   1. the helpers the page scripts read off globalThis, because they run in
 //      the page world and can't require: avatar posture math, and the emoji
 //      set resolvers (#316, #828; they need fs);
-//   2. page-inject.js, the media core (virtual mic and camera, the
-//      getUserMedia / getDisplayMedia overrides, the audio taps). It must run
-//      before the page's own scripts can ask for media;
+//   2. the library's media core (@vibeconferencing/calls/inject/page-inject.js:
+//      virtual mic and camera, the getUserMedia / getDisplayMedia overrides,
+//      the audio taps). It must run before the page's own scripts can ask for
+//      media;
 //   3. the app's page plugins, which use the core through
 //      window.__vibeconfMedia: the emoji avatar and the realtime voice.
 //
@@ -17,6 +18,8 @@
 
 const fs = require('fs');
 const path = require('path');
+
+const { injectMediaCore } = require('@vibeconferencing/calls/inject/load');
 
 const CORE = 'page-inject.js';
 const PLUGINS = ['page-avatar.js', 'page-realtime-voice.js'];
@@ -45,7 +48,7 @@ function injectPageScripts({ tag, dir = __dirname } = {}) {
   }
 
   try {
-    evalFile(dir, CORE);
+    injectMediaCore();
     console.log(tag, CORE + ' loaded (media patch, before page scripts)');
   } catch (err) {
     console.error(tag, 'Failed to load ' + CORE + ':', err.message);

@@ -29,11 +29,13 @@ jobs:
           clean: false
 
       # Deps persist across runs (clean:false); (re)install a sub-package only when
-      # its node_modules is missing. Root has no deps of its own to build.
+      # its node_modules is missing or its lockfile changed since the install (a
+      # new dependency, e.g. the packages/calls link, never arrives otherwise).
+      # Root has no deps of its own to build.
       - name: Ensure deps
         run: |
           for sub in electron-app mcp-server; do
-            if [ ! -d "$sub/node_modules" ]; then
+            if [ ! -d "$sub/node_modules" ] || [ "$sub/pnpm-lock.yaml" -nt "$sub/node_modules/.modules.yaml" ]; then
               echo "installing $sub deps…"; (cd "$sub" && pnpm install)
             fi
           done

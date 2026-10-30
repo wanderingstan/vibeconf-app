@@ -1033,7 +1033,9 @@ async function refreshAvatarThumb(svg, emojiSet, emojiUri) {
       ctx.fillText(RESTING_EMOJI, size / 2, size / 2 + face * 0.04);
     }
 
-    await setConfig('avatarThumb', canvas.toDataURL('image/png'));
+    // Not setConfig: this is a background save the user didn't ask for, so a bot
+    // that just stopped shouldn't get the "setting was NOT saved" banner.
+    await api.invoke('set-config', 'avatarThumb', canvas.toDataURL('image/png'));
   } catch {
     lastThumbKey = null; // let the next tick retry
   }

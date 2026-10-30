@@ -57,9 +57,12 @@ test('a chat counts as open only when it is that caller\'s (by id in the address
 });
 
 test('Telegram calls carry no camera: as the answering side it can never reach the caller (#889)', () => {
+  // The call commands are TelegramProvider's now (Phase 1 step 4).
   const preload = readFileSync(join(root, 'electron-app/preload-telegram.js'), 'utf8');
-  assert.doesNotMatch(preload, /findCallButton\(document, 'start video'\)|setCameraOn/, 'no camera presses');
-  assert.match(preload, /case CALL_COMMANDS\.ACTIONS\.cameraOff: break;/);
+  const provider = readFileSync(join(root, 'electron-app/telegram-provider.js'), 'utf8');
+  for (const src of [preload, provider]) assert.doesNotMatch(src, /findCallButton\(document, 'start video'\)/, 'no camera presses');
+  assert.doesNotMatch(preload, /setCameraOn/);
+  assert.match(provider, /async setCameraOn\(\) \{ return false; \}/);
 });
 
 test('page-inject honours a screen request that refuses audio (Telegram takes the first track)', () => {
@@ -80,11 +83,13 @@ test('a request for a calling-app room that isn\'t the current call is refused, 
 });
 
 test('the preload reads and sends only after checking the open chat is the caller\'s', () => {
-  const preload = readFileSync(join(root, 'electron-app/preload-telegram.js'), 'utf8');
-  const fn = preload.slice(preload.indexOf('async function callerChatMessages()'));
-  const body = fn.slice(0, fn.indexOf('\n}\n'));
+  // TelegramProvider does the reading and sending now (Phase 1 step 4).
+  const provider = readFileSync(join(root, 'electron-app/telegram-provider.js'), 'utf8');
+  const read = provider.slice(provider.indexOf('async readChat()'));
+  const body = read.slice(0, read.indexOf('\n  }\n'));
   assert.match(body, /state !== 'in-call'/);
   assert.match(body, /telegramCall\.openChat\(document, caller\.id\)/);
-  const send = preload.slice(preload.indexOf('ipcRenderer.on(CALL_COMMANDS.sendChat'));
-  assert.ok(send.indexOf('await callerChatMessages()') < send.indexOf('telegramCall.sendChatMessage('), 'verify the chat before typing into it');
+  const send = provider.slice(provider.indexOf('async sendChat(text)'));
+  assert.ok(send.indexOf('await this.readChat()') >= 0, 'send opens the chat first');
+  assert.ok(send.indexOf('await this.readChat()') < send.indexOf('telegramCall.sendChatMessage('), 'verify the chat before typing into it');
 });

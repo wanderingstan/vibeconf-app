@@ -14,7 +14,9 @@ const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const twilioCall = require('./twilio-call');
-const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider');
+const { CALL_EVENTS } = require('./call-provider');
+const { TwilioProvider } = require('./twilio-provider');
+const { bindToIpc } = require('./calling-app-provider');
 
 (function installTimestampedConsole() {
   const _ts = () => {
@@ -69,34 +71,10 @@ let caller = null;
 let botName = '';
 ipcRenderer.invoke('get-meet-bot-name').then((n) => { botName = n || ''; }).catch(() => {});
 
-ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
-  if (!message) return;
-  switch (message.action) {
-    case CALL_COMMANDS.ACTIONS.unmuteMic: if (activeCall) activeCall.mute(false); break;
-    case CALL_COMMANDS.ACTIONS.muteMic: if (activeCall) activeCall.mute(true); break;
-    case CALL_COMMANDS.ACTIONS.cameraOn:
-    case CALL_COMMANDS.ACTIONS.cameraOff: break; // a phone call has no video
-    default:
-      window.postMessage({ __botsInCalls: true, __fromExtension: true, ...message }, '*');
-  }
-});
-ipcRenderer.on(CALL_COMMANDS.readChat, (_e, { requestId }) => {
-  emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'A phone call has no chat' });
-});
-ipcRenderer.on(CALL_COMMANDS.sendChat, (_e, { requestId }) => {
-  emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: 'A phone call has no chat' });
-});
-ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, (_e, { requestId } = {}) => {
-  emit(CALL_EVENTS.captionLanguageResult, { requestId, ok: false, error: 'A phone call has no captions; the bot transcribes the audio itself' });
-});
-ipcRenderer.on(CALL_COMMANDS.triggerScreenShare, () => { console.log('[twilio] a phone call has no screen to share'); });
-ipcRenderer.on(CALL_COMMANDS.triggerStopSharing, () => {});
-ipcRenderer.on(CALL_COMMANDS.setStudioSound, () => {});
-ipcRenderer.on(CALL_COMMANDS.recoverCaptions, () => {});
-ipcRenderer.on('trigger-leave-call', () => {
-  console.log('[twilio] leave requested →', activeCall ? 'hanging up' : 'no call');
-  if (activeCall) activeCall.disconnect();
-});
+// The call itself (mic, leave) is TwilioProvider's; this preload keeps the
+// incoming side: registering the phone, the caller check, answering.
+const provider = new TwilioProvider({ session: () => ({ state, caller, botName, activeCall }) });
+bindToIpc(ipcRenderer, provider, { emit });
 
 window.addEventListener('message', (event) => {
   if (event.source !== window || !event.data?.__botsInCalls) return;

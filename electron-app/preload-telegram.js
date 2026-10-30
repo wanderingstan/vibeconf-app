@@ -20,7 +20,9 @@ const { ipcRenderer } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const telegramCall = require('./telegram-call');
-const { CALL_EVENTS, CALL_COMMANDS } = require('./call-provider');
+const { CALL_EVENTS } = require('./call-provider');
+const { TelegramProvider } = require('./telegram-provider');
+const { bindToIpc } = require('./calling-app-provider');
 
 // Present as current Chrome (main sets the UA string; this matches
 // navigator.userAgentData to it) before Telegram's scripts run.
@@ -98,29 +100,10 @@ function emit(channel, payload) {
   } catch { /* main not listening */ }
 }
 
-// Mic: the VirtualMic carries only the bot's voice, so "muted" in Telegram's
-// own UI would silence the bot. Keep it unmuted unless the app asks otherwise.
-function setMicMuted(muted) {
-  const btn = telegramCall.findCallButton(document, muted ? 'mute' : 'unmute');
-  return btn ? telegramCall.pressButton(btn) : false;
-}
-
-// No camera on Telegram calls. As the answering side, Telegram Web can't add
-// video: its renegotiation offer is never answered, and pressing "start video"
-// only leaves the negotiation wedged (audio carries on). The caller-side
-// workaround didn't hold up either. Full write-up: #889.
-
-ipcRenderer.on(CALL_COMMANDS.extensionMessage, (_e, message) => {
-  if (!message) return;
-  switch (message.action) {
-    case CALL_COMMANDS.ACTIONS.unmuteMic: setMicMuted(false); break;
-    case CALL_COMMANDS.ACTIONS.muteMic: setMicMuted(true); break;
-    case CALL_COMMANDS.ACTIONS.cameraOn:
-    case CALL_COMMANDS.ACTIONS.cameraOff: break; // no video on Telegram calls (#889)
-    default:
-      window.postMessage({ __botsInCalls: true, __fromExtension: true, ...message }, '*');
-  }
-});
+// The call itself (mic, chat, leave) is TelegramProvider's; this preload
+// keeps the incoming side: deciding, answering, standby.
+const provider = new TelegramProvider({ session: () => ({ state, caller, botName }), typeText: keyboardType });
+const setMicMuted = (muted) => provider.setMicMuted(muted);
 
 // Chat = the caller's 1:1 Telegram chat, opened behind the call screen (see
 // telegram-call.js). Only during a call, only with the person on it: every
@@ -136,38 +119,10 @@ function newestFromCaller(messages) {
   for (let i = messages.length - 1; i >= 0; i--) if (!messages[i].fromMe) return messages[i].id;
   return null;
 }
-async function callerChatMessages() {
-  if (state !== 'in-call' || !caller || !caller.id) throw new Error('not in a Telegram call');
-  if (!(await telegramCall.openChat(document, caller.id))) throw new Error("could not open the caller's chat");
-  return telegramCall.readChatMessages(document, { selfName: botName || 'Bot', callerName: caller.name || 'Caller' });
-}
-ipcRenderer.on(CALL_COMMANDS.readChat, async (_e, { requestId }) => {
-  try {
-    const messages = await callerChatMessages();
-    lastReadChatId = newestFromCaller(messages);
-    setChatUnread(false);
-    emit(CALL_EVENTS.chatResult, { requestId, ok: true, messages: messages.map(({ id, sender, text }) => ({ id, sender, text })) });
-  } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
-});
-ipcRenderer.on(CALL_COMMANDS.sendChat, async (_e, { requestId, text }) => {
-  try {
-    await callerChatMessages(); // opens and verifies the caller's chat
-    await telegramCall.sendChatMessage(document, text, { typeText: keyboardType });
-    console.log('[telegram] sent a chat message to', caller.name || caller.id);
-    emit(CALL_EVENTS.chatResult, { requestId, ok: true });
-  } catch (err) { emit(CALL_EVENTS.chatResult, { requestId, ok: false, error: err.message }); }
-});
-ipcRenderer.on(CALL_COMMANDS.setCaptionLanguage, (_e, { requestId } = {}) => {
-  emit(CALL_EVENTS.captionLanguageResult, { requestId, ok: false, error: 'Telegram has no captions; the bot transcribes the call audio itself' });
-});
-ipcRenderer.on(CALL_COMMANDS.triggerScreenShare, () => { console.log('[telegram] screen share is not supported on Telegram calls yet'); });
-ipcRenderer.on(CALL_COMMANDS.triggerStopSharing, () => {});
-ipcRenderer.on(CALL_COMMANDS.setStudioSound, () => {});
-ipcRenderer.on(CALL_COMMANDS.recoverCaptions, () => {});
-ipcRenderer.on('trigger-leave-call', () => {
-  const btn = telegramCall.findCallButton(document, 'end call') || telegramCall.findCallButton(document, 'decline');
-  console.log('[telegram] leave requested →', btn ? 'pressing ' + (btn.parentElement.innerText || '').trim() : 'no call on screen');
-  telegramCall.pressButton(btn);
+const callerChatMessages = () => provider.readChat();
+bindToIpc(ipcRenderer, provider, {
+  emit,
+  afterRead: (messages) => { lastReadChatId = newestFromCaller(messages); setChatUnread(false); },
 });
 
 window.addEventListener('message', (event) => {

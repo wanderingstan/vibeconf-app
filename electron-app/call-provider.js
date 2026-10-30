@@ -13,11 +13,12 @@
 //                     contract a concrete provider (GoogleMeetProvider) implements
 //
 // Current status: both sides implement it. In each call preload a concrete
-// provider (GoogleMeetProvider, ZoomProvider, TeamsProvider, SlackProvider)
+// provider (GoogleMeetProvider, ZoomProvider, TeamsProvider, SlackProvider,
+// WhatsAppProvider, TelegramProvider, TwilioProvider)
 // does the DOM work; in main.js a CallClient (call-client.js) implements the
 // same contract over IPC, and is the only thing main.js drives the call
-// through. WhatsApp, Telegram and Twilio preloads speak the same channel
-// names but have no provider class yet (Phase 1 of the library extraction).
+// through. WhatsApp, Telegram and Twilio have providers too (CallingAppProvider:
+// the call itself; the incoming side, accept/decline, stays in their preloads).
 //
 // Pure module: no electron/DOM requires, safe to load in main OR preload.
 
@@ -97,22 +98,32 @@ const CALL_BOOTSTRAP = {
 };
 
 // ---------------------------------------------------------------------------
-// Capabilities — what a platform can do, as opposed to how. Today only
-// `captions`: whether the platform transcribes the call itself, i.e. whether
-// PlatformCaptions can hear it (caption-source.js, #850). A calling app with no
-// captions is a provider with `captions: false`, heard some other way.
+// Capabilities: what a platform can do, as opposed to how.
+//   captions  the platform transcribes the call itself, so PlatformCaptions can
+//             hear it (caption-source.js, #850). Without it the bot hears
+//             through the audio tap and its own STT.
+//   video     the bot can show its camera (the avatar)
+//   chat      the call has a chat the bot can read and send to
+//   share     the bot can share a screen (its whiteboard)
 //
 // Keyed by provider id (each class's static id). 'meet' is the short name
 // main.js uses for Google Meet in status broadcasts.
 // ---------------------------------------------------------------------------
+const ALL = Object.freeze({ captions: true, video: true, chat: true, share: true });
 const PROVIDER_CAPABILITIES = {
-  'google-meet': { captions: true },
-  meet: { captions: true },
-  slack: { captions: true },
-  zoom: { captions: true },
-  teams: { captions: true },
+  'google-meet': ALL,
+  meet: ALL,
+  slack: ALL,
+  zoom: ALL,
+  teams: ALL,
+  // Calling apps (Phase 1 step 4): no platform captions. WhatsApp chat is the
+  // caller's 1:1 chat (none on a call-link call). Telegram Web can't add
+  // video as the answering side (#889). A phone call is audio only.
+  whatsapp: Object.freeze({ captions: false, video: true, chat: true, share: true }),
+  telegram: Object.freeze({ captions: false, video: false, chat: true, share: false }),
+  twilio: Object.freeze({ captions: false, video: false, chat: false, share: false }),
 };
-const NO_CAPABILITIES = Object.freeze({ captions: false });
+const NO_CAPABILITIES = Object.freeze({ captions: false, video: false, chat: false, share: false });
 
 function providerCapabilities(providerId) {
   return PROVIDER_CAPABILITIES[providerId] || NO_CAPABILITIES;

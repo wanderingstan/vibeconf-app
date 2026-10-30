@@ -17,6 +17,8 @@ API holds; the app (`electron-app/`) is its first user. Not published yet.
 | `hearing/` | Captions and speech-to-text plumbing (`caption-source.js`, speech gate) |
 | `recording/` | Per-track call recording and the ffmpeg merge |
 | `hosts/electron/` | The Electron host: Slack's two surfaces, the recording windows, tab sharing, browser identity |
+| `hosts/playwright/` | The Playwright host: a bot from plain Node, with Playwright driving Chrome. Google Meet only, for now (see below) |
+| `conformance/` | The conformance suite: the same two-bot checks for every provider on every host, plus its Playwright bot and test clip |
 
 ## Rules
 
@@ -43,3 +45,40 @@ store). The app requires deep paths, for example
 electron-builder 25 won't pack files whose real path is outside
 `electron-app/`, so `before-pack.js` swaps the link for a real copy for the
 length of the pack and `after-pack.js` puts the link back.
+
+## The Playwright host
+
+```js
+const { launchPlaywrightHost } = require('@vibeconferencing/calls/hosts/playwright');
+const host = await launchPlaywrightHost({ userDataDir: '/tmp/bot-a' });
+const call = await host.join('https://meet.google.com/abc-defg-hij', { botName: 'Ada' });
+call.on(CALL_EVENTS.captionTurns, ({ turns }) => console.log(turns.at(-1)));
+await call.setMicMuted(false);
+await call.playAudioFile('hello.mp3');
+await call.leave();
+await host.close();
+```
+
+It needs `playwright-core` (an optional peer dependency) and drives the
+installed Google Chrome, headed. The media core and the Meet provider are
+bundled (`bundle.js`) and added as init scripts; `page-host.js` is the page's
+half, the Playwright counterpart of the app's `preload-meet.js`.
+
+Open, as of Phase 4:
+
+- **Meet refuses it.** The bot reaches the join screen and Meet answers
+  "You can't join this video call". Chrome driven over CDP reports
+  `navigator.webdriver`, which the Electron host never does. Whether to mask
+  that is a decision we haven't made yet.
+- **Meet only.** Zoom's and Teams' per-tick loops still live in the app's
+  preloads; each needs the move Meet's got in Phase 3b.
+- **No share.** Presenting an app-owned page needs the WebRTC loopback the
+  design doc proposes; the conformance suite skips share on this host.
+
+## Conformance
+
+`conformance/suite.js` runs two bots through join, roster, hearing both ways
+(a played clip must come back as captions), chat, share and leave. A
+capability the platform or the host lacks is skipped and says why. It drives
+ConformanceBots, so one suite checks every host; `scripts/provider-test.mjs`
+runs it (`--host electron` over the app's HTTP API, `--host playwright` here).

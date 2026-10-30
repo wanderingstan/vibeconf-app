@@ -20,13 +20,23 @@ const fnBody = (name) => {
   return next < 0 ? main.slice(i) : main.slice(i, i + 1 + next);
 };
 
-for (const provider of ['activateZoomProvider', 'activateTeamsProvider', 'activateSlackProvider', 'activateCallingAppStandby']) {
-  test(`${provider} pushes the avatar state on its call view's page loads`, () => {
-    const body = fnBody(provider);
-    const created = body.search(/meetView = (createMeetView\(|surface\.view)/);
-    const wired = body.indexOf('pushInitialAvatarStateOnLoad(meetView)');
-    assert.ok(created >= 0, 'view creation not found');
-    assert.ok(wired > created, 'pushInitialAvatarStateOnLoad(meetView) must follow the view being created');
+test('activatePlatform pushes the avatar state on the call view it builds', () => {
+  const body = fnBody('activatePlatform');
+  const created = body.indexOf('meetView = built.view;');
+  const wired = body.indexOf('if (p.avatarOnLoad !== false) pushInitialAvatarStateOnLoad(meetView);');
+  assert.ok(created >= 0, 'view creation not found');
+  assert.ok(wired > created, 'pushInitialAvatarStateOnLoad(meetView) must follow the view being created');
+});
+
+test('only Meet opts out of it (it pushes the state through _openMeetInFreshView)', () => {
+  const table = main.slice(main.indexOf('const PLATFORMS = {'), main.indexOf('function activatePlatform('));
+  assert.equal((table.match(/avatarOnLoad: false/g) || []).length, 1);
+  assert.match(table.slice(0, table.indexOf('  slack: {')), /avatarOnLoad: false/);
+});
+
+for (const [provider, id] of [['activateZoomProvider', "'zoom'"], ['activateTeamsProvider', "'teams'"], ['activateSlackProvider', "'slack'"], ['activateCallingAppStandby', 'app']]) {
+  test(`${provider} builds its call view through activatePlatform`, () => {
+    assert.ok(fnBody(provider).includes('activatePlatform(' + id), `${provider} should call activatePlatform(${id}`);
   });
 }
 

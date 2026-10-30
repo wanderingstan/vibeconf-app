@@ -35,15 +35,18 @@ test('the four mode flags are gone', () => {
 });
 
 test('each provider switch names its own platform', () => {
+  // Phase 1 step 3: every switch goes through activatePlatform(id), the one
+  // place activePlatform moves; _openMeetInFreshView rebuilds Meet's own view.
   const want = {
-    activateMeetProvider: "activePlatform = 'meet'",
-    activateSlackProvider: "activePlatform = 'slack'",
-    activateTeamsProvider: "activePlatform = 'teams'",
-    activateZoomProvider: "activePlatform = 'zoom'",
-    activateCallingAppStandby: 'activePlatform = app',
+    activateMeetProvider: "activatePlatform('meet'",
+    activateSlackProvider: "activatePlatform('slack'",
+    activateTeamsProvider: "activatePlatform('teams'",
+    activateZoomProvider: "activatePlatform('zoom'",
+    activateCallingAppStandby: 'activatePlatform(app',
+    activatePlatform: 'activePlatform = id;',
     _openMeetInFreshView: "activePlatform = 'meet'",
   };
-  for (const [fn, line] of Object.entries(want)) assert.ok(body(fn).includes(line), `${fn} sets ${line}`);
+  for (const [fn, line] of Object.entries(want)) assert.ok(body(fn).includes(line), `${fn} has ${line}`);
 });
 
 test('a fresh Meet view drops a leftover Slack surface', () => {

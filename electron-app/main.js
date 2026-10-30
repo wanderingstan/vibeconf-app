@@ -6070,9 +6070,11 @@ const testSpeechPath = path.join(EXT_DIR, 'test-speech.mp3');
 const noVoiceClipPath = path.join(EXT_DIR, 'no-voice.mp3');
 
 // Chrome-like user agent to avoid Google blocking
-// One browser identity for every surface (#499): slack-ua.js keeps the current
-// Chrome version. This used to pin Chrome/131 here, a second, staler copy.
-const CHROME_UA = require('./slack-ua').UA;
+// The Meet session's identity comes from slack-ua.js (#499), which keeps every
+// version in one place. Meet gets Chrome at the engine's real version, not the
+// current Chrome the Slack/Teams/Zoom surfaces claim: Meet's bot check turns a
+// signed-out guest away when the claimed version runs far ahead of the engine.
+const CHROME_UA = require('./slack-ua').ENGINE_UA;
 
 // ONE persistent session partition per app profile — for everything this
 // profile does, Meet AND Slack (#282). Collapsed from the old three-partition
@@ -6539,6 +6541,8 @@ function configureMeetSession(sess) {
   // only once one of them ran, so a fresh profile signing in to Google never
   // had it (2026-10-27, a new user on the Mac mini). The page side,
   // navigator.userAgentData, is shimmed by preload-meet and preload-google-sign-in.
+  // Both read the version from the UA string itself, so they follow CHROME_UA
+  // here and the current-Chrome UA a Teams or Zoom view sets on this partition.
   require('./slack-ua').installHeaderSpoof(sess);
 }
 

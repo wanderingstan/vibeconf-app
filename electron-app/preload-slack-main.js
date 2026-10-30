@@ -47,22 +47,9 @@ window.__vibeconf_disableAudioCapture = true;
 
 // Inject the media patch BEFORE Slack's scripts run (the getUserMedia virtual-mic
 // + play-tts path is host-page-agnostic; the RTCPeerConnection hook is gated off
-// above for Slack/Chime).
-// Emoji sets (#828): page-inject draws the camera face, but it has no fs, so
-// the bundled art (fluent3d, redpanda, the colour fonts, dir: sets) reaches it
-// only through resolvers this preload installs. Without them the profile's
-// emojiSet arrives, is logged, and every face still draws as native emoji.
-try { require('./emoji-assets.js').installPageResolvers(globalThis, __dirname); } catch (err) {
-  console.error('[slack-main] emoji resolvers failed (faces stay native):', err.message);
-}
-
-try {
-  const code = fs.readFileSync(path.join(__dirname, 'page-inject.js'), 'utf-8');
-  (0, eval)(code);
-  console.log('[slack-main] page-inject.js loaded (media patch, before page scripts)');
-} catch (err) {
-  console.error('[slack-main] Failed to load page-inject.js:', err.message);
-}
+// above for Slack/Chime): page-inject's core, then the app's avatar and
+// realtime voice plugins. page-scripts.js.
+require('./page-scripts').injectPageScripts({ tag: '[slack-main]' });
 
 // page-inject's getDisplayMedia override calls this to pick a screen-share
 // source (same contract as the Meet shell).

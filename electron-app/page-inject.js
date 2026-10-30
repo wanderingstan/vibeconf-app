@@ -1934,141 +1934,9 @@
   };
 
   // ---------------------------------------------------------------------------
-  // Whiteboard — renders content to an offscreen canvas for screen sharing
-  // ---------------------------------------------------------------------------
-
-  class Whiteboard {
-    constructor(width, height) {
-      this.canvas = document.createElement('canvas');
-      this.canvas.width = width || 1920;
-      this.canvas.height = height || 1080;
-      this.ctx = this.canvas.getContext('2d');
-      this.content = 'Whiteboard ready.\n\nWaiting for content...';
-      this.title = 'AI Assistant — Whiteboard';
-      this.stream = this.canvas.captureStream(5); // 5fps is fine for a whiteboard
-      this._render();
-    }
-
-    setContent(text) {
-      this.content = text;
-      this._render();
-    }
-
-    setTitle(title) {
-      this.title = title;
-      this._render();
-    }
-
-    _render() {
-      const { canvas, ctx } = this;
-      const w = canvas.width;
-      const h = canvas.height;
-
-      // White background
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, w, h);
-
-      // Header bar
-      const headerH = 64;
-      ctx.fillStyle = '#1a73e8';
-      ctx.fillRect(0, 0, w, headerH);
-
-      // Title in header
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 28px "Google Sans", Roboto, Arial, sans-serif';
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'middle';
-      ctx.fillText(this.title, 24, headerH / 2);
-
-      // Timestamp
-      ctx.textAlign = 'right';
-      ctx.font = '18px "Google Sans", Roboto, Arial, sans-serif';
-      ctx.fillStyle = 'rgba(255,255,255,0.8)';
-      // The user's format, not America's. `__vibeconfHour12` is set by
-      // preload-meet (this world has no node access to read the macOS
-      // preference itself); undefined means "let the locale decide", which is
-      // right everywhere except a Mac with the 24-hour box ticked.
-      const _h12 = window.__vibeconfHour12;
-      const _topts = { hour: 'numeric', minute: '2-digit', second: '2-digit' };
-      if (_h12 !== undefined && _h12 !== null) _topts.hour12 = _h12;
-      ctx.fillText(new Date().toLocaleTimeString([], _topts), w - 24, headerH / 2);
-
-      // Content area
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      ctx.fillStyle = '#202124';
-
-      const padding = 32;
-      const lineHeight = 32;
-      const maxWidth = w - padding * 2;
-      const startY = headerH + padding;
-      let y = startY;
-
-      const lines = this.content.split('\n');
-      for (const line of lines) {
-        if (y > h - padding) break; // don't overflow
-
-        // Simple heading detection
-        if (line.startsWith('# ')) {
-          ctx.font = 'bold 36px "Google Sans", Roboto, Arial, sans-serif';
-          ctx.fillStyle = '#1a73e8';
-          ctx.fillText(line.slice(2), padding, y, maxWidth);
-          y += lineHeight * 1.5;
-          ctx.fillStyle = '#202124';
-          ctx.font = '24px "Google Sans", Roboto, Arial, sans-serif';
-        } else if (line.startsWith('## ')) {
-          ctx.font = 'bold 30px "Google Sans", Roboto, Arial, sans-serif';
-          ctx.fillStyle = '#1565c0';
-          ctx.fillText(line.slice(3), padding, y, maxWidth);
-          y += lineHeight * 1.3;
-          ctx.fillStyle = '#202124';
-          ctx.font = '24px "Google Sans", Roboto, Arial, sans-serif';
-        } else if (line.startsWith('- ') || line.startsWith('* ')) {
-          ctx.font = '24px "Google Sans", Roboto, Arial, sans-serif';
-          ctx.fillText('  •  ' + line.slice(2), padding, y, maxWidth);
-          y += lineHeight;
-        } else if (line.trim() === '') {
-          y += lineHeight * 0.5;
-        } else {
-          ctx.font = '24px "Google Sans", Roboto, Arial, sans-serif';
-          // Word wrap
-          const words = line.split(' ');
-          let currentLine = '';
-          for (const word of words) {
-            const test = currentLine + (currentLine ? ' ' : '') + word;
-            if (ctx.measureText(test).width > maxWidth) {
-              ctx.fillText(currentLine, padding, y, maxWidth);
-              y += lineHeight;
-              currentLine = word;
-            } else {
-              currentLine = test;
-            }
-          }
-          if (currentLine) {
-            ctx.fillText(currentLine, padding, y, maxWidth);
-            y += lineHeight;
-          }
-        }
-      }
-    }
-
-    getStream() {
-      return this.stream;
-    }
-  }
-
-  let whiteboard = null;
-
-  function getWhiteboard() {
-    if (!whiteboard) {
-      whiteboard = new Whiteboard();
-      console.debug('[bots-in-calls] Whiteboard created');
-    }
-    return whiteboard;
-  }
-
-  // ---------------------------------------------------------------------------
-  // getDisplayMedia override — returns whiteboard stream instead of showing picker
+  // getDisplayMedia override. In Electron the main process picks the source
+  // (the app's whiteboard window, setDisplayMediaRequestHandler); in a plain
+  // browser the native picker shows.
   // ---------------------------------------------------------------------------
 
   const _getDisplayMedia = MediaDevices.prototype.getDisplayMedia;
@@ -2379,15 +2247,6 @@
         }
         break;
 
-      case 'set-whiteboard':
-        if (payload?.content != null) {
-          getWhiteboard().setContent(payload.content);
-          console.debug('[bots-in-calls] Whiteboard content updated');
-        }
-        if (payload?.title != null) {
-          getWhiteboard().setTitle(payload.title);
-        }
-        break;
 
       case 'play-tts':
         if (!mic) {

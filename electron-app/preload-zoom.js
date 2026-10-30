@@ -56,21 +56,9 @@ require('./dom-probe').installDomProbe({ tag: '[zoom]', defaultSelector: '.parti
 // Same call Slack made for Chime. Must be set before the eval below.
 window.__vibeconf_disableAudioCapture = true;
 
-// Emoji sets (#828): page-inject draws the camera face, but it has no fs, so
-// the bundled art (fluent3d, redpanda, the colour fonts, dir: sets) reaches it
-// only through resolvers this preload installs. Without them the profile's
-// emojiSet arrives, is logged, and every face still draws as native emoji.
-try { require('./emoji-assets.js').installPageResolvers(globalThis, __dirname); } catch (err) {
-  console.error('[zoom] emoji resolvers failed (faces stay native):', err.message);
-}
-
-try {
-  const code = fs.readFileSync(path.join(__dirname, 'page-inject.js'), 'utf-8');
-  (0, eval)(code);
-  console.log('[zoom] page-inject.js loaded (media patch, before page scripts)');
-} catch (err) {
-  console.error('[zoom] Failed to load page-inject.js:', err.message);
-}
+// The media scripts (page-inject's core, then the app's avatar and realtime
+// voice plugins), before any page script can ask for media. page-scripts.js.
+require('./page-scripts').injectPageScripts({ tag: '[zoom]' });
 
 window.__vibeconf_getScreenShareSource = async function () {
   return ipcRenderer.invoke('get-screen-share-source');

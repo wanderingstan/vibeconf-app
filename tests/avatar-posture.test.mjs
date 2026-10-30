@@ -15,7 +15,7 @@ const require = createRequire(import.meta.url);
 const P = require('../electron-app/avatar-posture.js');
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const inject = readFileSync(join(root, 'electron-app/page-inject.js'), 'utf8');
-const preload = readFileSync(join(root, 'electron-app/preload-meet.js'), 'utf8');
+const preload = readFileSync(join(root, 'electron-app/page-scripts.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 const { PREFERENCES } = require('../electron-app/preferences-schema.js');
 
@@ -180,8 +180,10 @@ test('name mention: sits up, more centred and larger, held; normal shifts resume
 });
 
 test('wiring: preload exposes the module, page-inject composes it, main pushes the pref', () => {
+  // Every call preload loads the page scripts through page-scripts.js, which
+  // exposes it before page-inject is eval'd (Phase 2; it was Meet-only before).
   assert.match(preload, /globalThis\.__vibeAvatarPosture = require\('\.\/avatar-posture\.js'\)/);
-  assert.ok(preload.indexOf('__vibeAvatarPosture') < preload.indexOf("'page-inject.js'"),
+  assert.ok(preload.indexOf('__vibeAvatarPosture') < preload.indexOf('evalFile(dir, CORE)'),
     'exposed before page-inject is eval\'d');
   // Added to the translate and multiplied into the scale, alongside (not
   // replacing) the existing tilts.

@@ -21,7 +21,7 @@ test('every preload that loads page-inject is wired for recording', () => {
   // also start it and carry its tracks out, or that provider records silence.
   const preloads = readdirSync(app).filter((f) => /^preload-.*\.js$/.test(f));
   // Code that LOADS page-inject, not a comment that mentions it (the bridges do).
-  const withInject = preloads.filter((f) => /path\.join\(__dirname, 'page-inject\.js'\)/.test(read(f)));
+  const withInject = preloads.filter((f) => /injectPageScripts\(\{ tag:/.test(read(f)));
   assert.ok(withInject.length >= 3, 'expected several page-inject preloads, found: ' + withInject.join(', '));
   for (const f of withInject) {
     const src = read(f);

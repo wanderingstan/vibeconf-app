@@ -440,10 +440,12 @@ for i in $(seq 1 $N); do
       >"/tmp/vibeconf-$profile.log" 2>&1 &
   fi
   BOTS_ARG+="${BOTS_ARG:+,}$name:$port"
+  BOT_LOGS[$i]="/tmp/vibeconf-$profile.log"
 done
 
 # Wait for every local-server to come up.
 echo "▶ Waiting for local-servers…"
+FLEET_FAILED=0
 for i in $(seq 1 $N); do
   port=$((BASE_PORT + i - 1))
   for attempt in $(seq 1 40); do
@@ -454,7 +456,11 @@ for i in $(seq 1 $N); do
     if curl -sf -m 5 "http://127.0.0.1:$port/api/sync/no-room" >/dev/null 2>&1; then
       echo "  ✓ port $port up"; break
     fi
-    if (( attempt == 40 )); then echo "  ✗ port $port never came up — see /tmp/vibeconf-test$i.log"; fi
+    if (( attempt == 40 )); then
+      echo "  ✗ port $port never came up — see ${BOT_LOGS[$i]}"
+      tail -1 "${BOT_LOGS[$i]}" 2>/dev/null | sed 's/^/    /'
+      (( ++FLEET_FAILED ))
+    fi
     sleep 1
   done
 done
@@ -468,6 +474,13 @@ done
 # bot-own-call-recording will supersede in-call screen capture anyway, and screen
 # recording's durable value is OUT-OF-call behavior, which needs no window juggling.
 # Windows just open at their default (possibly overlapping) positions.
+
+# Not "Fleet up" with a bot missing: the test would only find out 90s later, as
+# a join timeout that hides the real reason. Callers run --kill either way.
+if (( FLEET_FAILED )); then
+  echo "✗ Fleet not up: $FLEET_FAILED of $N bot(s) failed to start."
+  exit 1
+fi
 
 echo ""
 echo "✓ Fleet up. Drive it with:"

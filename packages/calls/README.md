@@ -11,7 +11,7 @@ API holds; the app (`electron-app/`) is its first user. Not published yet.
 
 | Folder | What's in it |
 | --- | --- |
-| `core/` | The `CallProvider` contract and its IPC wire (`call-provider.js`, `call-client.js`), platform detection from a join URL (`call-target.js`), the calling-app base class, call phases, the host channel (`host-ipc.js`) |
+| `core/` | The `CallProvider` contract and its IPC wire (`call-provider.js`, `call-client.js`), platform detection from a join URL (`call-target.js`), the calling-app base class, call phases |
 | `providers/` | One provider per platform, with its DOM selectors next to it; the Twilio phone page and Voice SDK |
 | `inject/` | The media core that runs inside the call page (`page-inject.js`: virtual mic and camera, the `getUserMedia` / `getDisplayMedia` overrides, audio taps, recorder), and `load.js` to put it there |
 | `hearing/` | Captions and speech-to-text plumbing (`caption-source.js`, speech gate) |
@@ -24,11 +24,14 @@ API holds; the app (`electron-app/`) is its first user. Not published yet.
   app draws its avatar and voices its agent through the media core's API
   (`window.__vibeconfMedia`) as page plugins of its own.
 - **Only `hosts/electron/` requires Electron.** Anything else that needs the
-  host gets it passed in: a provider reaches the host through
-  `core/host-ipc.js`, which the host's preload sets.
+  host gets it passed in.
+- **Providers don't know the wire.** A provider takes commands as method calls
+  and reports through its own events (`provider.on(CALL_EVENTS.x, fn)`); the
+  host's preload carries both over IPC. Meet's startup values (bot name, join
+  mode, config) come in through `startGoogleMeet(host)`.
 - **Nothing reaches into the app.** No relative require leaves this folder.
 
-`tests/calls-package-boundary.test.mjs` checks the last two.
+`tests/calls-package-boundary.test.mjs` checks the last three.
 
 ## How the app uses it
 

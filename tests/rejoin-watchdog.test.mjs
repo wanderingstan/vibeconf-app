@@ -119,8 +119,8 @@ test('the watchdog stands down when WE clicked Leave', () => {
   assert.match(provider, /let markDeliberateLeave = \(\) => \{\};/);
   assert.match(provider, /_leaveGoneTicks >= 12 && !_callEndedFired && !_leftOnPurpose/);
   // Set BEFORE the click, so no tick can slip through in between.
-  const h = provider.slice(provider.indexOf("ipcRenderer.on('trigger-leave-call'"));
-  const body = h.slice(0, h.indexOf('\n});'));
+  const h = provider.slice(provider.indexOf('  leave() {'));
+  const body = h.slice(0, h.indexOf('\n  }'));
   assert.match(body, /markDeliberateLeave\(\);/);
   assert.ok(body.indexOf('markDeliberateLeave()') < body.indexOf('clicked'),
     'stand down before clicking Leave');

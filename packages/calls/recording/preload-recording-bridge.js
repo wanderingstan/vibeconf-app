@@ -3,16 +3,15 @@
 //
 // Recording audio happens in the page (page-inject's callRecorder); main owns
 // the decision and the files. Two hops connect them, and until #814 only the
-// Meet preload (google-meet-provider.js) had either, so on Slack and Zoom a
+// Meet provider had either, so on Slack and Zoom a
 // recording came out as silent video:
 //   main → page:  'trigger-record' IPC → start-recording / stop-recording
 //   page → main:  record-chunk / record-stopped / record-name /
 //                 record-speaker-event / record-started → the call-record-*
 //                 IPC channels main.js consumes (call-recorder.js)
 //
-// Mirrors google-meet-provider.js exactly (same messages, same channels), so a
-// recording behaves the same whichever provider the bot is on. Meet keeps its
-// own copy because it also clamps its status banner while recording.
+// Every platform's preload installs it, Meet's included (Meet also clamps its
+// status banner while recording, on the same trigger-record command).
 
 // Pure: which IPC channel (if any) a page message is forwarded on.
 const PAGE_TO_MAIN = {

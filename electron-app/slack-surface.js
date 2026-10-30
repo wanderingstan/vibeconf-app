@@ -90,6 +90,10 @@ function createSlackSurface(mainWindow, opts = {}) {
       contextIsolation: false,
       sandbox: false,
       partition,
+      // Never throttle a bot's view (as #424 does for Meet's). Hidden, Chromium
+      // ran the auto-join clickers' 500 ms timers about once a minute, so the
+      // "different device" modal sat unclicked for 59 s and the join timed out.
+      backgroundThrottling: false,
     },
   });
   // Spoof Chrome BEFORE the first load so app.slack.com's UA check passes.
@@ -136,7 +140,7 @@ function createSlackSurface(mainWindow, opts = {}) {
           // the DOM at all. Force a width that keeps the side-panel mounted.
           width: 1280,
           height: 860,
-          webPreferences: { preload: path.join(__dirname, 'preload-slack-huddle.js'), contextIsolation: false, sandbox: false, partition },
+          webPreferences: { preload: path.join(__dirname, 'preload-slack-huddle.js'), contextIsolation: false, sandbox: false, partition, backgroundThrottling: false },
         },
       };
     }
@@ -237,7 +241,8 @@ function createSlackSurface(mainWindow, opts = {}) {
     if (autojoin) clickWhenReady(win.webContents, SLACK.huddle.lobbyStartButton, 'lobby Start Huddle');
 
     // The "You're in this huddle on a different device" modal renders in THIS
-    // huddle popup (Stan confirmed 2026-06-24) when the bot account is already in
+    // huddle popup (Stan confirmed 2026-06-24; it can also show in the main view,
+    // handled below) when the bot account is already in
     // the huddle on another session (two bot accounts on one machine, or a stale
     // device) — it blocks the join. Claim the huddle for this bot instance by
     // clicking "Switch to this device" whenever it appears. Runs always (not just
@@ -276,6 +281,12 @@ function createSlackSurface(mainWindow, opts = {}) {
   // short-lived clicker.
   view.webContents.on('did-finish-load', () => {
     clickButtonByTextRepeating(view.webContents, 'Slack in your browser', '"use Slack in your browser" interstitial (main view)', { tries: 40 });
+    // The "You're in this huddle on a different device" modal now also renders
+    // HERE, over the channel, right after the Huddle click (seen 2026-10-29), not
+    // only in the popup. It shows whenever Slack still counts the account in the
+    // huddle from an earlier session, e.g. a test bot that was killed instead of
+    // leaving, and blocked every following join until someone clicked it.
+    clickButtonByTextRepeating(view.webContents, 'Switch to this device', '"Switch to this device" (different-device modal, main view)');
   });
 
   // Toggle between the huddle overlay and the app/panel underneath. The huddle

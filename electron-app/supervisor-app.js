@@ -28,7 +28,7 @@ const { spawn } = require('child_process');
 const Store = require('./store.js');
 const profileManager = require('./profile-manager.js');
 const { decideWakeups, readFleet, detectedCalls, mergeTargets, launchThenAct, callPhase, upcomingForFleet, decideReaping, pickResumeBot } = require('./supervisor.js');
-const { spawnArgsForProfile } = require('./profile-launch.js');
+const { spawnArgsForProfile, allowedLaunchArgs } = require('./profile-launch.js');
 const { supervisorPort } = require('./supervisor-port.js');
 const { scanBrowsers, isAutomationDenied } = require('./browser-call-scan.js');
 const { createBotChildren } = require('./bot-children.js');
@@ -381,7 +381,7 @@ async function tick() {
 // Start a bot instance, or focus it if it is already up. This is what the
 // window's "open" button does, and what a calendar wake-up does — one path, so
 // they cannot diverge.
-function launchProfile(name, { openSettings = false } = {}) {
+function launchProfile(name, { openSettings = false, extraArgs = [] } = {}) {
   if (!profileManager.isValidProfileName(name)) return { ok: false, error: 'invalid profile name' };
   const isDefault = name === paths.defaultProfile;
 
@@ -396,6 +396,7 @@ function launchProfile(name, { openSettings = false } = {}) {
   // window or Dock icon of its own.
   try { args = spawnArgsForProfile({ name, isDefault, port, openSettings, headless: true }); }
   catch (err) { return { ok: false, error: err.message }; }
+  args.push(...extraArgs);
 
   // Our own child process, not a detached launch: see bot-children.js. The
   // executable itself, even in a packaged Mac build. `open -n` existed to give
@@ -816,7 +817,21 @@ function startDirectory() {
       if (url.pathname === '/api/launch' && req.method === 'POST') {
         const name = url.searchParams.get('profile');
         if (!name) return send(400, { ok: false, error: 'profile is required' });
-        return send(200, launchProfile(name));
+        const body = await new Promise((resolve, reject) => {
+          let data = '';
+          req.on('data', (chunk) => { data += chunk; });
+          req.on('end', () => resolve(data));
+          req.on('error', reject);
+        });
+        let extraArgs = [];
+        try { extraArgs = allowedLaunchArgs(JSON.parse(body || '{}').extraArgs); } catch { /* no args */ }
+        const result = launchProfile(name, { openSettings: url.searchParams.has('open-settings'), extraArgs });
+        // Not awaited: showBot waits for the bot to come up, and the caller only
+        // needs to know it started.
+        if (result.ok && url.searchParams.has('show')) {
+          showBot(name).catch((err) => console.warn(`[supervisor] could not show "${name}":`, err.message));
+        }
+        return send(200, result);
       }
       return send(404, { ok: false, error: 'not found' });
     } catch (err) {

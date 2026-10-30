@@ -80,7 +80,7 @@ const vm = require('vm');
 const Store = require('./store.js');
 const { APP_LEVEL_KEYS, ScopedStore, migrateAppLevelKeys } = require('./config-scope.js');
 const profileManager = require('./profile-manager.js');
-const { profileLaunchCommand, spawnArgsForProfile } = require('./profile-launch.js');
+const { profileLaunchCommand, spawnArgsForProfile, launchThroughSupervisor } = require('./profile-launch.js');
 const { stallExplainedByOwnSpeech } = require('./caption-stall-excuse.js');
 const { MEET } = require('@vibeconferencing/calls/providers/meet-selectors.js'); // pure data — safe in the main process
 const { resolveSvg } = require('./svg-resolver.js');
@@ -10081,7 +10081,7 @@ app.whenReady().then(async () => {
         launchedChanged = true;
         console.log(`[calendar] Event "${e.summary || e.id}" matches profile "${name}" (not this one) — launching/focusing it.`);
         if (launchOrFocusProfileRef) {
-          launchOrFocusProfileRef(name).catch((err) => {
+          launchOrFocusProfileRef(name, { background: true }).catch((err) => {
             console.warn(`[calendar] Failed to launch/focus profile "${name}" for calendar match:`, err.message);
           });
         }
@@ -14009,7 +14009,7 @@ function setupIPC() {
   // caller can poll for the target coming up before it closes itself.
   // extraArgs: further --flags for a FRESH launch only (a running profile is
   // focused, never relaunched — so they can't move a bot out of its call).
-  async function launchOrFocusProfile(name, { openSettings = false, extraArgs = [] } = {}) {
+  async function launchOrFocusProfile(name, { openSettings = false, extraArgs = [], background = false } = {}) {
     const isDefault = isDefaultName(name);
     if (!profileManager.isValidProfileName(name)) {
       return { ok: false, error: 'Invalid profile name (letters, numbers, . _ - only)' };
@@ -14032,6 +14032,14 @@ function setupIPC() {
         return { ok: false, error: `Profile running on ${port} but focus failed: ${err.message}` };
       }
     }
+
+    // The app window is running: the new bot belongs in it, not in a window of its
+    // own. Only without one (a bot started on its own) do we launch it ourselves.
+    const { supervisorUrl } = require('./supervisor-port.js');
+    const viaWindow = await launchThroughSupervisor({
+      url: supervisorUrl(), name: isDefault ? DEFAULT_PROFILE_NAME : name, openSettings, extraArgs, show: !background,
+    });
+    if (viaWindow) return { ...viaWindow, runningKey, launchFailure: { message: null } };
 
     // Otherwise launch a fresh instance. The default takes no --profile (and the
     // default port); a named profile gets its stable registry port.

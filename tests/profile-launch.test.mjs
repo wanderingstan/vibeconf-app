@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const { profileLaunchCommand, spawnArgsForProfile } = require('../electron-app/profile-launch.js');
+const { profileLaunchCommand, spawnArgsForProfile, launchThroughSupervisor, allowedLaunchArgs } = require('../electron-app/profile-launch.js');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
 const MAC_EXE = '/Applications/Vibeconferencing.app/Contents/MacOS/Vibeconferencing';
@@ -215,4 +215,48 @@ test('the supervisor starts bots headless; a bot\'s own launcher does not (yet)'
   assert.match(sup, /spawnArgsForProfile\(\{ name, isDefault, port, openSettings, headless: true \}\)/);
   const main = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
   assert.doesNotMatch(main, /spawnArgsForProfile\(\{[^}]*headless/, 'the profile switcher still opens windowed bots');
+});
+
+// A bot one bot starts (calendar match, "New bot…", /join-call) used to float free
+// in its own window even with the app window running.
+test('a bot launching a bot asks the app window first', () => {
+  const body = main.slice(main.indexOf('async function launchOrFocusProfile('));
+  const asked = body.indexOf('launchThroughSupervisor(');
+  const spawned = body.indexOf('profileLaunchCommand(');
+  assert.ok(asked !== -1 && asked < spawned, 'must ask the app window before spawning its own');
+  assert.match(main, /launchOrFocusProfileRef\(name, \{ background: true \}\)/,
+    "a calendar wake-up mustn't take over the window's stage");
+});
+
+test('launchThroughSupervisor reports what the app window did', async () => {
+  const answer = (body) => async () => new Response(JSON.stringify(body));
+  const call = (fetchImpl) => launchThroughSupervisor({ url: 'http://x', name: 'b', fetchImpl });
+
+  assert.deepEqual(await call(answer({ ok: true, port: 7871 })), { ok: true, launched: true, port: 7871 });
+  assert.deepEqual(await call(answer({ ok: true, port: 7871, already: true })), { ok: true, focused: true, port: 7871 });
+  assert.equal((await call(answer({ ok: false, error: 'nope' }))).error, 'nope');
+  // Nobody home, or something that isn't the app window: the caller launches it.
+  assert.equal(await call(async () => { throw new Error('refused'); }), null);
+  assert.equal(await call(async () => new Response('not json')), null);
+});
+
+test('launchThroughSupervisor keeps a join link out of the URL', async () => {
+  let seen;
+  await launchThroughSupervisor({
+    url: 'http://x', name: 'b', extraArgs: ['--join-url=https://example.test/j?pwd=secret'], show: true, openSettings: true,
+    fetchImpl: async (u, o) => { seen = { u, o }; return new Response('{"ok":true}'); },
+  });
+  assert.ok(!seen.u.includes('secret'));
+  assert.match(seen.u, /profile=b/);
+  assert.match(seen.u, /open-settings=1/);
+  assert.match(seen.u, /show=1/);
+  assert.match(seen.o.body, /secret/);
+});
+
+test('the app window only passes on the flags a launching bot needs', () => {
+  assert.deepEqual(
+    allowedLaunchArgs(['--join-url=https://x', '--summoned=true', '--local-port=1', '--config=/tmp/x', 7]),
+    ['--join-url=https://x', '--summoned=true'],
+  );
+  assert.deepEqual(allowedLaunchArgs('--join-url=x'), []);
 });

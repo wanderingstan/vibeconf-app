@@ -102,4 +102,40 @@ async function supervisorIsRunning({ url, fetchImpl = fetch, timeoutMs = 700 } =
   }
 }
 
-module.exports = { profileLaunchCommand, spawnArgsForProfile, supervisorIsRunning };
+// A bot starting another bot: ask the app window to do it, so the new bot lives in
+// that window like one started from the sidebar, instead of floating free in a
+// window of its own. Null means nobody answered, so the caller launches it itself.
+//
+// `show` puts the new bot on the window's stage, for a launch someone asked for.
+// A calendar wake-up leaves it off, so it doesn't take over what's on screen.
+async function launchThroughSupervisor({ url, name, openSettings = false, extraArgs = [], show = false, fetchImpl = fetch, timeoutMs = 2000 } = {}) {
+  const query = new URLSearchParams({ profile: name });
+  if (openSettings) query.set('open-settings', '1');
+  if (show) query.set('show', '1');
+  let res;
+  try {
+    // The args go in the body because a join link can carry a passcode.
+    res = await fetchImpl(`${url}/api/launch?${query}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ extraArgs }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch {
+    return null;
+  }
+  const body = await res.json().catch(() => null);
+  if (!body) return null;
+  if (!body.ok) return { ok: false, error: body.error || `the app window answered ${res.status}` };
+  if (body.already) return { ok: true, focused: true, port: body.port };
+  return { ok: true, launched: true, port: body.port };
+}
+
+// What a bot may ask the app window to pass to the bot it starts. The endpoint is
+// on localhost but has no token, so it must not become a way to set any flag.
+function allowedLaunchArgs(extraArgs) {
+  return (Array.isArray(extraArgs) ? extraArgs : [])
+    .filter((a) => typeof a === 'string' && (a.startsWith('--join-url=') || a === '--summoned=true'));
+}
+
+module.exports = { profileLaunchCommand, spawnArgsForProfile, supervisorIsRunning, launchThroughSupervisor, allowedLaunchArgs };

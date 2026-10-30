@@ -1,0 +1,68 @@
+name: calls conformance canary
+
+# The calls library's nightly canary (Phase 5): the conformance suite for every
+# platform on both hosts (Electron = the app, Playwright = the library alone),
+# via scripts/conformance-matrix.mjs, on the self-hosted Mac mini. The public
+# launch waits on 14 green nights in a row; the Telegram summary counts them.
+#
+# Its own run, not a lane in the 03:00 nightly (scheduled-meet-test.sh): the
+# matrix takes ~30-40 min and the nightly's watchdog is 30 min for everything.
+# 11:30 UTC is after the nightly in both MST and MDT, and the fleet lock covers
+# the night it runs long.
+#
+# Zoom and Teams cells need the private test-meeting links on the mini, in
+# ~/.config/vibeconf/canary.env (VIBECONF_ZOOM_URL=…, VIBECONF_TEAMS_URL=…,
+# chmod 600). Without them those cells report "not configured".
+on:
+  schedule:
+    - cron: '30 11 * * *'
+  workflow_dispatch:
+    inputs:
+      cells:
+        description: 'Only these cells, e.g. meet/playwright,zoom/electron (empty = all)'
+        required: false
+        default: ''
+
+concurrency:
+  group: calls-conformance-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    runs-on: [self-hosted, mini]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          clean: false
+
+      # As in smoke.yml, plus the library's own deps (playwright-core) for the
+      # Playwright cells. packages/calls installs with npm: it's the package's
+      # own lockfile, and what an outside developer would run.
+      - name: Ensure deps
+        run: |
+          for sub in electron-app mcp-server; do
+            if [ ! -d "$sub/node_modules" ] || [ "$sub/pnpm-lock.yaml" -nt "$sub/node_modules/.modules.yaml" ]; then
+              echo "installing $sub deps…"; (cd "$sub" && pnpm install)
+            fi
+          done
+          if [ ! -d packages/calls/node_modules ] || [ packages/calls/package-lock.json -nt packages/calls/node_modules/.package-lock.json ]; then
+            echo "installing packages/calls deps…"; (cd packages/calls && npm ci)
+          fi
+
+      # One step: the fleet lock is owned by a PID, so acquire and release have
+      # to happen in the same shell. Waits for the nightly rather than racing it
+      # for the test profiles and ports.
+      - name: Conformance matrix
+        timeout-minutes: 85
+        env:
+          VIBECONF_CANARY_CELLS: ${{ inputs.cells }}
+          VIBECONF_CANARY_CHAT: '6785998012'
+        run: |
+          set -o pipefail
+          if ! node scripts/fleet-lock.mjs acquire canary --pid $$ --wait 1800; then
+            echo "::error::the fleet lock stayed held for 30 min; no canary tonight"
+            exit 1
+          fi
+          trap 'node scripts/fleet-lock.mjs release canary --pid $$' EXIT
+          node scripts/conformance-matrix.mjs

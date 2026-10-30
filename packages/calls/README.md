@@ -91,3 +91,12 @@ Open:
 capability the platform or the host lacks is skipped and says why. It drives
 ConformanceBots, so one suite checks every host; `scripts/provider-test.mjs`
 runs it (`--host electron` over the app's HTTP API, `--host playwright` here).
+
+Nightly, the canary (`.github/workflows/canary.yml`, on the Mac mini runner)
+runs the suite for every platform on both hosts through
+`scripts/conformance-matrix.mjs`, records each cell in
+`~/vibeconf-test-results/conformance-results.jsonl`, and posts the result and
+the green streak to Telegram. The public launch waits on 14 green nights in a
+row. Zoom and Teams need the private test-meeting links on the mini in
+`~/.config/vibeconf/canary.env`; until then they report "not configured".
+

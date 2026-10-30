@@ -12,6 +12,8 @@
     "test:slack": "node scripts/slack-test.mjs",
     "test:slack:ci": "SLACK_TEST_URL=${SLACK_TEST_URL:-https://app.slack.com/client/T0BCX7N0RA6/C0BCZ4E3Q49}; VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 --slack --slack-url=$SLACK_TEST_URL && node scripts/slack-test.mjs --bots Alice:7901,Bob:7902 --slack-url=$SLACK_TEST_URL; code=$?; scripts/spawn-test-fleet.sh 2 --slack --kill; exit $code",
     "test:slack:rec": "scripts/record-run.sh --label slack -- pnpm test:slack:ci",
+    "test:meet:conformance": "VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 && node scripts/provider-test.mjs --platform meet --bots Alice:7901,Bob:7902; code=$?; scripts/spawn-test-fleet.sh 2 --kill; exit $code",
+    "test:meet:playwright": "node scripts/provider-test.mjs --platform meet --host playwright --bots Ada,Ben",
     "test:zoom": "node scripts/provider-test.mjs --platform zoom",
     "test:zoom:ci": "[ -n \"$VIBECONF_ZOOM_URL\" ] || { echo \"set VIBECONF_ZOOM_URL to the zoom test meeting link\"; exit 2; }; VIBECONF_NO_RUN_TAG=1 scripts/spawn-test-fleet.sh 2 --zoom && node scripts/provider-test.mjs --platform zoom --bots Alice:7901,Bob:7902; code=$?; scripts/spawn-test-fleet.sh 2 --zoom --kill; exit $code",
     "test:teams": "node scripts/provider-test.mjs --platform teams",

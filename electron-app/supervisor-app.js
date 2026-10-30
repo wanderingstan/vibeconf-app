@@ -1387,10 +1387,13 @@ function createWindow() {
   // A window means a Dock icon, even for a supervisor that started in the background.
   // The app's own icon, not Electron's: a packaged build gets it from the
   // bundle, but run from source the Dock shows Electron's (the bot sets the
-  // same in main.js).
+  // same in main.js). Source runs only: overriding the bundle's icon drops the
+  // squircle macOS 26 draws behind it.
   if (app.dock) {
     app.dock.show();
-    try { app.dock.setIcon(require('electron').nativeImage.createFromPath(path.join(__dirname, 'icon.png'))); } catch { /* keep the default */ }
+    if (!app.isPackaged) {
+      try { app.dock.setIcon(require('electron').nativeImage.createFromPath(path.join(__dirname, 'icon.png'))); } catch { /* keep the default */ }
+    }
   }
   win = new BrowserWindow({
     // Sized by content, so the stage is exactly PANEL_W; see fitWindowWidth.

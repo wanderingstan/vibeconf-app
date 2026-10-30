@@ -9632,8 +9632,9 @@ app.whenReady().then(async () => {
   // (CSP strip helps injection; Slack sets its own per-view UA on top).
   ensureMeetSessionConfigured(SESSION_PARTITION);
 
-  // Set dock icon on macOS
-  if (process.platform === 'darwin' && app.dock) {
+  // Set dock icon on macOS, from source only: a packaged build gets it from the
+  // bundle, and overriding that drops the squircle macOS 26 draws behind it.
+  if (process.platform === 'darwin' && app.dock && !app.isPackaged) {
     const icon = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
     app.dock.setIcon(icon);
   }

@@ -62,17 +62,14 @@ await host.close();
 ```
 
 It needs `playwright-core` (an optional peer dependency) and drives the
-installed Google Chrome, headed. The media core and the Meet provider are
+installed Google Chrome, headed, with `navigator.webdriver` off as in the
+Electron host (Meet refuses a webdriver-flagged guest). The media core and the Meet provider are
 bundled (`bundle.js`) and added as init scripts; `page-host.js` is the page's
 half (one entry per platform: `page-meet.js`, `page-zoom.js`, `page-teams.js`),
 the Playwright counterpart of the app's call preloads.
 
-Open, as of Phase 4:
+Open:
 
-- **Meet refuses it.** The bot reaches the join screen and Meet answers
-  "You can't join this video call". Chrome driven over CDP reports
-  `navigator.webdriver`, which the Electron host never does. Whether to mask
-  that is a decision we haven't made yet.
 - **Teams chat can drop a message on this host.** When the bot opens chat to
   send at the moment another participant's message arrives, Teams' web client
   never renders that message for the bot (its page has no trace of it; a

@@ -187,6 +187,9 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
       '--disable-background-timer-throttling',
       '--disable-renderer-backgrounding',
       '--disable-backgrounding-occluded-windows',
+      // navigator.webdriver stays false, as in the Electron host. Meet answers a
+      // webdriver-flagged guest with "You can't join this video call".
+      '--disable-blink-features=AutomationControlled',
       ...args,
     ],
   });

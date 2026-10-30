@@ -50,7 +50,7 @@ if [[ "$CHECK" == 1 ]]; then
   trap 'rm -rf "$WORK"' EXIT
   cp /usr/bin/true "$WORK/signtest"
   codesign --force --timestamp=none --sign "$IDENTITY" "$WORK/signtest"
-  echo "✓ Signed with $(codesign -dv "$WORK/signtest" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
+  echo "✓ Signed with $(codesign -dvv "$WORK/signtest" 2>&1 | sed -n 's/^Authority=//p' | head -1)"
   exit 0
 fi
 

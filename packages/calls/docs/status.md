@@ -67,9 +67,9 @@ The diagram above is the design's view. In the code today:
   Google Chrome, headed, with the sandbox on, the page's CSP bypassed (Meet's
   Trusted Types otherwise refuse the provider), and `navigator.webdriver` off,
   which the Electron host already was. Meet refuses a webdriver-flagged guest
-  ("You can't join this video call"). Stan authorized this on 2026-10-30.
-  The design's risk table says "no stealth or anti-detection features, ever";
-  that line needs revisiting in light of this (open question below).
+  ("You can't join this video call"). Stan authorized this on 2026-10-30,
+  and restated the design's "no stealth or anti-detection features, ever" to
+  match: look like Chrome, never hide the bot (see the README's Rules).
 
 ## Open
 
@@ -106,8 +106,6 @@ The diagram above is the design's view. In the code today:
 **Open questions carried from the design**
 
 - MIT, or Apache-2.0 for its patent grant?
-- The "no stealth or anti-detection" principle versus the Playwright host
-  turning `navigator.webdriver` off: restate the principle, or change the host?
 - Support promise: which platforms get a fix-within-days commitment?
 - Camera surface: page URL only, or also a raw frame stream?
 - Launch story: a Pipecat transport first, or an MCP server for coding agents?

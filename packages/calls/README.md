@@ -33,6 +33,15 @@ API holds; the app (`electron-app/`) is its first user. Not published yet.
 - **Calls and media, never agents.** No LLM, turn-taking or MCP code here; the
   app draws its avatar and voices its agent through the media core's API
   (`window.__vibeconfMedia`) as page plugins of its own.
+- **Look like Chrome, never hide the bot.** A bot presents as the browser it
+  runs on: Chrome. The Electron host reports Electron's Chromium as current
+  Chrome (user agent and client hints), and the Playwright host turns off
+  `navigator.webdriver`; platforms otherwise refuse or block an automated
+  browser. Nothing beyond that: no fingerprint spoofing, CAPTCHA solving, proxy
+  rotation or rate-limit evasion. And nothing here hides a bot from the people
+  in a call: it joins as a visible participant, under the name it is given.
+  (Restated 2026-10-30, replacing the design's "no stealth or anti-detection
+  features, ever".)
 - **Only `hosts/electron/` requires Electron.** Anything else that needs the
   host gets it passed in.
 - **Providers don't know the wire.** A provider takes commands as method calls

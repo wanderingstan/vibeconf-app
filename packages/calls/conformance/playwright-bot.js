@@ -12,12 +12,12 @@ class PlaywrightConformanceBot {
   /**
    * @param {string} name
    * @param {object} [o]
-   * @param {string} [o.userDataDir]  defaults to a per-name profile in the temp dir
+   * @param {string} [o.userDataDir]  defaults to a per-name profile in ~/.config, since macOS clears old temp files and a sign-in has to last
    * @param {object} [o.launch]       more launchPlaywrightHost options
    */
   constructor(name, { userDataDir, launch = {} } = {}) {
     this.name = name;
-    this.userDataDir = userDataDir || path.join(os.tmpdir(), 'vibeconf-calls-conformance', name);
+    this.userDataDir = userDataDir || path.join(os.homedir(), '.config', 'vibeconf', 'conformance-profiles', name);
     this.launch = launch;
     // A share needs an app-owned page to present; on Playwright that's the
     // open WebRTC-loopback question in the design doc.

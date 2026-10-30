@@ -21,7 +21,7 @@ const url = arg('url', 'about:blank');
 if (!name) { console.error('--name is required (the bot name the conformance run uses, e.g. Alice)'); process.exit(2); }
 
 // Same directory as PlaywrightConformanceBot's default.
-const userDataDir = path.join(os.tmpdir(), 'vibeconf-calls-conformance', name);
+const userDataDir = path.join(os.homedir(), '.config', 'vibeconf', 'conformance-profiles', name);
 console.log(`Opening ${name}'s profile (${userDataDir}). Sign in, then close the window.`);
 const context = await chromium.launchPersistentContext(userDataDir, {
   channel: 'chrome', headless: false, viewport: null, chromiumSandbox: true, ignoreDefaultArgs: ['--enable-automation'],

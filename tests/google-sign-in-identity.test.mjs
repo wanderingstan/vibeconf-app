@@ -16,9 +16,11 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const src = (f) => readFileSync(join(root, 'electron-app', f), 'utf8');
 const ua = require('../electron-app/slack-ua.js');
 
-test('one Chrome identity: main.js takes its UA string from slack-ua.js, not its own pinned copy', () => {
+test('main.js takes the Meet UA from slack-ua.js, at the engine\'s version, not its own pinned copy', () => {
   const main = src('main.js');
-  assert.match(main, /const CHROME_UA = require\('\.\/slack-ua'\)\.UA;/);
+  // ENGINE_UA, not UA: Meet's bot check turns a guest away when the claimed
+  // Chrome runs far ahead of the engine (Chrome/150 on Chromium 130, 2026-10-29).
+  assert.match(main, /const CHROME_UA = require\('\.\/slack-ua'\)\.ENGINE_UA;/);
   assert.doesNotMatch(main, /Chrome\/131\.0\.0\.0/);
 });
 
@@ -32,12 +34,23 @@ test('configureMeetSession installs the Sec-CH-UA* header spoof itself, not only
 test('the header spoof sends Chrome brands that match the string', () => {
   let listener = null;
   ua.installHeaderSpoof({ webRequest: { onBeforeSendHeaders: (fn) => { listener = fn; } } });
-  let out = null;
-  listener({ requestHeaders: { 'sec-ch-ua': '"Chromium";v="130"', Accept: '*/*' } }, (r) => { out = r.requestHeaders; });
+  const send = (headers) => { let out = null; listener({ requestHeaders: headers }, (r) => { out = r.requestHeaders; }); return out; };
+  const out = send({ 'User-Agent': ua.UA, 'sec-ch-ua': '"Chromium";v="130"', Accept: '*/*' });
   assert.equal(out['sec-ch-ua'], undefined, 'Electron\'s own lower-case header is dropped, not sent twice');
   assert.match(out['Sec-CH-UA'], new RegExp(`"Google Chrome";v="${ua.CHROME}"`));
   assert.ok(ua.UA.includes(`Chrome/${ua.CHROME}.0.0.0`));
   assert.equal(out.Accept, '*/*');
+  // One partition serves the Meet view (engine version) and Teams/Zoom views
+  // (current Chrome): each request's hints follow the string it carries.
+  const meet = send({ 'User-Agent': 'Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36' });
+  assert.match(meet['Sec-CH-UA'], /"Google Chrome";v="130"/);
+  assert.doesNotMatch(meet['Sec-CH-UA-Full-Version-List'], new RegExp(`v="${ua.CHROME}`));
+});
+
+test('the Meet identity is Chrome at the engine\'s own version', () => {
+  assert.ok(ua.ENGINE_UA.includes(`Chrome/${ua.ENGINE}.0.0.0`));
+  assert.equal(ua.majorOf(ua.ENGINE_UA), ua.ENGINE);
+  assert.equal(ua.majorOf('Mozilla/5.0 Chrome/130.0.6723.191 Electron/33.4.11 Safari/537.36'), '130');
 });
 
 test('navigator.userAgentData is shimmed in the Meet view and in the bot\'s Google sign-in window', () => {

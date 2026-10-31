@@ -114,6 +114,7 @@ class PlaywrightCall extends CallProvider {
         this.off(channel, handler);
         reject(new Error(`no ${channel} within ${timeoutMs}ms`));
       }, timeoutMs);
+      timer.unref(); // the loser of a race shouldn't keep a finished script alive
       const handler = (payload) => {
         let ok = false;
         try { ok = test(payload); } catch { /* not this one */ }
@@ -133,10 +134,13 @@ class PlaywrightCall extends CallProvider {
   /** payload: { audioData: base64 audio, … }, as the media core takes it. */
   // Straight to the media core, wherever it runs: on Slack that's the main
   // window, not the provider's popup.
-  async speak(payload) {
-    return this.mediaPage.evaluate(([action, p]) => {
-      window.postMessage({ __botsInCalls: true, __fromExtension: true, action, payload: p }, '*');
-    }, ['play-tts', payload]);
+  async speak(payload) { return this._media('play-tts', payload); }
+  /** Cut off what's playing and drop what's queued; tts-ended still follows. */
+  async stopSpeaking(payload) { return this._media('stop-tts', payload); }
+  _media(action, payload) {
+    return this.mediaPage.evaluate(([a, p]) => {
+      window.postMessage({ __botsInCalls: true, __fromExtension: true, action: a, payload: p }, '*');
+    }, [action, payload]);
   }
   async setStudioSound(enabled) { return this._run('setStudioSound', !!enabled); }
   async setCaptionLanguage(language) { return this._run('setCaptionLanguage', language); }
@@ -210,6 +214,9 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
   });
   return {
     context,
+    // A share needs an app-owned page to present; that's the open WebRTC-loopback
+    // question in the design doc.
+    capabilities: { share: false },
     /**
      * Join a call and resolve once the bot is in it (CALL_EVENTS.botJoinedCall).
      * @param {string} url  a Google Meet, Zoom or Teams link, or a Slack channel (its huddle)
@@ -218,8 +225,9 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
      * @param {'guest'|'account'} [o.mode='guest']  'account' when the profile is signed in to Google
      * @param {object} [o.config]   the provider's config values (speakingDetectionMode, …)
      * @param {number} [o.timeoutMs=120000]
+     * @param {(call: PlaywrightCall) => void} [o.onCall]  gets the call before the page loads, to hear the join's status
      */
-    async join(url, { botName = 'AI Assistant', mode = 'guest', config = {}, timeoutMs = 120000 } = {}) {
+    async join(url, { botName = 'AI Assistant', mode = 'guest', config = {}, timeoutMs = 120000, onCall } = {}) {
       const target = platformFromUrl(url);
       const platform = target.ok && PLATFORMS[target.provider] ? target.provider : null;
       if (!platform) throw new Error('the Playwright host joins Google Meet, Zoom, Teams and Slack links: ' + (target.error || target.provider));
@@ -232,6 +240,7 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
       await context.grantPermissions(['microphone', 'camera'], { origin: new URL(startUrl).origin });
       const page = context.pages()[0] || await context.newPage();
       call = new PlaywrightCall(page);
+      if (onCall) onCall(call);
       if (PLATFORMS[platform].huddlePopup) {
         // The huddle opens as an about:blank popup that Slack fills from the main
         // window. The provider and the lobby clicks go in it, and from then on
@@ -263,4 +272,4 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
   };
 }
 
-module.exports = { launchPlaywrightHost, PlaywrightCall };
+module.exports = { launchPlaywrightHost, playwrightHost: launchPlaywrightHost, PlaywrightCall };

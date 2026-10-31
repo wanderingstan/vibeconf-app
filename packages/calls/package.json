@@ -6,7 +6,10 @@
   "license": "MIT",
   "author": "Stan James <stan@wanderingstan.com>",
   "homepage": "https://github.com/wanderingstan/vibeconf-app",
+  "main": "index.js",
   "files": [
+    "index.js",
+    "api/",
     "core/",
     "providers/",
     "inject/",

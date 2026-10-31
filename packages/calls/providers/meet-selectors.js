@@ -103,9 +103,10 @@ const MEET = {
     // onto the body with no separator ("…issues/389keepPin message"). Strip
     // only a TRAILING run of chrome tokens, and accept a bare "keep" in that
     // run only when fused (no whitespace before it) or following another
-    // chrome token — a sentence genuinely ending in " keep" survives.
+    // chrome token — a sentence genuinely ending in " keep" survives. On the
+    // bot's own messages it arrives on its own line instead ("…\nkeep").
     pinHoverText: 'Hover over a message to pin it',
-    pinChromeTailRe: /(?:\s*(?:Pin message|Unpin message|Hover over a message to pin it)|(?<=\S)keep)(?:keep|Pin message|Unpin message|Hover over a message to pin it|\s)*$/,
+    pinChromeTailRe: /(?:\s*(?:Pin message|Unpin message|Hover over a message to pin it)|(?<=\S)keep|\n\s*keep)(?:keep|Pin message|Unpin message|Hover over a message to pin it|\s)*$/,
     // A body that is NOTHING but chrome tokens (the hover hint's row renders
     // as its own data-message-id div): drop it outright — here "keep" needs
     // no fusion guard because there is no user text for it to belong to.

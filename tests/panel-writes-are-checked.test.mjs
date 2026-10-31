@@ -34,15 +34,16 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const panel = readFileSync(join(root, 'electron-app/renderer/panel.js'), 'utf8');
 const main = readFileSync(join(root, 'electron-app/main.js'), 'utf8');
 
-// The helper's own call, and the cautionary example in its doc comment, are the
-// only two places the raw channel name may still appear.
-const ALLOWED_RAW_INVOKES = 2;
+// The helper's own call, the cautionary example in its doc comment, and the
+// avatar thumbnail (a background save the user didn't ask for, which handles its
+// own failure by retrying) are the only places the raw channel name may appear.
+const ALLOWED_RAW_INVOKES = 3;
 
 test('no bare fire-and-forget set-config remains — they all go through setConfig', () => {
   const raw = panel.match(/api\.invoke\('set-config'/g) || [];
   assert.equal(raw.length, ALLOWED_RAW_INVOKES,
     `every set-config must go through setConfig(); found ${raw.length} raw uses `
-    + `(expected only the helper itself and its doc-comment example)`);
+    + `(expected only the helper, its doc-comment example and the thumbnail)`);
   // And the wrapper is actually used, in quantity — this pane has ~20 writes.
   const wrapped = panel.match(/setConfig\(/g) || [];
   assert.ok(wrapped.length > 15,

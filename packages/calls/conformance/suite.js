@@ -5,6 +5,7 @@
 //   join      both bots are in the call
 //   roster    each bot's participant list shows the other
 //   hear      a clip one bot plays reaches the other as captions, both ways
+//   chatEvent each bot gets the other's message once as a `chat` event, and not its own
 //   chat      each bot reads the message the other posted
 //   share     one bot shares, the platform reports it, and it stops cleanly
 //   leave     both bots leave
@@ -24,6 +25,9 @@
 //   playClip(file)            play an audio file into the call
 //   sendChat(text)
 //   chatContains(needle, timeoutMs) → boolean
+//   chatEvents                optional: true if the bot has the `chat` event, with
+//     startChatEvents() and chatEventsMatching(needle) → [{ text, at }]
+//   chatResent                optional: true once a send was retried, so it may have posted twice
 //   share()                   → boolean, the platform reports the bot sharing
 //   stopShare()               → boolean, sharing cleared
 //   leave()                   → boolean, out of the call
@@ -121,7 +125,34 @@ async function runConformance({ url, bots, onResult = () => {}, hearTimeoutMs = 
     if (can('chat', 'chat')) {
       const stamp = Date.now().toString(36);
       const nonce = (bot) => `conformance-${bot.name}-${stamp}`;
-      for (const bot of bots) await bot.sendChat(nonce(bot));
+      // Before anything reads chat, since a read reports new messages itself and
+      // this is to prove the unread path.
+      const listening = bots.filter((bot) => bot.startChatEvents);
+      for (const bot of listening) {
+        if (bot.chatEvents) await bot.startChatEvents();
+        else record('chatEvent', bot, 'skip', `no chat event on ${target.provider}`);
+      }
+      // One message at a time, so the first receiver hasn't touched its chat:
+      // sending opens the chat on Meet, which would hide the path being tested.
+      for (const [me, other] of [[a, b], [b, a]]) {
+        await other.sendChat(nonce(other));
+        const sentAt = Date.now();
+        if (!me.startChatEvents || !me.chatEvents) continue;
+        await step('chatEvent', me, async () => {
+          const deadline = Date.now() + 30000;
+          while (!me.chatEventsMatching(nonce(other)).length && Date.now() < deadline) await sleep(250);
+          const first = me.chatEventsMatching(nonce(other))[0];
+          if (!first) return { ok: false, note: `no event for ${other.name}'s message in 30s` };
+          await sleep(5000); // long enough for a duplicate to show up
+          const count = me.chatEventsMatching(nonce(other)).length;
+          const once = count === 1 || (count === 2 && other.chatResent);
+          const own = other.chatEventsMatching(nonce(other)).length;
+          return {
+            ok: once && !own,
+            note: `${count} event(s) for ${other.name}'s message after ${((first.at - sentAt) / 1000).toFixed(1)}s, ${own} for ${other.name}'s own copy`,
+          };
+        });
+      }
       for (const [me, other] of [[a, b], [b, a]]) {
         await step('chat', me, async () => {
           const ok = await me.chatContains(nonce(other), 20000);

@@ -180,6 +180,7 @@ class TeamsProvider extends CallProvider {
 
   scrapeChatMessages() {
     const out = [];
+    const repeats = new Map(); // same sender and text: keep the messages apart
     let sender = '';
     for (const item of document.querySelectorAll(TEAMS.chat.item)) {
       const a = item.querySelector(TEAMS.chat.author);
@@ -187,7 +188,10 @@ class TeamsProvider extends CallProvider {
       const m = item.querySelector(TEAMS.chat.message);
       const text = norm(m && m.textContent);
       if (!text) continue;
-      const id = item.id || (m && m.id) || (sender + '::' + text);
+      const key = sender + '::' + text;
+      const nth = repeats.get(key) || 0;
+      repeats.set(key, nth + 1);
+      const id = item.id || (m && m.id) || (key + '::' + nth);
       out.push({ id, sender: sender || 'unknown', text });
     }
     return out;

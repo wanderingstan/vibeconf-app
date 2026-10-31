@@ -1,10 +1,12 @@
 // conformance/playwright-bot.js: a ConformanceBot (see suite.js) on the
-// Playwright host. One bot = one Chromium profile = one launchPlaywrightHost.
+// Playwright host, driven through the public API, so the suite proves what
+// developers use. One bot = one Chromium profile = one host.
 
 const path = require('path');
 const os = require('os');
-const { launchPlaywrightHost } = require('../hosts/playwright');
-const { CALL_EVENTS } = require('../core/call-provider');
+const fs = require('fs');
+const { join } = require('..');
+const { playwrightHost } = require('../hosts/playwright');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -19,9 +21,7 @@ class PlaywrightConformanceBot {
     this.name = name;
     this.userDataDir = userDataDir || path.join(os.homedir(), '.config', 'vibeconf', 'conformance-profiles', name);
     this.launch = launch;
-    // A share needs an app-owned page to present; on Playwright that's the
-    // open WebRTC-loopback question in the design doc.
-    this.hostCapabilities = { share: false };
+    this.hostCapabilities = { share: false }; // see the host's capabilities
     this.host = null;
     this.call = null;
     this._heard = new Map(); // turnId -> text, since startListening()
@@ -29,24 +29,20 @@ class PlaywrightConformanceBot {
   }
 
   async join(url) {
-    this.host = await launchPlaywrightHost({ userDataDir: this.userDataDir, ...this.launch });
+    this.host = await playwrightHost({ userDataDir: this.userDataDir, ...this.launch });
     try {
-      this.call = await this.host.join(url, { botName: this.name });
+      this.call = await join(url, { name: this.name, host: this.host });
     } catch (err) {
-      this._failedPage = this.host.context.pages()[0] || null;
+      this._failure = err;
       throw err;
     }
-    this.call.on(CALL_EVENTS.captionTurns, ({ turns = [] } = {}) => {
-      if (!this._listening) return;
-      for (const t of turns) this._heard.set(t.turnId ?? this._heard.size, t.text || '');
+    this.call.on('caption', ({ id, text }) => {
+      if (this._listening) this._heard.set(id, text);
     });
-    // The bot is heard only with its mic open; on Electron the app's mode does this.
-    await this.call.setMicMuted(false);
   }
 
   async participants() {
-    const list = (await this.call.getParticipants()) || [];
-    return list.map((p) => (typeof p === 'string' ? p : p.name)).filter(Boolean);
+    return (await this.call.participants()).map((p) => p.name).filter(Boolean);
   }
 
   startListening() { this._heard.clear(); this._listening = true; }
@@ -62,46 +58,58 @@ class PlaywrightConformanceBot {
     return null;
   }
 
-  async playClip(file) { await this.call.playAudioFile(file); }
+  async playClip(file) { await this.call.speak(file); }
 
   // One retry when the platform didn't confirm the send, as the Electron
   // harness does (meet-test-lib sendChat): a flaky chat pane is a platform
   // hiccup, not a broken chat path.
   async sendChat(text) {
-    if (await this.call.sendChat(text)) return;
-    console.log(`[${this.name}] sendChat not confirmed; retrying once`);
-    await sleep(1500);
-    await this.call.sendChat(text);
+    try {
+      await this.call.chat.send(text);
+    } catch (err) {
+      console.log(`[${this.name}] sendChat not confirmed; retrying once (${err.message})`);
+      this.chatResent = true; // the first may have posted after all
+      await sleep(1500);
+      await this.call.chat.send(text);
+    }
   }
 
   async chatContains(needle, timeoutMs) {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      const msgs = (await this.call.readChat()) || [];
-      if (msgs.some((m) => `${m.sender || ''} ${m.text || ''}`.includes(needle))) return true;
+      const msgs = await this.call.chat.read();
+      if (msgs.some((m) => `${m.sender} ${m.text}`.includes(needle))) return true;
       await sleep(2000);
     }
     return false;
   }
+
+  // The chat event, for the suite's exactly-once check.
+  get chatEvents() { return this.call.capabilities.chatEvents; }
+  startChatEvents() {
+    this._chatEvents = [];
+    this.call.on('chat', (m) => this._chatEvents.push({ text: m.text, at: Date.now() }));
+  }
+  chatEventsMatching(needle) { return this._chatEvents.filter((m) => m.text.includes(needle)); }
 
   async share() { return false; }
   async stopShare() { return false; }
 
   async leave() {
     if (!this.host) return true;
-    let clicked = false;
-    try { clicked = this.call ? await this.call.leave() : false; } catch { /* page gone */ }
+    if (this.call) { try { await this.call.leave(); } catch { /* page gone */ } }
     await sleep(2000);
     await this.host.close();
     this.host = null;
-    return clicked || !this.call;
+    return true;
   }
 
   async snapshot() {
-    const page = (this.call && this.call.page) || this._failedPage;
-    if (!page) return null;
+    const shot = this._failure && this._failure.screenshot;
     const file = path.join(os.tmpdir(), `vibeconf-conformance-${this.name}-${Date.now()}.png`);
-    await page.screenshot({ path: file });
+    if (shot) { fs.writeFileSync(file, shot); return file; }
+    if (!this.call) return null;
+    fs.writeFileSync(file, await this.call.screenshot());
     return file;
   }
 }

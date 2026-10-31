@@ -81,9 +81,13 @@ The diagram above is the design's view. In the code today:
 
 **Platforms**
 
-- Teams chat on Playwright: when a bot opens chat to send at the moment the
-  other's message arrives, Teams never renders that message for it. The same
-  sequence passes on Electron. Unexplained.
+- Teams chat can run late on both hosts. The push with the full text reaches the
+  page in under a second, but the web client sometimes doesn't show the message
+  until much later, so a read or `chat` event is late too. Measured 2026-10-31
+  with guest bots: one sender, 1 of 8 late (17s); two senders within 100ms, 8 of
+  12 messages late (43-54s), with only the two bots in the call. Reopening the
+  pane didn't help; the next message brings it in. The suite waits 75s on Teams.
+  Reading the push would fix it, but its format is undocumented.
 - Share and call recording on Playwright: presenting an app-owned page needs
   the WebRTC loopback the design proposes; neither is built.
 - The calling apps (WhatsApp, Telegram, phone) aren't on the Playwright host.

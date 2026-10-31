@@ -125,6 +125,10 @@ async function runConformance({ url, bots, onResult = () => {}, hearTimeoutMs = 
     if (can('chat', 'chat')) {
       const stamp = Date.now().toString(36);
       const nonce = (bot) => `conformance-${bot.name}-${stamp}`;
+      // Teams' web client can sit on a message for ~55s, though the push reaches
+      // the page in under a second (measured 2026-10-31, see docs/status.md).
+      const chatWaitMs = target.provider === 'teams' ? 75000 : 20000;
+      const chatEventWaitMs = Math.max(chatWaitMs, 30000);
       // Before anything reads chat, since a read reports new messages itself and
       // this is to prove the unread path.
       const listening = bots.filter((bot) => bot.startChatEvents);
@@ -139,10 +143,10 @@ async function runConformance({ url, bots, onResult = () => {}, hearTimeoutMs = 
         const sentAt = Date.now();
         if (!me.startChatEvents || !me.chatEvents) continue;
         await step('chatEvent', me, async () => {
-          const deadline = Date.now() + 30000;
+          const deadline = Date.now() + chatEventWaitMs;
           while (!me.chatEventsMatching(nonce(other)).length && Date.now() < deadline) await sleep(250);
           const first = me.chatEventsMatching(nonce(other))[0];
-          if (!first) return { ok: false, note: `no event for ${other.name}'s message in 30s` };
+          if (!first) return { ok: false, note: `no event for ${other.name}'s message in ${chatEventWaitMs / 1000}s` };
           await sleep(5000); // long enough for a duplicate to show up
           const count = me.chatEventsMatching(nonce(other)).length;
           const once = count === 1 || (count === 2 && other.chatResent);
@@ -155,7 +159,7 @@ async function runConformance({ url, bots, onResult = () => {}, hearTimeoutMs = 
       }
       for (const [me, other] of [[a, b], [b, a]]) {
         await step('chat', me, async () => {
-          const ok = await me.chatContains(nonce(other), 20000);
+          const ok = await me.chatContains(nonce(other), chatWaitMs);
           return { ok, note: ok ? `read ${other.name}'s message` : `${other.name}'s message never arrived` };
         });
       }

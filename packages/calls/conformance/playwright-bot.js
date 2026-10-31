@@ -15,7 +15,7 @@ class PlaywrightConformanceBot {
    * @param {string} name
    * @param {object} [o]
    * @param {string} [o.userDataDir]  defaults to a per-name profile in ~/.config, since macOS clears old temp files and a sign-in has to last
-   * @param {object} [o.launch]       more launchPlaywrightHost options
+   * @param {object} [o.launch]       more playwrightHost options
    */
   constructor(name, { userDataDir, launch = {} } = {}) {
     this.name = name;

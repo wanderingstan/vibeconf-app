@@ -65,18 +65,27 @@ electron-builder 25 won't pack files whose real path is outside
 `electron-app/`, so `before-pack.js` swaps the link for a real copy for the
 length of the pack and `after-pack.js` puts the link back.
 
-## The Playwright host
+## Using it
 
 ```js
-const { launchPlaywrightHost } = require('@vibeconferencing/calls/hosts/playwright');
-const host = await launchPlaywrightHost({ userDataDir: '/tmp/bot-a' });
-const call = await host.join(meetZoomOrTeamsLink, { botName: 'Ada' });
-call.on(CALL_EVENTS.captionTurns, ({ turns }) => console.log(turns.at(-1)));
-await call.setMicMuted(false);
-await call.playAudioFile('hello.mp3');
+const { join } = require('@vibeconferencing/calls');
+
+const call = await join(link, { name: 'Ada (AI)', profile: './profiles/ada' });
+call.on('caption', (turn) => console.log(turn.speaker, turn.text));
+call.on('chat', (msg) => console.log(msg.sender, msg.text));
+const playback = await call.speak('hello.mp3');
+await playback.done;
 await call.leave();
-await host.close();
 ```
+
+`examples/hello-call.js` is the whole thing, and `index.d.ts` is the reference.
+`scripts/pack.js` builds the tarball a developer installs, which exposes only the
+public imports. The repo's `exports` map also lists the internal folders, only
+because the app still imports them.
+
+A signed-in platform can need a profile that's signed in once (site only, not
+Chrome's own sign-in). Teams removes characters it refuses from a guest name, so
+"Ada (AI)" shows there as "Ada AI".
 
 It needs `playwright-core` (an optional peer dependency) and drives the
 installed Google Chrome, headed, with `navigator.webdriver` off as in the

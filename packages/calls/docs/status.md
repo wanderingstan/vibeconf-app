@@ -92,12 +92,13 @@ The diagram above is the design's view. In the code today:
 
 **Before the public launch**
 
-- The public API: `join()` and `Call` are built on Playwright and pass the suite
-  on Meet, Zoom, Teams and Slack (one live run each, 2026-10-30). Still to do: the
-  same layer over the Electron host, the `exports` map, `.d.ts` types, and a
-  `hello-call` example. Slack has no `chat` event yet, and its caption turn IDs
-  aren't stable. Most `JoinError` codes haven't been seen in a real failure.
-- README, the `hello-call` and `call-console` reference apps, a Pipecat
+- The public API: `join()`, `Call`, the `exports` map, `.d.ts` types and
+  `examples/hello-call.js` are built. From a clean install of the `scripts/pack.js`
+  tarball, hello-call joined Meet, Zoom, Teams and Slack (2026-10-30), and the suite
+  passes on the public API on Playwright. `electronCall()` has only unit tests: the
+  Electron suite can't reach it until the app adopts it. Slack has no `chat` event
+  yet, and most `JoinError` codes haven't been seen in a real failure.
+- README, the `call-console` reference app, a Pipecat
   transport example, a public canary status page.
 - Provenance: `inject/page-inject.js` says it was adapted from the GIF-Cam
   virtual camera extension (2020); confirm it can ship under MIT.

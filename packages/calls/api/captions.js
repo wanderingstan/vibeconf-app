@@ -40,4 +40,30 @@ class CaptionStream {
   }
 }
 
-module.exports = { CaptionStream };
+// Slack and Teams number their turns by position in a list that scrolls, so a
+// turnId can come to mean a different turn. This gives each turn an ID of its own,
+// by finding where the new list overlaps the last one.
+class TurnAligner {
+  constructor() {
+    this.last = []; // [{ turnId, speaker, text }]
+    this.nextId = 1;
+  }
+
+  align(turns = []) {
+    const same = (a, b) => a.speaker === b.speaker && (a.text === b.text || a.text.startsWith(b.text) || b.text.startsWith(a.text));
+    let shift = this.last.length; // no overlap: every turn is new
+    for (let k = 0; k < this.last.length; k++) {
+      const overlap = Math.min(this.last.length - k, turns.length);
+      let ok = overlap > 0;
+      for (let i = 0; ok && i < overlap; i++) ok = same(this.last[k + i], turns[i]);
+      if (ok) { shift = k; break; }
+    }
+    this.last = turns.map((t, i) => {
+      const known = this.last[shift + i];
+      return { ...t, turnId: known ? known.turnId : this.nextId++ };
+    });
+    return this.last;
+  }
+}
+
+module.exports = { CaptionStream, TurnAligner };

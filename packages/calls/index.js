@@ -39,11 +39,11 @@ async function join(url, { name, profile, identity = 'guest', host, timeoutMs = 
   if (!platforms.includes(target.provider)) throw new UnsupportedError(`join() doesn't support ${target.provider} yet`);
   if (signal && signal.aborted) throw abortError(signal);
 
-  const { launchPlaywrightHost } = require('./hosts/playwright');
+  const { playwrightHost } = require('./hosts/playwright');
   let owned = false;
   if (!host) {
     try {
-      host = await launchPlaywrightHost({ userDataDir: profile });
+      host = await playwrightHost({ userDataDir: profile });
     } catch (err) {
       if (isProfileInUse(err)) throw joinError('already-running', { cause: err });
       throw err;

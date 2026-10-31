@@ -1,14 +1,12 @@
 // hosts/playwright: run a bot in a call from plain Node, with Playwright
 // driving Chromium (Phase 4 of the calls library). No Electron.
 //
-//   const { launchPlaywrightHost } = require('@vibeconferencing/calls/hosts/playwright');
-//   const host = await launchPlaywrightHost({ userDataDir: '/tmp/bot-a' });
-//   const call = await host.join(meetZoomOrTeamsLink, { botName: 'Ada' });
-//   call.on(CALL_EVENTS.captionTurns, ({ turns }) => …);
-//   await call.setMicMuted(false);
-//   await call.speak({ audioData: base64Mp3 });
-//   await call.leave();
-//   await host.close();
+//   const { playwrightHost } = require('@vibeconferencing/calls/hosts/playwright');
+//   const host = await playwrightHost({ userDataDir: '/tmp/bot-a' });
+//   const call = await join(link, { name: 'Ada', host }); // the public join()
+//
+// Most callers don't need this: join() opens a host of its own. Pass one to choose
+// the browser or its flags.
 //
 // Like the Electron host it keeps the provider in the page: the media core and
 // the provider are added as init scripts (before Meet's own scripts can ask
@@ -136,7 +134,7 @@ class PlaywrightCall extends CallProvider {
   // window, not the provider's popup.
   async speak(payload) { return this._media('play-tts', payload); }
   /** Cut off what's playing and drop what's queued; tts-ended still follows. */
-  async stopSpeaking(payload) { return this._media('stop-tts', payload); }
+  async stopSpeaking(reason) { return this._media('stop-tts', { reason }); }
   _media(action, payload) {
     return this.mediaPage.evaluate(([a, p]) => {
       window.postMessage({ __botsInCalls: true, __fromExtension: true, action: a, payload: p }, '*');
@@ -272,4 +270,4 @@ async function launchPlaywrightHost({ userDataDir, headless = false, channel = '
   };
 }
 
-module.exports = { launchPlaywrightHost, playwrightHost: launchPlaywrightHost, PlaywrightCall };
+module.exports = { playwrightHost: launchPlaywrightHost };

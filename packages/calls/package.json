@@ -7,9 +7,41 @@
   "author": "Stan James <stan@wanderingstan.com>",
   "homepage": "https://github.com/wanderingstan/vibeconf-app",
   "main": "index.js",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    },
+    "./hosts/playwright": {
+      "types": "./hosts/playwright/index.d.ts",
+      "default": "./hosts/playwright/index.js"
+    },
+    "./hosts/electron": {
+      "types": "./hosts/electron/index.d.ts",
+      "default": "./hosts/electron/index.js"
+    },
+    "./conformance": "./conformance/suite.js",
+    "./package.json": "./package.json",
+    "./core/*.js": "./core/*.js",
+    "./core/*": "./core/*.js",
+    "./providers/*.js": "./providers/*.js",
+    "./providers/*": "./providers/*.js",
+    "./hearing/*.js": "./hearing/*.js",
+    "./hearing/*": "./hearing/*.js",
+    "./inject/*.js": "./inject/*.js",
+    "./inject/*": "./inject/*.js",
+    "./recording/*.js": "./recording/*.js",
+    "./recording/*": "./recording/*.js",
+    "./hosts/electron/*.js": "./hosts/electron/*.js",
+    "./hosts/electron/*": "./hosts/electron/*.js",
+    "./hosts/electron/*.html": "./hosts/electron/*.html"
+  },
   "files": [
     "index.js",
+    "index.d.ts",
     "api/",
+    "examples/",
     "core/",
     "providers/",
     "inject/",
@@ -17,7 +49,8 @@
     "recording/",
     "hosts/",
     "conformance/",
-    "docs/"
+    "docs/",
+    "scripts/"
   ],
   "peerDependencies": {
     "electron": ">=33",

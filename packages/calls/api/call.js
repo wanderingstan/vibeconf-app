@@ -6,12 +6,13 @@ const fs = require('fs');
 const { EventEmitter } = require('events');
 const { CALL_EVENTS, providerCapabilities } = require('../core/call-provider');
 const { ChatFeed } = require('./chat-feed');
-const { CaptionStream } = require('./captions');
+const { CaptionStream, TurnAligner } = require('./captions');
 const { UnsupportedError, MutedError } = require('./errors');
 
 // Slack has no unread signal, and reading its chat hides its captions, so
 // polling for messages would keep making the bot deaf.
 const NO_CHAT_EVENTS = new Set(['slack']);
+const POSITIONAL_TURN_IDS = new Set(['slack', 'teams']);
 
 /** The call state a provider's status line means, or null for no change. */
 function stateFromStatus(status) {
@@ -64,6 +65,7 @@ class Call extends EventEmitter {
     this._left = false;
 
     this._captions = new CaptionStream((turn) => this.emit('caption', turn));
+    const aligner = POSITIONAL_TURN_IDS.has(platform) ? new TurnAligner() : null;
     this._feed = new ChatFeed({
       read: () => this._readChatQueued(),
       isOwn: (m) => this._isOwnMessage(m),
@@ -75,7 +77,7 @@ class Call extends EventEmitter {
     });
 
     this._listeners = [
-      [CALL_EVENTS.captionTurns, ({ turns } = {}) => this._captions.update(turns)],
+      [CALL_EVENTS.captionTurns, ({ turns } = {}) => this._captions.update(aligner ? aligner.align(turns) : turns)],
       [CALL_EVENTS.participantsUpdated, (list) => this.emit('participants', (list || []).map(normalizeParticipant))],
       [CALL_EVENTS.speakingChanged, ({ name: who, speaking } = {}) => this.emit('speaking', { name: who, speaking: !!speaking })],
       [CALL_EVENTS.chatUnread, ({ unread } = {}) => { if (unread) this._feed.onUnread(); }],
@@ -137,7 +139,7 @@ class Call extends EventEmitter {
         if (item.cancelled) return;
         item.cancelled = true;
         if (!item.started) { item.resolve({ cancelled: true }); return; }
-        await this._inner.stopSpeaking({ reason: 'cancelled' });
+        await this._inner.stopSpeaking('cancelled');
         // Audio still being decoded has no playback to end, so no tts-ended comes.
         const timer = setTimeout(() => item.resolve({ cancelled: true }), 2000);
         if (timer.unref) timer.unref();

@@ -6,15 +6,22 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
+import { readFileSync, readdirSync, mkdtempSync, mkdirSync, symlinkSync, rmSync } from 'node:fs';
+import { join as join_ } from 'node:path';
+import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { join, JoinError, UnsupportedError, MutedError, platforms } = require('../packages/calls');
 const { Call, stateFromStatus } = require('../packages/calls/api/call.js');
 const { ChatFeed } = require('../packages/calls/api/chat-feed.js');
-const { CaptionStream } = require('../packages/calls/api/captions.js');
-const { classifyJoinFailure, codeFromStatus, isProfileInUse } = require('../packages/calls/api/errors.js');
-const { CALL_EVENTS } = require('../packages/calls/core/call-provider.js');
+const { CaptionStream, TurnAligner } = require('../packages/calls/api/captions.js');
+const { electronCall } = require('../packages/calls/hosts/electron');
+const { CallClient } = require('../packages/calls/core/call-client.js');
+const { classifyJoinFailure, codeFromStatus, isProfileInUse, JOIN_ERROR_CODES } = require('../packages/calls/api/errors.js');
+const { CALL_EVENTS, CALL_COMMANDS } = require('../packages/calls/core/call-provider.js');
 const { MEET } = require('../packages/calls/providers/meet-selectors.js');
+const { teamsGuestName } = require('../packages/calls/providers/teams-selectors.js');
 
 const tick = (ms = 0) => new Promise((r) => setTimeout(r, ms));
 
@@ -156,6 +163,12 @@ test("Meet's pin icon on a line of its own is not part of the message", () => {
   const strip = (t) => t.replace(MEET.chat.pinChromeTailRe, '');
   assert.equal(strip('hello there\nkeep'), 'hello there'); // seen live on the bot's own messages
   assert.equal(strip('worth a keep'), 'worth a keep');
+});
+
+test('a Teams guest name keeps its words and loses what Teams refuses', () => {
+  assert.equal(teamsGuestName('Hello Bot (AI)'), 'Hello Bot AI');
+  assert.equal(teamsGuestName("Zoë O'Neil-Smith_2 @work."), "Zoë O'Neil-Smith_2 @work.");
+  assert.equal(teamsGuestName('🤖'), '');
 });
 
 test('chat.send rejects when the platform does not confirm', async () => {
@@ -306,4 +319,105 @@ test('join reports states while joining and resolves with a Call', async () => {
   assert.equal(call.platform, 'meet');
   assert.equal(call.state, 'in-call');
   assert.equal(call.capabilities.share, false);
+});
+
+test('turn IDs stay with their turn when a position-numbered list scrolls', () => {
+  const a = new TurnAligner();
+  const t = (speaker, text) => ({ speaker, text });
+  const ids = (turns) => turns.map((x) => x.turnId);
+  const first = ids(a.align([t('Ann', 'one'), t('Bo', 'tw')]));
+  assert.deepEqual(ids(a.align([t('Ann', 'one'), t('Bo', 'two')])), first); // revised in place
+  const scrolled = a.align([t('Bo', 'two'), t('Ann', 'three')]); // the first turn scrolled off
+  assert.equal(scrolled[0].turnId, first[1]);
+  assert.ok(!first.includes(scrolled[1].turnId));
+  const fresh = a.align([t('Cy', 'all new')]);
+  assert.ok(!first.includes(fresh[0].turnId) && fresh[0].turnId !== scrolled[1].turnId);
+});
+
+test('electronCall drives CallClient: IPC handlers, chat replies, the app-owned parts', async () => {
+  const ipc = new EventEmitter();
+  const sent = [];
+  const client = new CallClient({ ipc, resolveTarget: () => ({ send: (channel, payload) => {
+    sent.push([channel, payload]);
+    if (channel === CALL_COMMANDS.readChat) setImmediate(() => ipc.emit(CALL_EVENTS.chatResult, {}, { requestId: payload.requestId, ok: true, messages: [{ id: '1', sender: 'Ann', text: 'hi' }] }));
+    if (channel === CALL_COMMANDS.sendChat) setImmediate(() => ipc.emit(CALL_EVENTS.chatResult, {}, { requestId: payload.requestId, ok: payload.text !== 'bad' }));
+  } }) });
+  let left = 0;
+  const call = electronCall(client, { platform: 'meet', name: 'Bot', leave: async () => { left++; }, screenshot: async () => Buffer.from('p') });
+
+  const roster = [];
+  call.on('participants', (p) => roster.push(p));
+  ipc.emit(CALL_EVENTS.participantsUpdated, {}, [{ name: 'Ann', speaking: true }]);
+  assert.deepEqual(roster, [[{ name: 'Ann', speaking: true, isSelf: false }]]);
+  assert.deepEqual(await call.participants(), roster[0]);
+
+  assert.deepEqual(await call.chat.read(), [{ id: '1', sender: 'Ann', text: 'hi' }]);
+  await call.chat.send('ok');
+  await assert.rejects(call.chat.send('bad'), /didn't confirm/);
+
+  const playback = await call.speak(Buffer.from('a'));
+  await tick();
+  assert.ok(sent.some(([c, p]) => c === CALL_COMMANDS.extensionMessage && p.action === CALL_COMMANDS.ACTIONS.playTts));
+  ipc.emit(CALL_EVENTS.ttsEnded, {});
+  assert.deepEqual(await playback.done, { cancelled: false });
+
+  assert.equal(call.capabilities.share, true);
+  await call.leave();
+  assert.equal(left, 1);
+  assert.equal(ipc.listenerCount(CALL_EVENTS.ttsEnded), 0);
+});
+
+// The types are hand-written, so nothing else would notice them drifting.
+const pkgDir = new URL('../packages/calls/', import.meta.url);
+const dts = (f) => readFileSync(new URL(f, pkgDir), 'utf8');
+
+test('index.d.ts declares what the package exports, and the Call that exists', () => {
+  const declared = [...dts('index.d.ts').matchAll(/^export (?:class|function|const) (\w+)/gm)].map((m) => m[1]);
+  const pub = require('../packages/calls');
+  const runtime = Object.keys(pub);
+  for (const n of runtime) assert.ok(declared.includes(n), `${n} is exported but not declared`);
+  for (const n of declared.filter((x) => x !== 'Call')) assert.ok(runtime.includes(n), `${n} is declared but not exported`);
+
+  const body = dts('index.d.ts').match(/export class Call \{([\s\S]*?)\n\}/)[1];
+  const members = [...body.matchAll(/^ {2}(?:readonly )?(\w+)[(<:?]/gm)].map((m) => m[1]).filter((m) => !['on', 'once', 'off'].includes(m));
+  const { call } = makeCall();
+  for (const m of members) assert.notEqual(call[m], undefined, `Call.${m} is declared but missing`);
+  for (const group of ['mic', 'camera', 'chat', 'share']) {
+    const block = body.match(new RegExp(`readonly ${group}: \\{([\\s\\S]*?)\\}\\s*;?\\n\\s+(?:/\\*\\*|\\w)`));
+    assert.ok(block, group);
+    for (const m of block[1].matchAll(/(\w+)\(/g)) assert.equal(typeof call[group][m[1]], 'function', `${group}.${m[1]}`);
+  }
+  const events = [...dts('index.d.ts').match(/interface CallEvents \{([\s\S]*?)\n\}/)[1].matchAll(/^\s+(\w+):/gm)].map((m) => m[1]);
+  assert.deepEqual(events.sort(), ['caption', 'chat', 'participants', 'share', 'speaking', 'stall', 'state']);
+  const codes = [...dts('index.d.ts').match(/type JoinErrorCode =([\s\S]*?);/)[1].matchAll(/'([\w-]+)'/g)].map((m) => m[1]);
+  assert.deepEqual(codes.sort(), [...JOIN_ERROR_CODES].sort());
+});
+
+test('the host types match their entry points', () => {
+  assert.equal(typeof require('../packages/calls/hosts/playwright').playwrightHost, 'function');
+  assert.match(dts('hosts/playwright/index.d.ts'), /function playwrightHost/);
+  assert.equal(typeof require('../packages/calls/hosts/electron').electronCall, 'function');
+  assert.match(dts('hosts/electron/index.d.ts'), /function electronCall/);
+});
+
+// The exports map would break the app at launch if it missed one of its imports.
+test('every @vibeconferencing/calls import in the app resolves through the exports map', () => {
+  const tmp = mkdtempSync(join_(tmpdir(), 'calls-exports-'));
+  mkdirSync(join_(tmp, 'node_modules/@vibeconferencing'), { recursive: true });
+  symlinkSync(fileURLToPath(pkgDir), join_(tmp, 'node_modules/@vibeconferencing/calls'));
+  const req = createRequire(join_(tmp, 'x.js'));
+  const app = fileURLToPath(new URL('../electron-app/', import.meta.url));
+  const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) => {
+    if (['node_modules', 'dist', 'vendor'].includes(e.name)) return [];
+    const p = join_(d, e.name);
+    return e.isDirectory() ? walk(p) : /\.(js|mjs|cjs|html)$/.test(e.name) ? [p] : [];
+  });
+  const specs = new Set();
+  for (const f of walk(app)) {
+    for (const m of readFileSync(f, 'utf8').matchAll(/['"`](@vibeconferencing\/calls\/[\w./-]+)['"`]/g)) specs.add(m[1]);
+  }
+  assert.ok(specs.size > 30, `expected the app's imports, found ${specs.size}`);
+  const broken = [...specs].filter((s) => { try { req.resolve(s); return false; } catch { return true; } });
+  rmSync(tmp, { recursive: true, force: true });
+  assert.deepEqual(broken, []);
 });

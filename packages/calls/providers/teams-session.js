@@ -9,7 +9,7 @@
 //   provider.on(CALL_EVENTS.captionTurns, …)   // every report is an event
 
 const { TeamsProvider } = require('./teams-provider');
-const { TEAMS } = require('./teams-selectors');
+const { TEAMS, teamsGuestName } = require('./teams-selectors');
 const { CALL_EVENTS } = require('../core/call-provider');
 const { addEvents } = require('../core/provider-events');
 
@@ -41,7 +41,7 @@ function startTeams(host) {
   // Heartbeat: launcher → pre-join → (lobby) → in-call, then captions/roster/chat.
   // ---------------------------------------------------------------------------
   let botName = '';
-  Promise.resolve().then(() => host.getBotName()).then((n) => { botName = n || ''; provider.selfName = botName; }).catch(() => {});
+  Promise.resolve().then(() => host.getBotName()).then((n) => { botName = teamsGuestName(n) || n || ''; provider.selfName = botName; }).catch(() => {});
 
   let lastSharing = false;
   let lastPresenter = null;

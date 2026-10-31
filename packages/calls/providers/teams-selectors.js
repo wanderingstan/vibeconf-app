@@ -216,4 +216,11 @@ TEAMS.roomCodeFromUrl = (url) => {
   return slug ? 'teams-' + slug : null;
 };
 
-module.exports = { TEAMS };
+// Teams refuses a guest name with anything but letters, numbers, spaces and
+// - ' . _ @ (Join stays disabled, seen live with "Hello Bot (AI)"). Dropping the
+// rest keeps the words, so a label like "(AI)" still shows as "AI".
+function teamsGuestName(name) {
+  return String(name || '').replace(/[^\p{L}\p{N} \-'._@]/gu, '').replace(/\s+/g, ' ').trim();
+}
+
+module.exports = { teamsGuestName, TEAMS };

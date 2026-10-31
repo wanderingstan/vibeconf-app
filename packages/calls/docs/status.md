@@ -33,7 +33,7 @@ leave, skipping what a platform or host can't do. Last full results:
 | --- | --- | --- |
 | Meet | 12/12 | 10/10 (share skipped) |
 | Zoom | 12/12 | 10/10 (share skipped) |
-| Teams | 12/12 | 9/10 (share skipped, one chat miss, below) |
+| Teams | 12/12 | 10/10 (share skipped; chat can run late, below) |
 | Slack | 12/12 | 10/10 (share skipped) |
 
 The nightly canary (`.github/workflows/canary.yml`) runs this matrix on the
@@ -84,7 +84,7 @@ The diagram above is the design's view. In the code today:
 - Teams chat can run late on both hosts. The push with the full text reaches the
   page in under a second, but the web client sometimes doesn't show the message
   until much later, so a read or `chat` event is late too. Measured 2026-10-31
-  with guest bots: one sender, 1 of 8 late (17s); two senders within 100ms, 8 of
+  with guest bots: one sender, 1 of 8 late (17s); two senders within 100ms, 6 of
   12 messages late (43-54s), with only the two bots in the call. Reopening the
   pane didn't help; the next message brings it in. The suite waits 75s on Teams.
   Reading the push would fix it, but its format is undocumented.

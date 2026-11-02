@@ -16,11 +16,17 @@
 #     APPLE_APP_SPECIFIC_PASSWORD  appleid.apple.com → Sign-In and Security
 #     APPLE_TEAM_ID                PNPVJ6J7X2
 #
-# To (re)generate CSC_LINK on a Mac that holds the identity:
+# To (re)generate CSC_LINK on a Mac that holds the identity: in Keychain Access,
+# under login > My Certificates, right-click "Developer ID Application: Stanley
+# James (PNPVJ6J7X2)" and Export it as ~/Desktop/devid.p12, with a new password.
+# It must be that certificate: "Apple Development" can't sign a release, and
+# `security export -t identities` can't pick one identity from several. Then:
 #
-#     security export -k login.keychain-db -t identities -f pkcs12 -o /tmp/devid.p12
-#     base64 -i /tmp/devid.p12 | pbcopy     # paste into the CSC_LINK secret
-#     rm /tmp/devid.p12
+#     base64 -i ~/Desktop/devid.p12 | gh secret set CSC_LINK
+#     gh secret set CSC_KEY_PASSWORD        # prompts for the export password
+#     rm ~/Desktop/devid.p12
+#
+# scripts/ci-signing-keychain.sh fails the Mac job if the identity isn't there.
 #
 # The cert expires (~5 years) and the app-specific password can be revoked from
 # appleid.apple.com; either one turns into a red Mac job, not a bad release.
@@ -195,7 +201,7 @@ jobs:
     env:
       # Windows is unsigned and Linux needs no signing, so keep electron-builder
       # from going looking for an identity there. On macOS it must be ON, or the
-      # CSC_LINK cert imported below is ignored and the .app ships unsigned.
+      # keychain set up below is ignored and the .app ships unsigned.
       CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.mac && 'true' || 'false' }}
     steps:
       - uses: actions/checkout@v7
@@ -207,16 +213,24 @@ jobs:
       - name: Install deps (electron-app)
         run: npm ci
 
+      # Sets CSC_KEYCHAIN for the build. CSC_LINK stays out of the build's env on
+      # purpose: electron-builder's own import of it fails on macOS 26 (#791, and
+      # the note in the script).
+      - name: Set up the signing keychain
+        if: matrix.mac
+        run: ../scripts/ci-signing-keychain.sh
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+
       - name: Build installer
         run: npx --no-install electron-builder ${{ matrix.args }} --publish never
         env:
-          # Signing + notarization creds. electron-builder picks all five up from
-          # the environment with no config — CSC_* to sign, the APPLE_* trio for
-          # @electron/notarize (the legacy Apple ID + app-specific password flow,
-          # NOT an App Store Connect .p8 key). Empty on Windows/Linux so the certs
-          # never land in a runner that has no use for them.
-          CSC_LINK: ${{ matrix.mac && secrets.CSC_LINK || '' }}
-          CSC_KEY_PASSWORD: ${{ matrix.mac && secrets.CSC_KEY_PASSWORD || '' }}
+          # Notarization creds, the APPLE_* trio for @electron/notarize (the legacy
+          # Apple ID + app-specific password flow, NOT an App Store Connect .p8
+          # key). electron-builder picks them up from the environment with no
+          # config. Empty on Windows/Linux so they never land in a runner that has
+          # no use for them.
           APPLE_ID: ${{ matrix.mac && secrets.APPLE_ID || '' }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ matrix.mac && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
           APPLE_TEAM_ID: ${{ matrix.mac && secrets.APPLE_TEAM_ID || '' }}

@@ -10,7 +10,9 @@ Release builds for all three platforms run in CI
 notarizes from five repo secrets (`CSC_LINK`, `CSC_KEY_PASSWORD`, `APPLE_ID`,
 `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`) and fails loudly if the .app
 comes out un-notarized. That workflow's header is the reference for the secrets
-and how to regenerate them.
+and how to regenerate them. `CSC_LINK` must hold the **Developer ID Application**
+identity, and the job imports it through `scripts/ci-signing-keychain.sh`, because
+electron-builder's own import of `CSC_LINK` is broken before 26.16.1 (#791).
 
 Building the Mac **locally** is still supported, and is the fallback when
 Apple's notarization service is down or a secret has lapsed. Signing uses the

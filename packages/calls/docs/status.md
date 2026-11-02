@@ -104,8 +104,6 @@ The diagram above is the design's view. In the code today:
   yet, and most `JoinError` codes haven't been seen in a real failure.
 - README, the `call-console` reference app, a Pipecat
   transport example, a public canary status page.
-- Provenance: `inject/page-inject.js` says it was adapted from the GIF-Cam
-  virtual camera extension (2020); confirm it can ship under MIT.
 - Test fixtures in tracked files (the Meet test room, the Slack workspace and
   channel) move out before the repo goes public.
 - The repo split to `vibeconferencing-calls` and the npm publish.

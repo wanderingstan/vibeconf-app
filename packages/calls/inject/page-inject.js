@@ -1,6 +1,5 @@
 // page-inject.js — Runs in Google Meet's page context (MAIN world, document_start)
 // Overrides getUserMedia to provide virtual camera and microphone.
-// Adapted from GIF-Cam virtual camera extension (2020).
 
 (function () {
   'use strict';

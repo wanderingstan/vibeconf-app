@@ -110,7 +110,6 @@ The diagram above is the design's view. In the code today:
 
 **Open questions carried from the design**
 
-- MIT, or Apache-2.0 for its patent grant?
 - Support promise: which platforms get a fix-within-days commitment?
 - Camera surface: page URL only, or also a raw frame stream?
 - Launch story: a Pipecat transport first, or an MCP server for coding agents?

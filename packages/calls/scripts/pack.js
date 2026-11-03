@@ -17,7 +17,7 @@ const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'calls-pack-'));
 for (const entry of pkg.files) {
   fs.cpSync(path.join(root, entry), path.join(staging, entry), { recursive: true });
 }
-fs.copyFileSync(path.join(root, 'README.md'), path.join(staging, 'README.md'));
+for (const f of ['README.md', 'LICENSE']) fs.copyFileSync(path.join(root, f), path.join(staging, f));
 
 const PUBLIC = ['.', './hosts/playwright', './hosts/electron', './conformance', './package.json'];
 pkg.exports = Object.fromEntries(PUBLIC.map((k) => [k, pkg.exports[k]]));

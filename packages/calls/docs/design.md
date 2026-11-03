@@ -261,7 +261,7 @@ The biggest risk is maintenance, not engineering: going public makes us on call 
 **Open questions**
 
 - [ ] Name: `@vibeconferencing/calls` in repo vibeconferencing-calls (decided 2026-10-29). Drops "api", which reads as a hosted service.
-- [ ] License: MIT, or Apache-2.0 for its patent grant?
+- [ ] License: MIT, same as the app (decided 2026-11-03).
 - [ ] Separate repo at Phase 3, or stay in the monorepo until Phase 5?
 - [ ] Support promise: which platforms get a fix-within-days commitment, and which are best effort?
 - [ ] Does the camera surface stay a page URL, or do we also accept a raw frame stream for non-browser callers?

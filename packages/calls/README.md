@@ -15,6 +15,32 @@ client; the nightly canary is how we find out.
 npm install @vibeconferencing/calls@alpha playwright-core
 ```
 
+## How it compares
+
+Most ways to put a bot in a call run somewhere else: a hosted API, or a Docker
+service you deploy and talk to over HTTP. This is a plain JavaScript library.
+It runs in your own Node process, on your own machine, and drives a browser
+with tools you already know: Playwright, or Electron for a desktop app. No
+cloud account, no container, no API key for the calling layer.
+
+| | Runs as | You need | License | Speak, chat, share | Beyond Meet, Zoom, Teams |
+| --- | --- | --- | --- | --- | --- |
+| **@vibeconferencing/calls** | **npm library, in your process** | **Node and Chrome** | **MIT** | **Yes¹** | **Slack huddles, WhatsApp, Telegram, phone¹** |
+| Recall.ai | Hosted API | An account; bots run in their cloud | Commercial | Yes | Slack huddles, Webex |
+| AgentCall | Hosted backend, MIT client | Their backend | MIT client only | Yes, aimed at coding agents | No |
+| joinly | MCP server | Docker | MIT | Speak and chat, no share | No |
+| Attendee | Service | Docker | Elastic 2.0 (not OSI) | Yes | No |
+| Vexa | Service | Docker | Apache-2.0 open core | Mostly listen-only | No |
+| Pipecat, LiveKit Agents | Frameworks | Your server | Permissive | Yes, in their own rooms | Phone, WhatsApp Business 1:1 |
+
+¹ On the Playwright host today: Meet, Zoom, Teams and Slack, without share.
+Share, WhatsApp, Telegram and phone calls run on the Electron host.
+
+The trade: you run the browser. If you want a fleet of bots in someone else's
+cloud, a hosted API is the better fit. Pipecat and LiveKit are complements
+rather than rivals: they have no way into Meet, Zoom or Teams, and this can be
+that way in. Survey as of 2026-10-29.
+
 ![Architecture: app, library core, hosts, page](docs/diagrams/architecture.svg)
 
 - [docs/design.md](docs/design.md): the design draft, kept as written

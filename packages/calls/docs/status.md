@@ -1,7 +1,9 @@
 # Status: what was built, and what's left
 
-As of 2026-10-30. The plan is [design.md](design.md) (drafted 2026-10-29);
-this is what happened to it. Phases 0 to 4 are merged to `main`.
+As of 2026-11-03. The plan is [design.md](design.md) (drafted 2026-10-29);
+this is what happened to it. Phases 0 to 4 are merged to `main`, the app
+ships on the package from v0.8.69 (a candidate, 2026-11-02), and
+`@vibeconferencing/calls@0.1.0-alpha.0` is on npm (2026-11-03).
 
 ![Architecture: app, library core, hosts, page](diagrams/architecture.svg)
 
@@ -17,7 +19,7 @@ this is what happened to it. Phases 0 to 4 are merged to `main`.
 | 4 | Conformance suite, Playwright host | The same suite passes for Meet on both hosts | [#936](https://github.com/wanderingstan/vibeconf-app/pull/936) |
 | 4b | Zoom's and Teams' sessions move into the library | (added) | [#937](https://github.com/wanderingstan/vibeconf-app/pull/937) |
 | 4c | Slack's huddle session moves in; Playwright learns its two windows | (added) | [#938](https://github.com/wanderingstan/vibeconf-app/pull/938) |
-| 5 | Release | 14 green canary nights in a row | Under way (below) |
+| 5 | Release | 14 green canary nights in a row | Alpha on npm; launch under way (below) |
 
 Every gate was met. Phases 3b, 4b and 4c weren't in the plan: each moved a
 platform's per-call loop out of the app's preloads, which the Playwright host
@@ -106,7 +108,9 @@ The diagram above is the design's view. In the code today:
   transport example, a public canary status page.
 - Test fixtures in tracked files (the Meet test room, the Slack workspace and
   channel) move out before the repo goes public.
-- The repo split to `vibeconferencing-calls` and the npm publish.
+- The repo split to `vibeconferencing-calls`. The npm alpha is out:
+  publish the tarball `scripts/pack.js` builds, with `--access public --tag alpha`.
+  npm stages it, and a maintainer approves it on npmjs.com (Staged Packages) with 2FA.
 
 **Open questions carried from the design**
 

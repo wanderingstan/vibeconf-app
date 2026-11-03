@@ -5,7 +5,15 @@ Meet, Zoom, Teams, Slack huddles, WhatsApp, Telegram and phone calls (Twilio).
 
 This is the calling layer of the Vibeconferencing app, being extracted into a
 standalone MIT library. It lives in the app's repo as a local package until its
-API holds; the app (`electron-app/`) is its first user. Not published yet.
+API holds; the app (`electron-app/`) is its first user.
+
+**Alpha.** Published to npm under the `alpha` tag. The API will change
+between alphas, and a platform can break overnight when it changes its web
+client; the nightly canary is how we find out.
+
+```sh
+npm install @vibeconferencing/calls@alpha playwright-core
+```
 
 ![Architecture: app, library core, hosts, page](docs/diagrams/architecture.svg)
 

@@ -1,11 +1,17 @@
 {
   "name": "@vibeconferencing/calls",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.0",
   "private": true,
   "description": "Join, speak, hear, chat and screen share in Meet, Zoom, Teams, Slack huddles, WhatsApp, Telegram and phone calls, as a participant",
   "license": "MIT",
   "author": "Stan James <stan@wanderingstan.com>",
-  "homepage": "https://github.com/wanderingstan/vibeconf-app",
+  "homepage": "https://github.com/wanderingstan/vibeconf-app/tree/main/packages/calls#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wanderingstan/vibeconf-app.git",
+    "directory": "packages/calls"
+  },
+  "bugs": "https://github.com/wanderingstan/vibeconf-app/issues",
   "main": "index.js",
   "types": "index.d.ts",
   "exports": {

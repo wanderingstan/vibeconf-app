@@ -3,6 +3,7 @@
 // package.json also maps the internal folders, because the app still imports them
 // (it moves to the public API after launch); those entries stop at this script.
 //   node scripts/pack.js [output folder]
+// Publish what it prints: npm publish <tarball> --access public --tag alpha
 
 const fs = require('fs');
 const os = require('os');
@@ -22,6 +23,7 @@ for (const f of ['README.md', 'LICENSE']) fs.copyFileSync(path.join(root, f), pa
 const PUBLIC = ['.', './hosts/playwright', './hosts/electron', './conformance', './package.json'];
 pkg.exports = Object.fromEntries(PUBLIC.map((k) => [k, pkg.exports[k]]));
 delete pkg.devDependencies;
+delete pkg.private; // the repo copy is private so `npm publish` there can't ship the internal map
 fs.writeFileSync(path.join(staging, 'package.json'), JSON.stringify(pkg, null, 2) + '\n');
 
 const name = execFileSync('npm', ['pack', '--silent', '--pack-destination', out], { cwd: staging, encoding: 'utf8' }).trim();

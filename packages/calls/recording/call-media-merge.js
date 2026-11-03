@@ -113,7 +113,7 @@ const MERGE_STALL_TIMEOUT_MS = 120000;
 // The bundled ffmpeg is 6.0, whose default fps_mode for a CFR-friendly muxer
 // is `cfr`: it DUPLICATES frames to hit the declared rate. So it faithfully
 // padded 30fps of content out to 1000fps. Measured on a real 21.6-minute
-// call (ded-iika-yrs-20260815T133138Z): the finished mp4 had **1,296,862
+// call (2026-08-15): the finished mp4 had **1,296,862
 // frames** where ~38,000 exist — 34x too many — took **20 minutes** to merge
 // (105 CPU-minutes at 369%), and weighed 402 MB at 900x592.
 //

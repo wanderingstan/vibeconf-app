@@ -1,5 +1,7 @@
 // render.mjs: renders the diagram sources in ./ (JSX, as written in the design
-// doc) to ../<name>.svg, standalone, with light and dark palettes.
+// doc) to ../<name>.svg, standalone, with light and dark palettes. Each SVG paints
+// its own background: the palette follows the viewer's OS theme, not the page's, so
+// on npm's always-light page a dark-mode viewer otherwise got light text on white.
 //
 //   for n in architecture classes-and-contracts call-console-mockup; do
 //     npx esbuild@0.24.0 $n.jsx --loader:.jsx=jsx --jsx-factory=__jsx --format=cjs > /tmp/$n.cjs
@@ -25,10 +27,10 @@ const TOKENS = {
   '--cds-chart-reference-tint': 'tint',
 };
 const STYLE = `
-  svg { --edge: #8c959f; --grid: #d0d7de; --accent: #0969da; --ink: #1f2328; --quiet: #59636e; --tint: #f6f8fa;
+  svg { --bg: #ffffff; --edge: #8c959f; --grid: #d0d7de; --accent: #0969da; --ink: #1f2328; --quiet: #59636e; --tint: #f6f8fa;
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
   @media (prefers-color-scheme: dark) {
-    svg { --edge: #6e7681; --grid: #3d444d; --accent: #4493f8; --ink: #e6edf3; --quiet: #9198a1; --tint: #161b22; }
+    svg { --bg: #0d1117; --edge: #6e7681; --grid: #3d444d; --accent: #4493f8; --ink: #e6edf3; --quiet: #9198a1; --tint: #161b22; }
   }`;
 const COLOR_ATTRS = new Set(['fill', 'stroke']);
 
@@ -58,6 +60,6 @@ const src = readFileSync(compiled, 'utf8');
 const mod = { exports: {} };
 new Function('module', 'exports', '__jsx', src)(mod, mod.exports, h);
 let svg = (mod.exports.default || mod.exports)().s;
-svg = svg.replace(/^<svg /, '<svg xmlns="http://www.w3.org/2000/svg" ').replace(/^(<svg[^>]*>)/, `$1<style>${STYLE}\n</style>`);
+svg = svg.replace(/^<svg /, '<svg xmlns="http://www.w3.org/2000/svg" ').replace(/^(<svg[^>]*>)/, `$1<style>${STYLE}\n</style><rect width="100%" height="100%" rx="12" style="fill:var(--bg)"></rect>`);
 writeFileSync(out, svg + '\n');
 console.log('wrote', out, svg.length, 'bytes');

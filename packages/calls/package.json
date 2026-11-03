@@ -1,6 +1,6 @@
 {
   "name": "@vibeconferencing/calls",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "private": true,
   "description": "Join, speak, hear, chat and screen share in Meet, Zoom, Teams, Slack huddles, WhatsApp, Telegram and phone calls, as a participant",
   "license": "MIT",

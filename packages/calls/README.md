@@ -3,7 +3,7 @@
 Be a participant in a call: join, speak, hear, chat and screen share in Google
 Meet, Zoom, Teams, Slack huddles, WhatsApp, Telegram and phone calls (Twilio).
 
-This is the calling layer of the Vibeconferencing app, being extracted into a
+This is the calling layer of the Vibeconferencing app, extracted into a
 standalone MIT library. It lives in the app's repo as a local package until its
 API holds; the app (`electron-app/`) is its first user.
 

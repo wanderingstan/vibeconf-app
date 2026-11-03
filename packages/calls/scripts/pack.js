@@ -13,6 +13,7 @@ const { execFileSync } = require('child_process');
 const root = path.join(__dirname, '..');
 const out = path.resolve(process.argv[2] || process.cwd());
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+fs.mkdirSync(out, { recursive: true });
 const staging = fs.mkdtempSync(path.join(os.tmpdir(), 'calls-pack-'));
 
 for (const entry of pkg.files) {

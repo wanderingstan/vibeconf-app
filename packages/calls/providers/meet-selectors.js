@@ -266,7 +266,7 @@ const MEET = {
   },
 
   // -------------------------------------------------------------------------
-  // Caption language: ⋮ → Settings → Captions → "Language of the meeting".
+  // Caption language: ⋮ → Settings → Captions → "Meeting language".
   // -------------------------------------------------------------------------
   // The bot HEARS through Meet's captions, so this is not a display preference:
   // set to the wrong language, Meet emits nonsense from correct speech and the
@@ -281,8 +281,12 @@ const MEET = {
     captionsTabText: 'captions',
     // The dropdown's accessible name. Meet renders it as a <div role="combobox"
     // aria-haspopup="listbox"> whose aria-labelledby points at a span holding
-    // this text — so we find the combobox by its NAME, not its shape.
-    comboboxLabel: 'language of the meeting',
+    // this text — so we find the combobox by its NAME, not its shape. Meet
+    // renamed it from "Language of the meeting" around 2026-10-20 (seen live
+    // 2026-11-06); the nightly failed on some runs from then, all by 10-31.
+    // The old name stays matched in case an account still has it.
+    comboboxLabel: 'meeting language',
+    comboboxLabelOld: 'language of the meeting',
     combobox: '[role="combobox"][aria-haspopup="listbox"]',
     // The popup it controls, and its options. Each option carries the BCP-47 tag
     // in data-value ("es-ES", "en-GB", "cmn-Hans-CN"), which is the one durable,

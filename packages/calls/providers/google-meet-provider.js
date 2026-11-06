@@ -3857,7 +3857,7 @@ async function setStudioSound(enabled) {
   }
 }
 
-// Set the caption language: ⋮ → Settings → Captions → "Language of the meeting".
+// Set the caption language: ⋮ → Settings → Captions → "Meeting language".
 //
 // This is the bot's HEARING, not a display preference. It reads the room through
 // Meet's caption region, so a wrong language means Meet emits nonsense from
@@ -3890,9 +3890,11 @@ async function setCaptionLanguage(language) {
     return ids.map((id) => (document.getElementById(id)?.textContent || '').trim()).join(' ').trim();
   };
 
+  const isLanguageLabel = (name) =>
+    name.includes(MEET.captionLanguage.comboboxLabel) || name.includes(MEET.captionLanguage.comboboxLabelOld);
   const findCombobox = () =>
     Array.from(document.querySelectorAll(MEET.captionLanguage.combobox))
-      .find((el) => accName(el).toLowerCase().includes(MEET.captionLanguage.comboboxLabel) && isVisible(el)) || null;
+      .find((el) => isLanguageLabel(accName(el).toLowerCase()) && isVisible(el)) || null;
 
   const findCaptionsTab = () =>
     Array.from(document.querySelectorAll('[role="tab"], [role="menuitemradio"], button, [role="button"], [tabindex]'))
@@ -3953,7 +3955,7 @@ async function setCaptionLanguage(language) {
     if (!combo) {
       const items = Array.from(document.querySelectorAll('[role="tab"], [role="dialog"] [role="button"], [role="dialog"] li'))
         .map((el) => (el.getAttribute('aria-label') || el.textContent || '').trim()).filter(Boolean).slice(0, 30);
-      console.warn('[caption-language] step3: "Language of the meeting" combobox not found. Dialog items:', JSON.stringify(items));
+      console.warn('[caption-language] step3: "Meeting language" combobox not found. Dialog items:', JSON.stringify(items));
       return { ok: false, error: 'language dropdown not found' };
     }
 

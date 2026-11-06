@@ -45,6 +45,7 @@ test('the selectors key on roles and accessible names, never on generated classe
   assert.match(s.option, /role="option"/);
   // Lowercased, because the code compares against a lowercased accessible name.
   assert.equal(s.comboboxLabel, s.comboboxLabel.toLowerCase());
+  assert.equal(s.comboboxLabelOld, s.comboboxLabelOld.toLowerCase());
   assert.equal(s.captionsTabText, s.captionsTabText.toLowerCase());
 });
 

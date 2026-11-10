@@ -134,6 +134,22 @@ test('a named profile without a port is refused, not launched portless', () => {
   assert.throws(() => spawnArgsForProfile({ port: 7890 }), /needs a name/);
 });
 
+test('--no-sandbox is forwarded only when asked for', () => {
+  // A Chromium switch does not pass to child processes, so a supervisor run
+  // with --no-sandbox must hand it on, or each bot aborts on the setuid
+  // sandbox check (an AppImage on Linux) and never wakes.
+  assert.ok(spawnArgsForProfile({ name: 'bot9', port: 7890, noSandbox: true }).includes('--no-sandbox'));
+  assert.deepEqual(spawnArgsForProfile({ name: 'Default', isDefault: true, noSandbox: true }), ['--no-sandbox']);
+  assert.ok(!spawnArgsForProfile({ name: 'bot9', port: 7890 }).includes('--no-sandbox'));
+});
+
+test('both launch paths forward the sandbox switch', () => {
+  const supervisor = readFileSync(join(root, 'electron-app/supervisor-app.js'), 'utf8');
+  for (const src of [main, supervisor]) {
+    assert.match(src, /spawnArgsForProfile\(\{[^}]*noSandbox: app\.commandLine\.hasSwitch\('no-sandbox'\)/);
+  }
+});
+
 test('a new bot opens on Settings', () => {
   const args = spawnArgsForProfile({ name: 'bot9', port: 7890, openSettings: true });
   assert.ok(args.includes('--open-settings=true'));
@@ -212,7 +228,7 @@ test('no launch flag is one of Chromium\'s own switches (the --headless lesson)'
 
 test('the supervisor starts bots headless; a bot\'s own launcher does not (yet)', () => {
   const sup = readFileSync(new URL('../electron-app/supervisor-app.js', import.meta.url), 'utf8');
-  assert.match(sup, /spawnArgsForProfile\(\{ name, isDefault, port, openSettings, headless: true \}\)/);
+  assert.match(sup, /spawnArgsForProfile\(\{ name, isDefault, port, openSettings, headless: true[,} ]/);
   const main = readFileSync(new URL('../electron-app/main.js', import.meta.url), 'utf8');
   assert.doesNotMatch(main, /spawnArgsForProfile\(\{[^}]*headless/, 'the profile switcher still opens windowed bots');
 });

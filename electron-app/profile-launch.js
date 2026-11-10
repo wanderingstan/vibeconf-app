@@ -65,7 +65,13 @@ function profileLaunchCommand({ platform, isPackaged, exePath, appPath, args = [
 // `windowPos`: #379 — open the new window where the launching one is, rather
 // than centred. Position only; size is not ours to hand over, since the window
 // is a fixed-width column with a content-derived height.
-function spawnArgsForProfile({ name, isDefault = false, port = null, openSettings = false, windowPos = null, headless = false } = {}) {
+//
+// `noSandbox`: pass it when the launching process itself runs with
+// --no-sandbox. A Chromium switch is per process, so a bot does not inherit
+// it, and where the setuid sandbox helper is unusable (an AppImage, whose
+// mount cannot hold a root-owned setuid file, or a headless Linux box) the
+// bot aborts at startup on the sandbox check before it logs anything of ours.
+function spawnArgsForProfile({ name, isDefault = false, port = null, openSettings = false, windowPos = null, headless = false, noSandbox = false } = {}) {
   const args = [];
   if (!isDefault) {
     if (!name) throw new Error('a named profile needs a name');
@@ -82,6 +88,7 @@ function spawnArgsForProfile({ name, isDefault = false, port = null, openSetting
   if (windowPos && Number.isFinite(windowPos.x) && Number.isFinite(windowPos.y)) {
     args.push(`--window-x=${windowPos.x}`, `--window-y=${windowPos.y}`);
   }
+  if (noSandbox) args.push('--no-sandbox');
   return args;
 }
 

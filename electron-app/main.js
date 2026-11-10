@@ -14069,7 +14069,7 @@ function setupIPC() {
       }
     } catch { /* ignore — fall back to Electron's default centering */ }
     try {
-      args = spawnArgsForProfile({ name, isDefault, port, openSettings, windowPos });
+      args = spawnArgsForProfile({ name, isDefault, port, openSettings, windowPos, noSandbox: app.commandLine.hasSwitch('no-sandbox') });
     } catch (err) { return { ok: false, error: err.message }; }
     // #822: e.g. --join-url for a bot summoned into a call already in progress.
     if (extraArgs.length) args = [...args, ...extraArgs];

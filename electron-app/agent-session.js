@@ -147,6 +147,29 @@ function renameSessionCacheEntries(cache, fromName, toName) {
   return moved.length ? { cache: next, moved } : null;
 }
 
+// The (working dir, session name) pair a launch would key the cache on, given
+// the three preferences that feed it. Mirrors the name rule in planAgentSession:
+// with the field on auto the name FOLLOWS the bot, so the stored field value is
+// not necessarily the name the next launch uses.
+//
+// Pure, and taking all three inputs as arguments rather than reading the store,
+// so the eviction path can be tested as a SEQUENCE of preference writes (#546).
+// That sequence is the whole subtlety: the panel saves `agentSessionAuto` and
+// `agentSession` as two separate set-config calls, so there is a moment where
+// the store holds the NEW auto flag beside the OLD field, and a pair read then
+// describes a state that never existed. Being able to replay that in a test is
+// what makes the bug visible.
+//
+// `null` when the field pins an explicit id, since a pin has no name-keyed entry.
+function sessionPairFor({ cwd, field, botName, auto }) {
+  const ref = resolveSessionRef(field, botName);
+  if (ref.kind !== 'name') return null;
+  // `auto !== false` and not `!!auto`: the preference is absent by default and
+  // absent means ON, which is the case almost every bot is in.
+  const name = auto !== false ? (resolveSessionName(botName) || ref.name) : ref.name;
+  return { cwd, name };
+}
+
 // Which cache entry a MANUAL edit leaves behind (#546).
 //
 // `planAgentSession` looks the session id up by (working dir, session name), so
@@ -213,4 +236,5 @@ function sessionExists(sessionId, cwd, { fs = require('fs'), path = require('pat
 module.exports = {
   resolveSessionId, claudeResumeFlag, resolveSessionName, claudeNameFlag, sessionExists,
   isSessionId, resolveSessionRef, sessionCacheKey, staleSessionCacheKey, renameSessionCacheEntries,
+  sessionPairFor,
 };

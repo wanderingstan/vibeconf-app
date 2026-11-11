@@ -107,3 +107,44 @@ test('the poll keeps rescheduling even when a check throws', () => {
   const sched = main.slice(main.indexOf('const scheduleClaudeAuthPoll'));
   assert.match(sched.slice(0, 500), /\.finally\(scheduleClaudeAuthPoll\)/);
 });
+
+// #871: the banner offers the fix, not just the news.
+test('the banner uses the warning icon, not the troubleshooting one', () => {
+  const banner = panelHtml.slice(panelHtml.indexOf('id="claudeAuthBanner"'));
+  const div = banner.slice(0, banner.indexOf('</div>'));
+  assert.match(div, /ui-icon-warning/);
+  assert.doesNotMatch(div, /ui-icon-construction/, '🚧 means troubleshooting elsewhere in the app');
+  const iconsCss = readFileSync(join(root, 'electron-app/renderer/ui-icons.css'), 'utf8');
+  assert.ok(iconsCss.includes('.ui-icon-warning {'), 'the icon has to exist');
+});
+
+test('the banner carries a Sign in button wired to claude auth login', () => {
+  const banner = panelHtml.slice(panelHtml.indexOf('id="claudeAuthBanner"'));
+  const div = banner.slice(0, banner.indexOf('</div>'));
+  assert.match(div, /id="claudeSignInBtn" class="notice-action"[^>]*style="display:none"/,
+    'same affordance as the other actionable notices, hidden until main says it works');
+  assert.match(panelJs, /claudeSignInBtn\?\.addEventListener\('click', \(\) => api\.invoke\('claude-sign-in'\)/);
+  assert.match(main, /ipcMain\.handle\('claude-sign-in', \(\) => launchClaudeSignIn\(\)\)/);
+  // The same Terminal launcher the agent uses, so the shell finds the same claude.
+  const fn = main.slice(main.indexOf('function launchClaudeSignIn'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /buildTerminalLaunchScript\('claude auth login'\)/);
+  // Not a call terminal: leaving a call must not close the sign-in window.
+  assert.doesNotMatch(body, /claudeTerminalWindowIds/);
+});
+
+test('the button is hidden where main cannot open a Terminal', () => {
+  assert.match(main, /const CLAUDE_SIGN_IN_SUPPORTED = process\.platform === 'darwin'/);
+  // Carried on every payload, pushed or polled, so a broadcast can't drop it.
+  assert.match(main, /broadcastToRenderers\('claude-auth-changed', claudeAuthForPanel\(\)\)/);
+  assert.match(main, /return claudeAuthForPanel\(\);/);
+  assert.match(panelJs, /claudeSignInBtn\.style\.display = state\?\.canSignIn \? '' : 'none'/);
+  const fn = main.slice(main.indexOf('function launchClaudeSignIn'));
+  assert.match(fn.slice(0, 200), /if \(!CLAUDE_SIGN_IN_SUPPORTED\) return/);
+});
+
+test('signing in clears the banner without waiting out the focus throttle', () => {
+  const fn = main.slice(main.indexOf('function launchClaudeSignIn'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert.match(body, /claudeAuthState = \{ \.\.\.claudeAuthState, checkedAt: 0 \}/);
+});

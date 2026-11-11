@@ -106,7 +106,12 @@ test('panel chrome uses the icon classes, not emoji characters', () => {
     ['screen', '\u{1F5A5}'],
     ['speaker', '\u{1F50A}'],
   ]) {
-    assert.ok(panelHtml.includes(`ui-icon-${name}`), `panel.html lost the ${name} icon`);
+    // 🚧 no longer appears in the panel at all: the troubleshooting button went
+    // to ⓘ, and #871 moved the sign-in notice to the warning icon. Still checked
+    // below for the raw glyph, which must not creep back in.
+    if (name !== 'construction') {
+      assert.ok(panelHtml.includes(`ui-icon-${name}`), `panel.html lost the ${name} icon`);
+    }
     // Comments still talk about the glyphs — strip them before checking that no
     // LIVE markup renders one.
     //

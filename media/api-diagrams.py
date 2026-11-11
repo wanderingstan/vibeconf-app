@@ -243,8 +243,22 @@ def layers(T):
 
     # ── Bottom left: what the room sees ──
     c.eyebrow(60, 560, 'WHAT THE ROOM SEES', 'A normal participant, not an integration')
-    for i, s in enumerate(['a tile with a name and a face', 'a microphone that speaks', 'a camera: avatar or board', 'chat messages', 'a screen share']):
-        c.row(60, 578 + i * 36, 280, s, h=30)
+    # The voice engines are ttsProvider's enum plus the realtimeVoice experiment
+    # (electron-app/preferences-schema.js); keep this line in step with them.
+    seen = [('a tile with a name and a face', None),
+            ('a microphone that speaks', ['ElevenLabs · OS voice · Voicebox', 'OpenAI realtime (experimental)']),
+            ('a camera: avatar or board', None), ('chat messages', None), ('a screen share', None)]
+    y = 578
+    for s, subs in seen:
+        if not subs:
+            c.row(60, y, 280, s, h=30)
+            y += 36
+            continue
+        h = 20 + 13 * len(subs)
+        c.row(60, y, 280, s, subs[0], h=h)
+        for j, sub in enumerate(subs[1:], 1):
+            c.text(70, y + 28 + 13 * j, sub, 10.5, fill=T['soft'])
+        y += h + 6
 
     c.text(W - 60, H - 24, 'Logos are trademarks of their respective owners.', 11, fill=T['faint'], anchor='end')
     return c.done()

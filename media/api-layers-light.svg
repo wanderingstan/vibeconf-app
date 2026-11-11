@@ -159,13 +159,15 @@
 <text x="60" y="576" font-size="12" font-weight="400" fill="#6B5566" text-anchor="start">A normal participant, not an integration</text>
 <rect x="60" y="578" width="280" height="30" rx="4" fill="#FFF4DA" stroke="#F1D9A4" stroke-width="1"/>
 <text x="70" y="597.0" font-size="11.5" font-weight="600" fill="#4A3140" text-anchor="start">a tile with a name and a face</text>
-<rect x="60" y="614" width="280" height="30" rx="4" fill="#FFF4DA" stroke="#F1D9A4" stroke-width="1"/>
-<text x="70" y="633.0" font-size="11.5" font-weight="600" fill="#4A3140" text-anchor="start">a microphone that speaks</text>
-<rect x="60" y="650" width="280" height="30" rx="4" fill="#FFF4DA" stroke="#F1D9A4" stroke-width="1"/>
-<text x="70" y="669.0" font-size="11.5" font-weight="600" fill="#4A3140" text-anchor="start">a camera: avatar or board</text>
-<rect x="60" y="686" width="280" height="30" rx="4" fill="#FFF4DA" stroke="#F1D9A4" stroke-width="1"/>
-<text x="70" y="705.0" font-size="11.5" font-weight="600" fill="#4A3140" text-anchor="start">chat messages</text>
-<rect x="60" y="722" width="280" height="30" rx="4" fill="#FFF4DA" stroke="#F1D9A4" stroke-width="1"/>
-<text x="70" y="741.0" font-size="11.5" font-weight="600" fill="#4A3140" text-anchor="start">a screen share</text>
+<rect x="60" y="614" width="280" height="46" rx="4" fill="#FFF4DA" stroke="#F1D9A4" stroke-width="1"/>
+<text x="70" y="629" font-size="12" font-weight="600" fill="#4A3140" text-anchor="start">a microphone that speaks</text>
+<text x="70" y="642" font-size="10.5" font-weight="400" fill="#6B5566" text-anchor="start">ElevenLabs · OS voice · Voicebox</text>
+<text x="70" y="655" font-size="10.5" font-weight="400" fill="#6B5566" text-anchor="start">OpenAI realtime (experimental)</text>
+<rect x="60" y="666" width="280" height="30" rx="4" fill="#FFF4DA" stroke="#F1D9A4" stroke-width="1"/>
+<text x="70" y="685.0" font-size="11.5" font-weight="600" fill="#4A3140" text-anchor="start">a camera: avatar or board</text>
+<rect x="60" y="702" width="280" height="30" rx="4" fill="#FFF4DA" stroke="#F1D9A4" stroke-width="1"/>
+<text x="70" y="721.0" font-size="11.5" font-weight="600" fill="#4A3140" text-anchor="start">chat messages</text>
+<rect x="60" y="738" width="280" height="30" rx="4" fill="#FFF4DA" stroke="#F1D9A4" stroke-width="1"/>
+<text x="70" y="757.0" font-size="11.5" font-weight="600" fill="#4A3140" text-anchor="start">a screen share</text>
 <text x="1060" y="856" font-size="11" font-weight="400" fill="#9A8798" text-anchor="end">Logos are trademarks of their respective owners.</text>
 </svg>

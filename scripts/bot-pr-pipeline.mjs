@@ -67,6 +67,7 @@ import { statSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { homedir } from 'os';
+import { probeClaudeCli } from './claude-cli-liveness.mjs';
 
 const LABEL = 'good-for-bot';
 // The claim label. Deliberately NOT a preflight check: it is created on demand by
@@ -146,8 +147,9 @@ try {
 // worst moment — halfway through the first real run.
 check('gh token can write (repo scope)', /'repo'|\brepo\b/.test(scopes), scopes || 'no scopes reported');
 
-// 2. A claude binary. Same resolution order as the triage script, and for the same
-//    reason: `claude` on PATH here is a bash shim inside cmux.app.
+// 2. A claude binary that can actually run work. Same resolution order as the
+//    triage script, and for the same reason: `claude` on PATH here is a bash shim
+//    inside cmux.app.
 function resolveClaudeBin() {
   if (process.env.CLAUDE_BIN) return process.env.CLAUDE_BIN;
   const candidates = [
@@ -159,7 +161,16 @@ function resolveClaudeBin() {
   return null;
 }
 const claudeBin = resolveClaudeBin();
-check('claude CLI available', !!claudeBin, claudeBin || 'not found');
+// LIVENESS, not presence. This used to be `!!claudeBin` — a path that resolves —
+// and on the mini that reported ✅ for a binary answering every invocation with
+// "Not logged in · Please run /login": six issues dispatched, six instant
+// failures, preflight green throughout (#645). A missing login and a working CLI
+// look identical from the outside if all you test is `which`, which is exactly
+// the reasoning check 3 below already spells out for the label. So run something
+// trivial and require a zero exit with plausible output. One round trip a day.
+const claudeProbe = probeClaudeCli(claudeBin);
+check('claude CLI can do work', claudeProbe.ok,
+  `${claudeBin ? `${claudeBin} — ` : ''}${claudeProbe.detail}`);
 
 // 3. The label exists in every repo. This is the one that will actually fail one
 //    day — someone renames it, or a new repo joins the list and nobody creates it

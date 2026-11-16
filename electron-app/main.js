@@ -4520,6 +4520,9 @@ let onboardingWindow = null;
 // permanently missing its browser detection until the next launch. Idempotent:
 // every deferred start guards against running twice.
 const deferredStarts = [];
+// While the first-run wizard is up, a hosted bot doesn't ask the app window to
+// come forward: that would put the app window over the wizard (#950).
+let wizardHoldsFront = false;
 function runDeferredStarts() {
   while (deferredStarts.length) {
     const fn = deferredStarts.shift();
@@ -4541,16 +4544,35 @@ function createOnboardingWindow() {
     },
   });
   onboardingWindow.loadFile(path.join(__dirname, 'renderer', 'onboarding.html'));
+  wizardHoldsFront = true;
   // Show only once painted, and pull it in front of the main app window (on
   // first run the main window is created around the same time and would
   // otherwise cover the wizard). moveTop + focus wins the z-order race.
+  //
+  // #950: not when hosted. The wizard is then a window of a background bot
+  // process, and the app window belongs to the active app, so moveTop/focus
+  // alone leave it behind. Activate this process first (presentHeadlessWindow),
+  // and float the wizard until it has been focused once, in case macOS refuses
+  // the activation. After that it's an ordinary window the user can put behind.
   onboardingWindow.once('ready-to-show', () => {
-    if (!onboardingWindow || onboardingWindow.isDestroyed()) return;
-    onboardingWindow.show();
-    onboardingWindow.moveTop();
-    onboardingWindow.focus();
+    const w = onboardingWindow;
+    if (!w || w.isDestroyed()) return;
+    if (HEADLESS) {
+      w.setAlwaysOnTop(true, 'floating');
+      w.once('focus', () => { if (!w.isDestroyed()) w.setAlwaysOnTop(false); });
+      presentHeadlessWindow(w);
+    } else {
+      w.show();
+      w.focus();
+    }
+    w.moveTop();
   });
-  onboardingWindow.on('closed', () => { onboardingWindow = null; runDeferredStarts(); focusMainWindow(); });
+  onboardingWindow.on('closed', () => {
+    onboardingWindow = null;
+    wizardHoldsFront = false;
+    runDeferredStarts();
+    focusMainWindow();
+  });
 }
 
 // Probe (and, on first send, trigger) the macOS "Automation" permission by sending
@@ -11880,7 +11902,7 @@ function makeHeadless(win) {
   let presenting = false;
   let lastSelectAt = 0;
   const presentInShell = () => {
-    if (presenting) return;
+    if (presenting || wizardHoldsFront) return;
     // Started by the app: ask it over our channel. No port, no token, and no
     // chance of reaching some other app window than the one that owns us.
     // show() and focus() usually come as a pair: one request for both.
@@ -13655,6 +13677,7 @@ function setupIPC() {
 
   ipcMain.handle('onboarding:finish', () => {
     try { store.set('onboardingComplete', true); } catch { /* ignore */ }
+    wizardHoldsFront = false; // the app window may come forward now
     if (onboardingWindow && !onboardingWindow.isDestroyed()) onboardingWindow.close();
     if (mainWindow && !mainWindow.isDestroyed()) { mainWindow.show(); mainWindow.focus(); }
     runDeferredStarts();

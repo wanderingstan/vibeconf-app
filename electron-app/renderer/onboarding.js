@@ -39,6 +39,18 @@ function render() {
   if (step === 'signin') loadAuth();
   if (step === 'claude') { loadClaude(); loadAgentBackend(); }
   if (step === 'voice') loadVoiceGift();
+  if (step === 'done') paintDoneStep();
+}
+
+// #951: only an agent the app launches can be sent into the guided setup call.
+// Anyone else is shown how to bring their own agent in instead.
+async function paintDoneStep() {
+  let backend = 'claude';
+  try { backend = (await api.invoke('get-config', ['agentBackend']))?.agentBackend || 'claude'; } catch { /* assume claude */ }
+  const appLaunches = backend === 'claude';
+  $('setupCallBlock').style.display = appLaunches ? '' : 'none';
+  $('claudeJoinTip').style.display = appLaunches ? '' : 'none';
+  $('otherAgentJoinTip').style.display = appLaunches ? 'none' : '';
 }
 
 // #231: which agent drives bots on this machine. Only 'claude' makes the app
@@ -121,13 +133,38 @@ $('nextBtn').addEventListener('click', async () => {
 $('backBtn').addEventListener('click', () => go(-1));
 $('skipBtn').addEventListener('click', () => go(1));
 
-// Finish the wizard exactly as "Finish" does (saves + closes + shows the main
-// window), then immediately start the guided call instead of leaving the user
-// at an idle panel with just the /join-call instructions.
+// Same as panel.js's CREATE_MEET_ERRORS: every way POST /api/meet/create fails.
+const CREATE_MEET_ERRORS = {
+  'signed-out': 'Sign in at vibeconferencing.com to start a call (the Sign in step earlier in this setup).',
+  'rate-limited': 'Too many calls started just now. Try again in a few minutes.',
+  'upstream': "Google couldn't create the room. Try again.",
+  'bad-request': 'The app sent a malformed request. This is a bug, please report it.',
+  'offline': "Couldn't reach vibeconferencing.com. Check your connection.",
+  'unknown': "Couldn't start a call.",
+};
+
+// Start the guided call, then finish the wizard exactly as "Finish" does
+// (saves + closes + shows the main window). In that order (#951): finishing
+// closes this window, and a call requested from a closing window can be lost,
+// along with any error there would be nowhere left to show.
 $('runSetupCallBtn')?.addEventListener('click', async () => {
+  const btn = $('runSetupCallBtn');
+  const err = $('setupCallError');
+  btn.disabled = true;
+  err.style.display = 'none';
+  const label = btn.textContent;
+  btn.textContent = 'Starting the call…';
   await saveCurrent();
+  let r;
+  try { r = await api.invoke('create-and-join-meet', { onboardingCall: true }); } catch (e) { r = { ok: false, code: 'unknown', detail: e?.message }; }
+  if (!r?.ok) {
+    err.textContent = CREATE_MEET_ERRORS[r?.code] || CREATE_MEET_ERRORS.unknown;
+    err.style.display = '';
+    btn.textContent = label;
+    btn.disabled = false;
+    return;
+  }
   await api.invoke('onboarding:finish');
-  await api.invoke('create-and-join-meet', { onboardingCall: true });
 });
 
 // ── permissions ──────────────────────────────────────────────────────────

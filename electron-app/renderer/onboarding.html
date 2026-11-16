@@ -231,13 +231,25 @@
            transcript actually hears its name back cleanly). Optional: "Finish"
            alone still works, and a random name/default look are used until
            this call runs. -->
-      <p class="sub">Ready to name your bot, and pick its voice, emoji, and background — live, with the bot itself?</p>
-      <button type="button" class="btn cta" id="runSetupCallBtn">Start a guided setup call</button>
+      <!-- #951: the guided call needs an agent the app launches, which today
+           means Claude Code. Other backends get the manual route instead. -->
+      <div id="setupCallBlock">
+        <p class="sub">Ready to name your bot, and pick its voice, emoji, and background — live, with the bot itself?</p>
+        <button type="button" class="btn cta" id="runSetupCallBtn">Start a guided setup call</button>
+        <p class="hint" id="setupCallError" style="display:none; color:#c0392b"></p>
+      </div>
 
       <!-- A tip for advanced users, not a step of the flow itself — most people
            finish via the guided call above, not by typing a slash command. -->
-      <p class="sub" style="margin-top:24px">Prefer to skip the call? Start a Google Meet in Chrome or Brave, then in Claude Code type:</p>
-      <div class="card"><code style="font-size:15px">/join-call</code></div>
+      <div id="claudeJoinTip">
+        <p class="sub" style="margin-top:24px">Prefer to skip the call? Start a Google Meet in Chrome or Brave, then in Claude Code type:</p>
+        <div class="card"><code style="font-size:15px">/join-call</code></div>
+      </div>
+      <div id="otherAgentJoinTip" style="display:none">
+        <p class="sub">To try your bot, start a Google Meet in Chrome or Brave, then ask your agent:</p>
+        <div class="card"><code style="font-size:15px">Join my Google Meet with the vibeconferencing tools.</code></div>
+        <p class="hint">It asks the app for the call it found in your browser. If your agent doesn't have the vibeconferencing tools yet, restart it first.</p>
+      </div>
       <p class="hint">Your bot will join and ask to be admitted. Click Admit, then just talk.</p>
     </section>
   </main>

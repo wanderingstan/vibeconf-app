@@ -53,7 +53,7 @@ class Canvas:
     def __init__(self, T, W, H):
         self.T, self.W, self.H, self.o = T, W, H, []
         a = self.o.append
-        a(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" font-family="{BODY}">')
+        a(f'<svg xmlns="http://www.w3.org/2000/svg" style="max-width:100vw;max-height:100vh" width="{W}" height="{H}" viewBox="0 0 {W} {H}" font-family="{BODY}">')
         a(f'<defs><style>{font_css()}</style>')
         a(f'<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="{T["wire"]}"/></marker>')
         a(f'<marker id="arrP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="{T["pink"]}"/></marker>')

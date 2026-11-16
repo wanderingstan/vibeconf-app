@@ -378,10 +378,20 @@ async function displayNameForJoin(argName, routed) {
   return joinNameFromRouting(argName, routed) || (await resolveBotName(null));
 }
 
+// Sent to the agent when it connects. A Claude agent also gets the join-call
+// skill, but nothing else does (Codex, any MCP client), so the one thing every
+// agent needs first, how to find the call, is said here (#953).
+const SERVER_INSTRUCTIONS = [
+  "These tools drive a bot in a video call (Google Meet, Zoom, Teams, Slack huddles) through the Vibeconferencing app running on this machine.",
+  "To join a call: call get_room_info with no arguments. If the app is already in a call it says so; otherwise it lists the call URLs it has detected in the user's browser. Pass that URL to join_call. If several bots are running, list_call_instances shows them.",
+  "Don't look for calls yourself (AppleScript, osascript, reading browser tabs): the app already scans the browsers, and get_room_info reports what it found. If nothing is detected, ask the user for the link.",
+  "Once in the call, loop on wait_for_speech and answer with speak.",
+].join("\n\n");
+
 const server = new McpServer({
   name: "vibeconferencing",
   version: "0.1.0",
-});
+}, { instructions: SERVER_INSTRUCTIONS });
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -3144,7 +3154,7 @@ server.tool(
 // --- get_room_info ---
 server.tool(
   "get_room_info",
-  "Get the current state of the Google Meet call: participants, who is speaking, screen sharing status, detected Meet URLs, errors. When not in a call, shows detected Meet URLs from browser tabs. This is your primary tool for understanding what's happening in the call.",
+  "Get the current state of the Google Meet call: participants, who is speaking, screen sharing status, detected Meet URLs, errors. When not in a call, shows detected Meet URLs from browser tabs. This is your primary tool for understanding what's happening in the call, and the FIRST thing to call when asked to join one: with no arguments it returns the call URLs the app found in the user's browser, ready for join_call. Don't scan the browsers yourself.",
   {
     room_id: z.string().optional().describe("Room/Meet code. Uses VIBECONF_ROOM_ID env var if not provided."),
   },
@@ -3390,7 +3400,7 @@ server.tool(
 // --- join_call ---
 server.tool(
   "join_call",
-  "Tell the Vibeconferencing app to join a call — a Google Meet, a Slack huddle, or (experimental) a Zoom or Microsoft Teams meeting or a WhatsApp call link (https://call.whatsapp.com/...; the bot must be signed in to WhatsApp). Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle. For Zoom, pass the meeting link (zoom.us/j/<number>, passcode included); the bot joins through the Zoom web client. For Microsoft Teams, pass the meeting link (teams.live.com/meet/... or teams.microsoft.com/...); the bot joins as a guest and an organizer must admit it from the lobby.",
+  "Tell the Vibeconferencing app to join a call. Don't know the room? Call get_room_info with no arguments first: it lists the calls detected in the user's browser. Supported calls: a Google Meet, a Slack huddle, or (experimental) a Zoom or Microsoft Teams meeting or a WhatsApp call link (https://call.whatsapp.com/...; the bot must be signed in to WhatsApp). Use this when the app is running but idle. For Meet, pass the meet code OR the full Meet URL (either is accepted); the app navigates and joins. For Slack, pass the huddle URL (app.slack.com/client/<team>/<channel>); the app switches to the Slack provider and auto-joins the huddle. For Zoom, pass the meeting link (zoom.us/j/<number>, passcode included); the bot joins through the Zoom web client. For Microsoft Teams, pass the meeting link (teams.live.com/meet/... or teams.microsoft.com/...); the bot joins as a guest and an organizer must admit it from the lobby.",
   {
     room_id: z.string().describe("Meet code (e.g. abc-defg-hij), a full Meet URL (https://meet.google.com/abc-defg-hij, query string and all), a Slack huddle URL (https://app.slack.com/client/<team>/<channel>), a Zoom meeting link (https://zoom.us/j/<number>?pwd=...), OR a Microsoft Teams meeting link (https://teams.live.com/meet/<code>?p=...)."),
     bot_name: z.string().optional().describe("Which PROFILE to drive, when several app instances are running (see list_call_instances) — the profile keeps its own display name, so `/join-call <code> alice2` joins as whatever alice2 is named. If the name matches no profile and only one instance is running, it is used as a one-off Meet display name instead. Omit to use the sole running instance, or the one this session is pinned to, under its configured name — don't pass a literal default like 'Unnamed bot', that overrides the user's preference."),

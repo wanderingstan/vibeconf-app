@@ -79,43 +79,11 @@ Call `get_room_info` (no room_id needed). Its response tells you one of three th
 
 1. **The app is already in a call** — the reply will be a full room info block that starts with `Room: xxx-xxxx-xxx` and includes a `Call status:` line (e.g. `in-call`, `joining`, `navigating`, `waiting-to-be-admitted`). This is authoritative — use that room code and skip detection entirely. `navigating` means the app has just recorded intent to join and dispatched the browser view — it hasn't reached Meet's page yet; `joining` means Meet's own page has loaded and confirmed a join attempt is underway. Both mean "in progress, keep polling" — treat them the same as far as your next step goes.
 2. **Detected Meet URLs** — the reply starts with `Not in a call. Detected Google Meet URLs:`. Extract the meet code from the first URL.
-3. **Nothing detected** — fall back to AppleScript below.
+3. **Nothing detected** — ask the user to paste the call link.
 
-Authoritative active-call info wins over detected URLs: detected URLs come from a separate periodic scan of Chrome/Brave tabs and can go stale once the app has joined. If `get_room_info` reports an active room, use it and do NOT second-guess with AppleScript.
+Authoritative active-call info wins over detected URLs: detected URLs come from a separate periodic scan of Chrome/Brave tabs and can go stale once the app has joined. If `get_room_info` reports an active room, use it.
 
-AppleScript fallback (only when `get_room_info` returns no active call and no detected URLs):
-```
-osascript -e 'tell application "System Events"
-  set chromeRunning to exists process "Google Chrome"
-  set braveRunning to exists process "Brave Browser"
-end tell
-set allURLs to ""
-if chromeRunning then
-  tell application "Google Chrome"
-    repeat with w in windows
-      repeat with t in tabs of w
-        if URL of t starts with "https://meet.google.com/" then
-          set allURLs to allURLs & URL of t & linefeed
-        end if
-      end repeat
-    end repeat
-  end tell
-end if
-if braveRunning then
-  tell application "Brave Browser"
-    repeat with w in windows
-      repeat with t in tabs of w
-        if URL of t starts with "https://meet.google.com/" then
-          set allURLs to allURLs & URL of t & linefeed
-        end if
-      end repeat
-    end repeat
-  end tell
-end if
-allURLs'
-```
-
-Extract the meet code (the `xxx-xxxx-xxx` part). If no valid Meet URL found, ask the user to paste one.
+**Don't scan the browsers yourself** (AppleScript, `osascript`, reading tabs). The app already scans Chrome, Safari and Brave every few seconds, and that scan is what `get_room_info` reports, so your own sweep can only find what the app found or race it (#953). If nothing is detected, the user can open the call or paste its link.
 
 ## Step 2: Ensure the bot is running and in the call
 

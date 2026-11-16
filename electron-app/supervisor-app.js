@@ -394,7 +394,7 @@ function launchProfile(name, { openSettings = false, extraArgs = [] } = {}) {
   let args;
   // Headless: its UI is the panel on this window's stage, so it gets no
   // window or Dock icon of its own.
-  try { args = spawnArgsForProfile({ name, isDefault, port, openSettings, headless: true }); }
+  try { args = spawnArgsForProfile({ name, isDefault, port, openSettings, headless: true, noSandbox: app.commandLine.hasSwitch('no-sandbox') }); }
   catch (err) { return { ok: false, error: err.message }; }
   args.push(...extraArgs);
 

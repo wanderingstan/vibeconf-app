@@ -15,6 +15,8 @@
     ·
     <a href="https://github.com/wanderingstan/vibeconf-app/releases/latest">Download</a>
     ·
+    <a href="#how-people-use-it">How people use it</a>
+    ·
     <a href="#how-it-works">How it works</a>
     ·
     <a href="https://vibeconferencing.com/api">API reference</a>
@@ -32,6 +34,24 @@
 It hears the conversation, speaks when appropriate, posts in chat, and shares its screen. And because it is your *actual* agent, not a notetaker, it **builds, researches and acts on what is said while you are still in the call**, with every skill and integration your agent already has. If your Claude can send an email, so can your bot in the call. If your Codex can update a spreadsheet, so can your bot.
 
 > **Status: early and experimental.** We built this for ourselves and are sharing it as is. It runs on **macOS**, **Linux** and **Windows**; builds for all three are in every release. It drives **Claude Code**, **Codex**, **Grok**, **Meta's Muse**, or anything that speaks MCP or HTTP. It joins **Google Meet**, **Zoom**, **Microsoft Teams**, **Slack huddles** and **WhatsApp call links**, and answers **Telegram**, **WhatsApp** and **phone** calls (a real number, through Twilio). Google Meet is the most travelled; Zoom and Teams arrived in v0.8.57, and Telegram, WhatsApp and phone in v0.8.65. See [Known rough edges](#known-rough-edges) before your first call.
+
+## How people use it
+
+Learnings from the last nine months of dogfooding and early users:
+
+- My friend Matt is currently road-tripping across the US, talking with his Codex sessions to develop his Golf app. Video link: https://youtu.be/a3uNUdIwqVY
+
+- Our friend Bethany uses her bot, "Taylor Script", in calls and classrooms with coding students to act as the super-smart TA who can answer technical questions, and monitors student progress. Video link: https://youtu.be/c8mZKkcxhJo
+
+- Collaboratively built a website for a friend's non-profit, with her amazed that she could ask for site changes and see the site change in realtime. Video: https://drive.google.com/file/d/1iSRgY8JGJ0liOzHMl2bOGNd9jwqF0BFi/view?usp=sharing
+
+- I begin most days with a check-in call with my bot, where we discuss open issues while I sip coffee and have breakfast. Video link: https://youtu.be/2uQIR83LwY0 (Apologies for eating with my mouth open...)
+
+- In a standup, Seth's bot created a video ad for the service itself, within a call. Video link: https://x.com/vibeconf/status/2104427917816234257
+
+- My friend Gabe and I, built a livestreaming YouTube channel in minutes by chatting with my bot: https://youtu.be/YHNtRGYd9Zc?t=330
+
+- I've built a WhatsApp bot for my father, an elderly WW2 veteran, that has access to the 20,000 photos he scanned, our home movies, the text of 50 years of my mom's diaries, etc. He can call it to see and hear about any aspect of his life, and follow any thread that interests him.
 
 ## How it works
 

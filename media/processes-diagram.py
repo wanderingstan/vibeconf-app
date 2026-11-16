@@ -108,7 +108,7 @@ def render(T):
     def label(x, y, s, anchor='middle', fill=None, mono=True, size=10):
         text(x, y, s, size, 700 if mono else 500, fill=fill or T['soft'], family=MONO if mono else None, anchor=anchor)
 
-    a(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" font-family="\'DM Sans\', \'Avenir Next\', -apple-system, sans-serif">')
+    a(f'<svg xmlns="http://www.w3.org/2000/svg" style="max-width:100vw;max-height:100vh" width="{W}" height="{H}" viewBox="0 0 {W} {H}" font-family="\'DM Sans\', \'Avenir Next\', -apple-system, sans-serif">')
     a(f'<defs><style>{font_css()}</style>')
     a(f'<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="{T["wire"]}"/></marker>')
     a(f'<marker id="arrO" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="{T["owner"]}"/></marker>')

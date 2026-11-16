@@ -2804,7 +2804,14 @@ function enterCallState(meetCode) {
 }
 
 function exitCallState() {
+  const wasInCall = inCall;
   inCall = false;
+  // #954: the call's URL stops being "detected" when the call ends. Main resets
+  // its own detection at teardown and re-offers the URL within one poll if the
+  // tab is still open. Without this, a tab closed during or after the call left
+  // its URL in the field for good: the panel ignores undetects while in a call,
+  // and main never sends one for a URL it has already forgotten.
+  if (wasInCall) clearDetectedCall();
   callProvider = null;
   document.body.dataset.callState = 'idle'; // #379: pre-call controls return
   reportContentHeight(); // the in-call card just went away — shrink back

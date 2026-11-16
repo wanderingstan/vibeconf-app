@@ -1561,6 +1561,7 @@ function revokeCallLogShare(reason) {
 // defined" (seen live 2026-10-15) and the guest join never happened.
 let currentMeetUrl = null;
 let detectedMeetUrl = null;
+let detectedSlackHuddle = null; // module-level for the same reason (#954)
 
 // The actual teardown. It lives here, callable from main, rather than only at
 // the end of a main → renderer → main round trip.
@@ -1602,7 +1603,11 @@ function performLeaveTeardown(via) {
   if (_teardownDone) return;
   _teardownDone = true;
   currentMeetUrl = null;
-  detectedMeetUrl = null; // Reset so detection will re-notify about the same Meet
+  // Reset so detection will re-notify about the same Meet or huddle. The panel
+  // forgets its detected URL when a call ends (#954), so a tab that is still
+  // open must be offered again, and one that closed during the call must not.
+  detectedMeetUrl = null;
+  detectedSlackHuddle = null;
   // Each step is independent: a throw in one must not strand the rest, because
   // the whole point is that reaching 'idle' cannot be conditional. clearRoom()
   // is what sets 'idle', so it goes first — if anything here is going to fail,
@@ -9716,9 +9721,9 @@ app.whenReady().then(async () => {
 
   // --- Meet/Slack detection: poll Chrome/Safari/Brave tabs for active Meet
   // calls and Slack huddles ---
-  // currentMeetUrl and detectedMeetUrl are module-level (see their declaration):
-  // the leave teardown resets them, and every join path sets currentMeetUrl.
-  let detectedSlackHuddle = null;
+  // currentMeetUrl, detectedMeetUrl and detectedSlackHuddle are module-level (see
+  // their declaration): the leave teardown resets them, and every join path sets
+  // currentMeetUrl.
   let meetDetectionInterval = null;
   let automationPromptShown = false; // only nag about Automation permission once
   // Last Meet-poll failure message, so an identical one isn't logged every tick.

@@ -51,7 +51,7 @@ Learnings from the last nine months of dogfooding and early users:
 
 - My friend Gabe and I, built a livestreaming YouTube channel in minutes by chatting with my bot: https://youtu.be/YHNtRGYd9Zc?t=330
 
-- I've built a WhatsApp bot for my father, an elderly WW2 veteran, that has access to the 20,000 photos he scanned, our home movies, the text of 50 years of my mom's diaries, etc. He can call it to see and hear about any aspect of his life, and follow any thread that interests him.
+- I've built a WhatsApp bot for my father, an elderly WW2 veteran, that has access to the 20,000 photos he scanned, our home movies, the text of 50 years of my mom's diaries, etc. He can call it to see and hear about any aspect of his life, and follow any thread that interests him. Video: https://youtu.be/Rs-Z1YeLt98
 
 ## How it works
 
